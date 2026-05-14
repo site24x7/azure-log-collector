@@ -1,0 +1,41 @@
+# Secrets — NEVER commit
+setup/config.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Azure Functions
+local.settings.json
+.python_packages/
+bin/
+obj/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Deployment artifacts
+*.zip
+
+# Session state (internal)
+_session_state.md
+
+# Large test artifacts
+testing/relay/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Secrets
+.secrets/
+secrets.json
+credentials.json
+.pytest_cache/
