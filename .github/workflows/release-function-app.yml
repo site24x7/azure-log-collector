@@ -98,10 +98,14 @@ jobs:
           REPO="${{ github.repository }}"
           VERSION="${{ steps.version.outputs.version }}"
           TAG="${{ steps.version.outputs.tag }}"
+          # Digest the exact zip we are about to publish so the AutoUpdater can
+          # verify package integrity before deploying it (anti-tamper).
+          SHA256="$(sha256sum s247-function-app.zip | cut -d' ' -f1)"
           cat > version.json <<EOF
           {
             "version": "${VERSION}",
             "package_url": "https://github.com/${REPO}/releases/download/${TAG}/s247-function-app.zip",
+            "sha256": "${SHA256}",
             "release_notes": "Auto-release of function app version ${VERSION}"
           }
           EOF

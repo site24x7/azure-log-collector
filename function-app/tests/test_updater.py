@@ -15,6 +15,8 @@ from shared.updater import (
     check_and_apply_update,
     _resolve_update_url,
     _parse_github_release,
+    _package_url_trusted,
+    _sha256_of_file,
 )
 
 
@@ -269,6 +271,108 @@ class TestDeployUpdate:
         assert result["success"] is False
         assert "subscription" in result["error"].lower()
 
+    def _ready_env(self, monkeypatch):
+        """App identity present so we reach the integrity gates."""
+        monkeypatch.setenv("WEBSITE_SITE_NAME", "myapp")
+        monkeypatch.setenv("SUBSCRIPTION_IDS", "sub1")
+
+    def test_rejects_non_https_package_url(self, monkeypatch):
+        self._ready_env(monkeypatch)
+        monkeypatch.setenv("UPDATE_CHECK_URL", "site24x7/azure-log-collector")
+        result = deploy_update("http://github.com/site24x7/azure-log-collector/releases/download/v1/s247-function-app.zip")
+        assert result["success"] is False
+        assert result.get("integrity_failed") is True
+        assert "https" in result["error"].lower()
+
+    def test_rejects_untrusted_host(self, monkeypatch):
+        self._ready_env(monkeypatch)
+        monkeypatch.setenv("UPDATE_CHECK_URL", "site24x7/azure-log-collector")
+        result = deploy_update("https://evil.example.com/s247-function-app.zip")
+        assert result["success"] is False
+        assert result.get("integrity_failed") is True
+
+    def test_rejects_wrong_github_repo(self, monkeypatch):
+        self._ready_env(monkeypatch)
+        monkeypatch.setenv("UPDATE_CHECK_URL", "site24x7/azure-log-collector")
+        # Trusted host, but a different repo than the configured update source.
+        result = deploy_update("https://github.com/attacker/evil/releases/download/v1/s247-function-app.zip")
+        assert result["success"] is False
+        assert result.get("integrity_failed") is True
+
+    def test_requires_sha256_when_absent(self, monkeypatch):
+        self._ready_env(monkeypatch)
+        monkeypatch.setenv("UPDATE_CHECK_URL", "site24x7/azure-log-collector")
+        # REQUIRE_PACKAGE_SHA256 defaults to true; no digest passed → refuse.
+        result = deploy_update("https://github.com/site24x7/azure-log-collector/releases/download/v1/s247-function-app.zip")
+        assert result["success"] is False
+        assert result.get("integrity_failed") is True
+        assert "sha256" in result["error"].lower()
+
+    @patch("shared.updater.requests.get")
+    def test_rejects_sha256_mismatch(self, mock_get, monkeypatch):
+        self._ready_env(monkeypatch)
+        monkeypatch.setenv("UPDATE_CHECK_URL", "site24x7/azure-log-collector")
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        resp.iter_content.return_value = [b"the actual package bytes"]
+        mock_get.return_value = resp
+        result = deploy_update(
+            "https://github.com/site24x7/azure-log-collector/releases/download/v1/s247-function-app.zip",
+            expected_sha256="0" * 64,  # deliberately wrong
+        )
+        assert result["success"] is False
+        assert result.get("integrity_failed") is True
+        assert "mismatch" in result["error"].lower()
+
+
+class TestPackageUrlTrusted:
+    REPO = "site24x7/azure-log-collector"
+    GOOD = "https://github.com/site24x7/azure-log-collector/releases/download/v1.0.1/s247-function-app.zip"
+
+    def test_github_shorthand_happy_path(self):
+        ok, _ = _package_url_trusted(self.GOOD, self.REPO)
+        assert ok is True
+
+    def test_github_cdn_host_allowed(self):
+        ok, _ = _package_url_trusted(
+            "https://objects.githubusercontent.com/github-production-release-asset/abc/def", self.REPO
+        )
+        assert ok is True
+
+    def test_http_rejected(self):
+        ok, reason = _package_url_trusted(self.GOOD.replace("https://", "http://"), self.REPO)
+        assert ok is False and "https" in reason.lower()
+
+    def test_foreign_host_rejected(self):
+        ok, _ = _package_url_trusted("https://evil.example.com/pkg.zip", self.REPO)
+        assert ok is False
+
+    def test_wrong_repo_rejected(self):
+        ok, _ = _package_url_trusted(
+            "https://github.com/attacker/evil/releases/download/v1/s247-function-app.zip", self.REPO
+        )
+        assert ok is False
+
+    def test_custom_source_same_host_allowed(self):
+        ok, _ = _package_url_trusted(
+            "https://updates.mycorp.com/pkg.zip", "https://updates.mycorp.com/version.json"
+        )
+        assert ok is True
+
+    def test_custom_source_cross_host_rejected(self):
+        ok, _ = _package_url_trusted(
+            "https://evil.example.com/pkg.zip", "https://updates.mycorp.com/version.json"
+        )
+        assert ok is False
+
+
+class TestSha256OfFile:
+    def test_known_digest(self, tmp_path):
+        import hashlib
+        f = tmp_path / "blob.bin"
+        f.write_bytes(b"site24x7")
+        assert _sha256_of_file(str(f)) == hashlib.sha256(b"site24x7").hexdigest()
+
 
 # ─── check_and_apply_update ─────────────────────────────────────────────────
 
@@ -320,7 +424,7 @@ class TestCheckAndApplyUpdate:
         mock_deploy.return_value = {"success": True, "status_code": 200}
         result = check_and_apply_update(auto_apply=True)
         assert result["action"] == "deployed"
-        mock_deploy.assert_called_once_with("https://example.com/v2.zip")
+        mock_deploy.assert_called_once_with("https://example.com/v2.zip", expected_sha256=None)
 
     @patch("shared.updater.fetch_remote_version")
     @patch("shared.updater.get_local_version")
@@ -395,11 +499,11 @@ class TestPinnedVersion:
         monkeypatch.setenv("PINNED_VERSION", "1.5.0")
         monkeypatch.setenv("MIN_RELEASE_AGE_MINUTES", "0")
         mock_local.return_value = "1.0.0"
-        mock_remote.return_value = {"version": "1.5.0", "package_url": "pkg"}
+        mock_remote.return_value = {"version": "1.5.0", "package_url": "pkg", "sha256": "abc"}
         mock_deploy.return_value = {"success": True}
         result = check_and_apply_update(auto_apply=True)
         assert result["action"] == "deployed"
-        mock_deploy.assert_called_once_with("pkg")
+        mock_deploy.assert_called_once_with("pkg", expected_sha256="abc")
 
 
 class TestReleaseAgeGate:
