@@ -18,6 +18,7 @@ Supports two URL formats for UPDATE_CHECK_URL:
 """
 
 import ast
+import hashlib
 import json
 import logging
 import os
@@ -28,6 +29,7 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 import requests
 from azure.identity import DefaultAzureCredential
@@ -215,6 +217,76 @@ def is_update_available(local_version: str, remote_version: str) -> bool:
     return parse_version(remote_version) > parse_version(local_version)
 
 
+# ─── Supply-chain integrity (authenticity of the downloaded package) ─────────
+
+# Hosts that legitimately serve GitHub release assets. github.com issues the
+# browser_download_url; it 302-redirects to the *.githubusercontent.com CDN.
+_GITHUB_RELEASE_HOSTS = frozenset({
+    "github.com",
+    "www.github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+})
+
+
+def _sha256_of_file(path: str) -> str:
+    """Stream a file through SHA-256 and return the lowercase hex digest."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _package_url_trusted(package_url: str, update_url: str) -> Tuple[bool, str]:
+    """Decide whether ``package_url`` is safe to download and deploy.
+
+    The AutoUpdater deploys whatever this URL serves as live code running under
+    the Function App's managed identity, so the URL must be constrained.
+
+    Enforced unconditionally:
+      - **HTTPS only** — a plaintext package_url is MITM-able into RCE.
+
+    Host policy, by configured update source (``UPDATE_CHECK_URL``):
+      - **GitHub source** (``owner/repo`` shorthand or a github.com/api.github.com
+        URL): package_url must be on a GitHub release host. For the shorthand
+        form the owner/repo must also appear in the package_url path, so a
+        tampered version.json cannot redirect to a *different* GitHub repo.
+      - **Custom source**: package_url must share the update source's host — a
+        custom version.json may only serve packages from its own origin.
+
+    Returns ``(ok, reason)``; ``reason`` is empty on success.
+    """
+    pkg = urlparse(package_url.strip())
+    if pkg.scheme != "https":
+        return False, f"package_url must use https (got '{pkg.scheme or 'no scheme'}')"
+    pkg_host = (pkg.hostname or "").lower()
+    if not pkg_host:
+        return False, "package_url has no host"
+
+    src = (update_url or "").strip()
+    if re.match(r"^[\w.-]+/[\w.-]+$", src):  # owner/repo shorthand
+        if pkg_host not in _GITHUB_RELEASE_HOSTS:
+            return False, f"package_url host '{pkg_host}' is not a GitHub release host"
+        owner_repo = src.lower()
+        if pkg_host in ("github.com", "www.github.com") and f"/{owner_repo}/" not in pkg.path.lower():
+            return False, f"package_url path does not belong to update repo '{owner_repo}'"
+        return True, ""
+
+    src_host = (urlparse(src).hostname or "").lower()
+    if src_host.endswith("github.com"):
+        if pkg_host not in _GITHUB_RELEASE_HOSTS:
+            return False, f"package_url host '{pkg_host}' is not a GitHub release host"
+        return True, ""
+
+    # Fully custom source: package must come from the same origin as version.json.
+    if src_host and pkg_host != src_host:
+        return False, (
+            f"package_url host '{pkg_host}' does not match update source host '{src_host}'"
+        )
+    return True, ""
+
+
 # ─── Safety helpers (prevent AutoUpdater from deploying a broken build) ──────
 
 # Critical files that must be present and parseable. AutoUpdater refuses to
@@ -366,7 +438,7 @@ def _post_deploy_health_check(func_app_name: str, checks: int = 3,
     return {"healthy": False, "checks": results, "url": url}
 
 
-def deploy_update(package_url: str) -> Dict:
+def deploy_update(package_url: str, expected_sha256: Optional[str] = None) -> Dict:
     """Download the package and deploy it to this Function App.
 
     The customer-facing one-click ARM template deploys the Function App with
@@ -376,6 +448,11 @@ def deploy_update(package_url: str) -> Dict:
 
     For dev deploys (set up via ``setup.sh``) the URL setting is cleared in
     favour of Oryx build, so we fall back to the classic zipdeploy path.
+
+    Before anything is deployed the package passes three gates: (1) the URL must
+    be HTTPS and from a trusted host, (2) its SHA-256 must match the digest
+    published in ``version.json`` (unless ``REQUIRE_PACKAGE_SHA256=false``), and
+    (3) the zip must be structurally valid. Any failure refuses the deploy.
     """
     resource_group = os.environ.get(
         "RESOURCE_GROUP_NAME", os.environ.get("RESOURCE_GROUP", "s247-diag-logs-rg")
@@ -388,8 +465,27 @@ def deploy_update(package_url: str) -> Dict:
     if not sub_id:
         return {"success": False, "error": "No subscription ID available"}
 
+    # ── Gate 1: only ever fetch/deploy from a trusted, HTTPS package URL.
+    ok, reason = _package_url_trusted(package_url, os.environ.get("UPDATE_CHECK_URL", ""))
+    if not ok:
+        logger.error("Refusing to deploy — untrusted package_url: %s", reason)
+        return {"success": False, "error": f"untrusted package_url: {reason}",
+                "integrity_failed": True}
+
+    # ── Gate 2 (pre-flight): refuse if no digest is published and we require one.
+    require_sha = os.environ.get("REQUIRE_PACKAGE_SHA256", "true").lower() in ("1", "true", "yes")
+    if require_sha and not expected_sha256:
+        logger.error("Refusing to deploy — release has no sha256 digest and "
+                     "REQUIRE_PACKAGE_SHA256 is enabled")
+        return {"success": False,
+                "error": "release published no sha256 digest "
+                         "(set REQUIRE_PACKAGE_SHA256=false to override)",
+                "integrity_failed": True}
+
+    tmp_path = None
     try:
-        # Download the package
+        # Download once — reused for the integrity check, structural validation,
+        # and (in Oryx/zipdeploy mode) the actual upload.
         logger.info(f"Downloading update from {package_url} ...")
         with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
             resp = requests.get(package_url, timeout=300, stream=True)
@@ -399,19 +495,27 @@ def deploy_update(package_url: str) -> Dict:
             tmp_path = tmp.name
         logger.info(f"Downloaded to {tmp_path}")
 
-        # Safety gate: never deploy a zip that won't import / parse.
+        # ── Gate 2 (verify): the bytes must match the published digest.
+        if expected_sha256:
+            actual = _sha256_of_file(tmp_path)
+            if actual != expected_sha256.strip().lower():
+                logger.error("Refusing to deploy — sha256 mismatch "
+                             "(expected %s, got %s)", expected_sha256, actual)
+                return {"success": False,
+                        "error": "package sha256 mismatch — possible tampering",
+                        "integrity_failed": True}
+            logger.info("Package integrity verified (sha256 %s)", actual)
+
+        # ── Gate 3: never deploy a zip that won't import / parse.
         # This is what prevents AutoUpdater from bricking itself.
         ok, reason = validate_zip_package(tmp_path)
         if not ok:
-            os.unlink(tmp_path)
             logger.error("Refusing to deploy — package validation failed: %s", reason)
             return {
                 "success": False,
                 "error": f"package validation failed: {reason}",
                 "validation_failed": True,
             }
-
-        os.unlink(tmp_path)
 
         credential = DefaultAzureCredential()
         token = credential.get_token("https://management.azure.com/.default")
@@ -470,15 +574,9 @@ def deploy_update(package_url: str) -> Dict:
             logger.info("Update deployed successfully (run-from-package URL swap)")
             return {"success": True, "status_code": patch_resp.status_code, "mode": "run-from-package"}
 
-        # Fallback: zipdeploy (dev / Oryx build mode)
+        # Fallback: zipdeploy (dev / Oryx build mode) — reuse the already
+        # downloaded + integrity-verified package; don't fetch it twice.
         logger.info("Oryx build mode detected — using zipdeploy")
-        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
-            resp = requests.get(package_url, timeout=300, stream=True)
-            resp.raise_for_status()
-            for chunk in resp.iter_content(chunk_size=8192):
-                tmp.write(chunk)
-            tmp_path = tmp.name
-
         with open(tmp_path, "rb") as f:
             deploy_resp = requests.post(
                 f"{site_base}/extensions/zipdeploy?api-version=2023-01-01",
@@ -486,7 +584,6 @@ def deploy_update(package_url: str) -> Dict:
                 data=f,
                 timeout=600,
             )
-        os.unlink(tmp_path)
 
         if deploy_resp.status_code in (200, 202):
             logger.info("Update deployed successfully (zipdeploy)")
@@ -505,6 +602,12 @@ def deploy_update(package_url: str) -> Dict:
     except Exception as e:
         logger.error(f"Update deployment failed: {e}")
         return {"success": False, "error": str(e)}
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 def check_and_apply_update(auto_apply: bool = False) -> Dict:
@@ -616,7 +719,9 @@ def check_and_apply_update(auto_apply: bool = False) -> Dict:
 
     if has_update and auto_apply:
         logger.info(f"Applying update: {local_ver} → {remote_ver}")
-        deploy_result = deploy_update(remote_info["package_url"])
+        deploy_result = deploy_update(
+            remote_info["package_url"], expected_sha256=remote_info.get("sha256")
+        )
         result["deploy_result"] = deploy_result
         result["action"] = "deployed" if deploy_result["success"] else "deploy_failed"
     elif has_update:
