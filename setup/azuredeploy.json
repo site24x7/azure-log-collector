@@ -261,6 +261,10 @@
             "functionAppPrincipalId": {
               "type": "string",
               "value": "[reference(resourceId('Microsoft.Web/sites', parameters('functionAppName')), '2023-01-01', 'Full').identity.principalId]"
+            },
+            "functionKey": {
+              "type": "string",
+              "value": "[listkeys(concat(resourceId('Microsoft.Web/sites', parameters('functionAppName')), '/host/default'), '2022-03-01').functionKeys.default]"
             }
           }
         }
@@ -269,7 +273,7 @@
     {
       "type": "Microsoft.Resources/deployments",
       "apiVersion": "2022-09-01",
-      "name": "s247-diag-logs-sub-roles",
+      "name": "[concat('s247-diag-logs-sub-roles-', variables('uniqueSuffix'))]",
       "location": "[deployment().location]",
       "dependsOn": [
         "s247-diag-logs-resources"
@@ -326,6 +330,14 @@
     "functionAppName": {
       "type": "string",
       "value": "[variables('functionAppName')]"
+    },
+    "dashboardUrl": {
+      "type": "string",
+      "value": "[concat('https://', variables('functionAppName'), '.azurewebsites.net/api/dashboard?code=', reference('s247-diag-logs-resources').outputs.functionKey.value)]"
+    },
+    "cleanupNote": {
+      "type": "string",
+      "value": "[concat('To fully remove this deployment, delete resource group \"', variables('rgName'), '\" AND the subscription-scope deployment named \"s247-diag-logs-sub-roles-', variables('uniqueSuffix'), '\" (found under Subscription → Deployments).')]"
     }
   }
 }

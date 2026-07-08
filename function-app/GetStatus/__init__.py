@@ -33,6 +33,9 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         last_scan_time = "never"
         s247_reachable = None
         scan_in_progress = False
+        current_phase = None
+        current_phase_name = None
+        phase_progress = None
         s247_errors = []
         scan_details = {}
         try:
@@ -43,6 +46,9 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             if "s247_reachable" in scan_state:
                 s247_reachable = scan_state["s247_reachable"]
             scan_in_progress = scan_state.get("in_progress", False)
+            current_phase = scan_state.get("current_phase")
+            current_phase_name = scan_state.get("current_phase_name")
+            phase_progress = scan_state.get("phase_progress")
             s247_errors = scan_state.get("s247_errors", [])
             # Expose scan details for the dashboard widget
             scan_details = {
@@ -72,6 +78,9 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         status = {
             "last_scan_time": last_scan_time,
             "scan_in_progress": scan_in_progress,
+            "current_phase": current_phase,
+            "current_phase_name": current_phase_name,
+            "phase_progress": phase_progress,
             "s247_reachable": s247_reachable,
             "s247_errors": s247_errors,
             "scan_details": scan_details,

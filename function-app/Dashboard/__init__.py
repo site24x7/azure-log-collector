@@ -124,6 +124,7 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
       <span id="versionBadge" class="badge" style="background:rgba(56,189,248,.15);color:var(--accent);display:none"></span>
       <span id="lastScan" class="stat-label"></span>
     </div>
+    <div id="scanPhase" style="display:none;padding:4px 0 8px"></div>
     <div class="stat-row">
       <div class="stat-item"><div class="num" id="totalRes">—</div><div class="stat-label">Total Resources</div></div>
       <div class="stat-item"><div class="num" style="color:var(--green)" id="configRes">—</div><div class="stat-label">Active Resources</div></div>
@@ -441,6 +442,25 @@ async function loadStatus() {
       scanText = 'Scan in progress\u2026';
     }
     document.getElementById('lastScan').textContent = scanText;
+
+    // Show phase progress banner when scan is running
+    let phaseEl = document.getElementById('scanPhase');
+    if (inProgress && s.current_phase) {
+      const total = 6;
+      const pct = Math.round((s.current_phase / total) * 100);
+      const prog = s.phase_progress ? ` \u2014 ${s.phase_progress}` : '';
+      phaseEl.innerHTML = `
+        <div style="margin:6px 0 2px;font-size:12px;color:var(--text-muted)">
+          Phase ${s.current_phase}/6: ${s.current_phase_name}${prog}
+        </div>
+        <div style="background:var(--border);border-radius:4px;height:4px;overflow:hidden">
+          <div style="background:var(--accent);width:${pct}%;height:100%;transition:width .4s"></div>
+        </div>`;
+      phaseEl.style.display = 'block';
+    } else {
+      phaseEl.style.display = 'none';
+    }
+
     // Reflect scan-in-progress state on the trigger button
     const scanBtn = document.getElementById('scanBtn');
     if (inProgress && !scanBtn._userTriggered) {
