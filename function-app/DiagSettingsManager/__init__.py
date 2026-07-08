@@ -16,19 +16,27 @@ _PHASE_NAMES = {
 }
 
 
-def _update_phase(save_scan_state, phase_num, progress=None, extra=None):
-    """Write current phase into scan state so the dashboard can show progress."""
-    state = {
+def _update_phase(phase_num, progress=None, extra=None):
+    """Merge the current phase into scan state so the dashboard can show progress.
+
+    Uses ``update_scan_state`` (a concurrency-safe RMW merge), NOT
+    ``save_scan_state`` (a full overwrite).  A full overwrite here would wipe
+    ``last_scan_time``, the resource counts, ``s247_reachable`` and
+    ``scan_started_at`` from the blob for the duration of the scan — exactly
+    the fields the dashboard reads while a scan is running.
+    """
+    from shared.config_store import update_scan_state
+    patch = {
         "in_progress": True,
         "current_phase": phase_num,
         "current_phase_name": _PHASE_NAMES.get(phase_num, f"Phase {phase_num}"),
     }
     if progress is not None:
-        state["phase_progress"] = progress
+        patch["phase_progress"] = progress
     if extra:
-        state.update(extra)
+        patch.update(extra)
     try:
-        save_scan_state(state)
+        update_scan_state(patch)
     except Exception:
         pass  # never let a progress update abort the scan
 
@@ -121,7 +129,7 @@ def run_scan():
     s247_client = Site24x7Client()
 
     # ── Phase 1: Get supported log types ──
-    _update_phase(save_scan_state, 1)
+    _update_phase(1)
     phase_start = _time.monotonic()
     supported_types = get_supported_log_types()
     if not supported_types:
@@ -165,7 +173,7 @@ def run_scan():
     configured_resources = get_configured_resources()
 
     # ── Phase 2: Discover resources ──
-    _update_phase(save_scan_state, 2)
+    _update_phase(2)
     phase_start = _time.monotonic()
     all_resources = azure_mgr.get_all_resources(subscription_ids)
     logging.info("DiagSettingsManager: Phase 2 (discovery) — %d resources in %.1fs [total=%.1fs]",
@@ -209,7 +217,7 @@ def run_scan():
     all_resource_ids = {r.get("id", "") for r in all_resources}
 
     # ── Phase 3: Region reconciliation ──
-    _update_phase(save_scan_state, 3)
+    _update_phase(3)
     phase_start = _time.monotonic()
     active_regions = region_mgr.get_active_regions(active_resources)
     provisioned_regions = region_mgr.get_provisioned_regions(resource_group)
@@ -228,7 +236,7 @@ def run_scan():
                f"Phase 3 done: regions in {_time.monotonic()-phase_start:.1f}s [total={_elapsed():.0f}s]")
 
     # ── Phase 4: Category discovery ──
-    _update_phase(save_scan_state, 4)
+    _update_phase(4)
     phase_start = _time.monotonic()
 
     # Process each active resource
@@ -421,7 +429,7 @@ def run_scan():
                f"Phase 4 done: {len(resource_category_map)} mapped, {len(categories_to_create)} to create in {_time.monotonic()-phase_start:.1f}s [total={_elapsed():.0f}s]")
 
     # ── Phase 5: Create log types ──
-    _update_phase(save_scan_state, 5, progress=f"{len(categories_to_create)} log types")
+    _update_phase(5, progress=f"{len(categories_to_create)} log types")
     phase_start = _time.monotonic()
 
     # Pre-flight check: validate S247 connectivity before attempting bulk creation.
@@ -717,7 +725,7 @@ def run_scan():
     )
     _log_event("info", "DiagSettingsManager",
                f"Phase 6 starting: {len(resources_to_configure)} to configure, {len(fast_pathed_ids)} fast-pathed [total={_elapsed():.0f}s]")
-    _update_phase(save_scan_state, 6, progress=f"0/{len(resources_to_configure)} resources")
+    _update_phase(6, progress=f"0/{len(resources_to_configure)} resources")
 
     config_start = _time.monotonic()
     pending_marks = []  # Collect (resource_id, categories, sa_name) for batch save
@@ -778,7 +786,7 @@ def run_scan():
                 _log_event("info", "DiagSettingsManager",
                            f"Phase 6 progress: {done_count}/{len(resources_to_configure)} ({elapsed:.0f}s) "
                            f"err={stats.get('errors',0)}")
-                _update_phase(save_scan_state, 6,
+                _update_phase(6,
                               progress=f"{done_count}/{len(resources_to_configure)} resources")
                 _flush_marks()
 
