@@ -75,7 +75,7 @@ def main(timer: func.TimerRequest) -> None:
 
 
 def _process_all_regions():
-    from shared.config_store import get_all_logtype_configs, clear_cache
+    from shared.config_store import get_all_logtype_configs, clear_cache, is_log_type_disabled
     from shared.site24x7_client import Site24x7Client
 
     clear_cache()
@@ -145,6 +145,19 @@ def _process_all_regions():
                 raw_category = cname.replace("insights-logs-", "")
                 category_normalized = raw_category.replace("-", "")
                 config_key = f"S247_{category_normalized}"
+
+                # Honor the Log Type Filters "disable" toggle at the processing
+                # layer — the one stage every source funnels through. This is
+                # what makes disabling effective for sources we don't configure
+                # (Entra ID / subscription logs), where we can't stop the logs
+                # being written; we just skip forwarding them to Site24x7.
+                if is_log_type_disabled(category_normalized):
+                    logger.info(
+                        "BlobLogProcessor: Log type '%s' is disabled — skipping "
+                        "container %s (account: %s)",
+                        category_normalized, cname, acct_name,
+                    )
+                    continue
 
                 source_config_b64 = None
                 using_general = False

@@ -150,6 +150,7 @@ No Event Hubs needed — storage-based polling eliminates the ~$11/region/month 
 │   ├── architecture-document.md
 │   ├── developer-guide.md
 │   ├── troubleshooting-guide.md
+│   ├── entra-id-logs.md           ← Tenant (Entra ID) log collection setup
 │   └── security-overview.md       ← Customer-facing security brief
 └── .github/workflows/
     └── release-function-app.yml  ← CI/CD: auto-release on VERSION bump

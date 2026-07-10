@@ -176,6 +176,7 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
   <button class="tab-btn active" onclick="switchTab('overview')">Overview</button>
   <button class="tab-btn" onclick="switchTab('filters')">Filters</button>
   <button class="tab-btn" onclick="switchTab('resources')">Resources</button>
+  <button class="tab-btn" onclick="switchTab('entra')" id="entraTabBtn">Entra ID</button>
   <button class="tab-btn" onclick="switchTab('debug')">🔍 Debug</button>
 </div>
 
@@ -321,6 +322,55 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
   </div>
 </div>
 
+<!-- Tab: Entra ID — tenant-log setup -->
+<div id="tab-entra" class="tab-panel">
+  <div class="card" style="margin-bottom:16px">
+    <h2>Entra ID (Tenant) Logs</h2>
+    <div class="alert alert-info" style="font-size:13px">
+      Entra ID logs (sign-ins, audit, provisioning, risk) are <strong>tenant-scoped</strong>,
+      not tied to any resource — so a fresh install collects none of them. Azure does
+      <strong>not</strong> let this Function App's managed identity turn them on, so setup is
+      two parts: <strong>(1)</strong> pick the log types below to provision them in Site24x7,
+      and <strong>(2)</strong> a tenant admin enables the matching Entra diagnostic setting in
+      Azure. We can confirm part 1 (created/failed); we <strong>cannot</strong> verify part 2.
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <h2>Step 1 — Choose log types to collect</h2>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:10px">
+      Toggling one on creates that log type in Site24x7 now. Status shows whether creation
+      succeeded. (Log types not yet defined in Site24x7 will report "failed" until they exist —
+      turn them on again afterwards.)
+    </p>
+    <div id="entraLogTypeList" style="display:flex;flex-direction:column;gap:6px">
+      <span class="stat-label">Loading…</span>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <h2>Step 2 — Target storage account</h2>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:8px">In Step 3, point the Entra diagnostic setting's "Archive to a storage account" at this account:</p>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <code id="entraTargetId" style="flex:1;min-width:280px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:12px;word-break:break-all">—</code>
+      <button class="btn btn-primary btn-sm" onclick="copyEntraTarget()">📋 Copy</button>
+    </div>
+    <div id="entraTargetWarn" style="display:none;font-size:12px;color:var(--yellow);margin-top:8px"></div>
+  </div>
+
+  <div class="card">
+    <h2>Step 3 — Enable on the Azure side <span style="font-size:11px;color:var(--muted)">(tenant admin, one-time)</span></h2>
+    <ol style="font-size:13px;line-height:1.9;padding-left:20px">
+      <li>Sign in as a user with the <strong>Security Administrator</strong> or <strong>Global Administrator</strong> role (a service principal / managed identity will be rejected).</li>
+      <li>Go to <strong>Entra ID → Monitoring &amp; health → Diagnostic settings → Add diagnostic setting</strong>.</li>
+      <li>Under <strong>Logs</strong>, tick the same categories you enabled in Step 1.</li>
+      <li>Under <strong>Destination details</strong>, choose <strong>Archive to a storage account</strong>, pick the subscription, and select the storage account from Step 2.</li>
+      <li><strong>Save.</strong> Logs land in <code>insights-logs-*</code> containers within ~5–15 min and are forwarded automatically. You can stop forwarding any type later from <strong>Filters → Log Type Filters</strong>.</li>
+    </ol>
+    <p style="font-size:12px;color:var(--muted)">CLI / PowerShell commands and troubleshooting: see <code>docs/entra-id-logs.md</code>.</p>
+  </div>
+</div>
+
 <!-- Tab: Debug -->
 <div id="tab-debug" class="tab-panel">
   <div class="grid">
@@ -413,6 +463,62 @@ function switchTab(name) {
 
 function escAttr(s) { return s.replace(/&/g,'&amp;').replace(/'/g,'&#39;').replace(/"/g,'&quot;'); }
 function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function copyEntraTarget() {
+  const val = document.getElementById('entraTargetId').textContent;
+  if (!val || val.startsWith('(')) { showToast('No target storage account yet', 'warning'); return; }
+  navigator.clipboard.writeText(val).then(
+    () => showToast('Storage account ID copied'),
+    () => showToast('Copy failed — select and copy manually', 'error')
+  );
+}
+
+function _entraStatusPill(lt) {
+  if (!lt.enabled) return `<span class="badge" style="font-size:10px">Not created</span>`;
+  if (lt.status === 'created')
+    return `<span class="badge badge-green" style="font-size:10px">✓ Created in Site24x7</span>`;
+  if (lt.status === 'failed')
+    return `<span class="badge badge-red" style="font-size:10px" title="${escAttr(lt.message||'')}">⚠ Create failed</span>`;
+  return `<span class="badge" style="font-size:10px">${esc(lt.status||'')}</span>`;
+}
+
+function renderEntraLogTypes(logtypes) {
+  const el = document.getElementById('entraLogTypeList');
+  if (!logtypes.length) { el.innerHTML = '<span class="stat-label">No categories defined.</span>'; return; }
+  el.innerHTML = logtypes.map(lt => `
+    <div class="toggle-row" style="padding:6px 10px;background:var(--bg);border-radius:6px;border:1px solid var(--border)">
+      <div style="min-width:0">
+        <div style="font-size:13px"><strong>${esc(lt.category)}</strong></div>
+        <div style="margin-top:3px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <span style="font-size:11px;color:var(--muted);font-family:monospace">${esc(lt.normalized)}</span>
+          ${_entraStatusPill(lt)}
+        </div>
+        ${lt.status === 'failed' && lt.message ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">${esc(lt.message)}</div>` : ''}
+      </div>
+      <button class="toggle ${lt.enabled ? 'on' : ''}" onclick="toggleEntraLogType('${escAttr(lt.normalized)}', ${lt.enabled})"></button>
+    </div>`).join('');
+}
+
+async function toggleEntraLogType(normalized, currentlyEnabled) {
+  const action = currentlyEnabled ? 'disable' : 'enable';
+  try {
+    const r = await api('entra-logtypes', {
+      method: 'POST',
+      body: JSON.stringify({ action, category: normalized }),
+    });
+    if (action === 'enable') {
+      showToast(r.status === 'created'
+        ? `${normalized}: created in Site24x7`
+        : `${normalized}: create failed — ${r.message || 'see status'}`,
+        r.status === 'created' ? 'success' : 'warning');
+    } else {
+      showToast(`${normalized}: removed`);
+    }
+    await loadStatus();  // refresh rows from server state
+  } catch (e) {
+    showToast('Failed to update Entra log type: ' + (e.message || e), 'error');
+  }
+}
 function fmtTime(iso) {
   if (!iso) return '?';
   return new Date(iso).toLocaleString(undefined, {
@@ -494,6 +600,20 @@ async function loadStatus() {
     lt.classList.toggle('on', s.general_logtype_enabled);
     const plt = document.getElementById('pipelineToggle');
     plt.classList.toggle('on', s.monitor_pipeline_resources);
+
+    // Entra ID tab — always visible.
+    const entra = s.entra || {};
+    renderEntraLogTypes(entra.logtypes || []);
+    const idEl = document.getElementById('entraTargetId');
+    const warnEl = document.getElementById('entraTargetWarn');
+    if (entra.target_storage_account_id) {
+      idEl.textContent = entra.target_storage_account_id;
+      warnEl.style.display = 'none';
+    } else {
+      idEl.textContent = '(not available yet)';
+      warnEl.textContent = 'No storage account provisioned yet. Run a scan (or wait for one) so a regional storage account exists — the exact target then appears here.';
+      warnEl.style.display = 'block';
+    }
 
     const sdInput = document.getElementById('safeDeleteDays');
     if (s.safe_delete_days != null) {

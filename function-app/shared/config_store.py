@@ -23,6 +23,7 @@ DISABLED_TYPES_BLOB = "disabled-logtypes.json"
 CONFIGURED_RESOURCES_BLOB = "configured-resources.json"
 CATEGORY_RESOURCE_TYPES_BLOB = "category-resource-types.json"
 SCAN_STATE_BLOB = "scan-state.json"
+ENTRA_STATE_BLOB = "entra-logtypes.json"
 
 # Sentinel for negative caching (config does not exist in blob)
 _MISSING = object()
@@ -360,6 +361,37 @@ def is_log_type_disabled(category: str) -> bool:
     """Check if a category is disabled."""
     disabled = get_disabled_log_types()
     return category.lower() in [d.lower() for d in disabled]
+
+
+# ─── Entra ID per-category provisioning state ───────────────────────────────
+# Tracks which tenant-scoped Entra log types the operator has provisioned on the
+# Site24x7 side (via the dashboard's Entra tab toggles), and whether the last
+# create attempt succeeded. Shape:
+#   { "<normalized>": {"enabled": bool, "status": "created"|"failed",
+#                       "message": str, "updated": iso8601} }
+
+
+def get_entra_logtype_states() -> Dict[str, Dict]:
+    """Return the per-category Entra provisioning state map (may be empty)."""
+    raw = _read_blob(ENTRA_STATE_BLOB)
+    if raw:
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            logger.error("Corrupt JSON in %s — treating as empty", ENTRA_STATE_BLOB)
+    return {}
+
+
+def set_entra_logtype_state(normalized: str, patch: Dict) -> Optional[Dict]:
+    """Merge ``patch`` into one category's Entra state (concurrency-safe RMW)."""
+    def mutate(current):
+        states = dict(current) if isinstance(current, dict) else {}
+        entry = dict(states.get(normalized, {}))
+        entry.update(patch)
+        states[normalized] = entry
+        return states
+
+    return _rmw_blob(ENTRA_STATE_BLOB, mutate, default={})
 
 
 # ─── Configured Resources Tracking ──────────────────────────────────────────

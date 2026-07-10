@@ -38,6 +38,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         phase_progress = None
         s247_errors = []
         scan_details = {}
+        entra_target_sa_id = ""
+        entra_target_sa_name = ""
         try:
             from shared.config_store import get_scan_state
             scan_state = get_scan_state()
@@ -64,6 +66,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 "regions_count": scan_state.get("regions_count", 0),
                 "unique_resource_types": scan_state.get("unique_resource_types", 0),
             }
+            entra_target_sa_id = scan_state.get("entra_target_storage_account_id", "")
+            entra_target_sa_name = scan_state.get("entra_target_storage_account_name", "")
         except Exception:
             pass
         if last_scan_time == "never":
@@ -95,6 +99,35 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             "resources": {"total": 0, "active": 0, "ignored": 0},
             "errors": [],
         }
+
+        # Entra ID (tenant-scoped) log collection status. Our MI cannot create
+        # the Entra diagnostic setting — a tenant admin does it manually and
+        # points it at entra.target_storage_account_id. Each category is
+        # provisioned on demand from the dashboard (UpdateEntraLogTypes); we
+        # surface its per-category state (created/failed). See docs/entra-id-logs.md.
+        try:
+            from shared.entra_config import ENTRA_LOG_CATEGORIES
+            from shared.config_store import get_entra_logtype_states
+            states = get_entra_logtype_states()
+            logtypes = []
+            for c in ENTRA_LOG_CATEGORIES:
+                st = states.get(c["normalized"], {})
+                logtypes.append({
+                    "category": c["category"],
+                    "normalized": c["normalized"],
+                    "enabled": bool(st.get("enabled", False)),
+                    "status": st.get("status", "not_created"),
+                    "message": st.get("message", ""),
+                    "updated": st.get("updated", ""),
+                })
+            status["entra"] = {
+                "target_storage_account_id": entra_target_sa_id,
+                "target_storage_account_name": entra_target_sa_name,
+                "logtypes": logtypes,
+                "any_enabled": any(lt["enabled"] for lt in logtypes),
+            }
+        except Exception as e:
+            status["errors"].append(f"entra: {e}")
 
         # Load ignore list
         try:
