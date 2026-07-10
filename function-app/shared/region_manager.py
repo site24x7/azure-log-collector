@@ -119,6 +119,30 @@ class RegionManager:
             )
         return region_map
 
+    def get_primary_storage_account(self, resource_group: str) -> Dict[str, str]:
+        """Return a stable "primary" regional storage account for non-regional
+        log sources (e.g. tenant-scoped Entra ID logs, which have no region).
+
+        Tenant/subscription-scoped diagnostic settings must target *some*
+        storage account; there's no natural region for them. We deterministically
+        pick the first provisioned regional SA (sorted by region name) so the
+        target is stable across scans. BlobLogProcessor already polls all
+        ``diag-logs-regional`` accounts, so logs landing here are processed.
+
+        Returns ``{"region", "name", "id"}`` or ``{}`` if none are provisioned
+        yet (e.g. before the first scan discovers any resource regions).
+        """
+        region_map = self.get_provisioned_regions(resource_group)
+        if not region_map:
+            return {}
+        region = sorted(region_map.keys())[0]
+        name = region_map[region]
+        sa_id = (
+            f"/subscriptions/{self.subscription_id}/resourceGroups/{resource_group}"
+            f"/providers/Microsoft.Storage/storageAccounts/{name}"
+        )
+        return {"region": region, "name": name, "id": sa_id}
+
     # ------------------------------------------------------------------
     # Provision / deprovision
     # ------------------------------------------------------------------

@@ -249,6 +249,33 @@ def _patched_run(proc_env, blob_specs, all_configs=None,
     return fake_client.post_logs.call_args_list, saved
 
 
+class TestDisabledLogTypeSkip:
+    def test_disabled_category_container_is_skipped(self, proc_env):
+        # The 'test' category (container insights-logs-test) is disabled via the
+        # Log Type Filters page — BlobLogProcessor must not forward its blobs,
+        # regardless of source (this is what makes disable effective for Entra /
+        # subscription logs, whose diagnostic settings we don't control).
+        payloads = [b'{"a":1}\n', b'{"a":2}\n', b'{"a":3}\n']
+        with patch("shared.config_store.is_log_type_disabled",
+                   side_effect=lambda c: c.lower() == "test"):
+            calls, cps = _patched_run(
+                proc_env,
+                [("PT1H.json", payloads, datetime.now(timezone.utc))],
+            )
+        assert calls == []          # nothing uploaded
+        assert cps == {}            # no checkpoint advanced for a skipped container
+
+    def test_enabled_category_still_processed(self, proc_env):
+        # Control: with nothing disabled, the same container IS processed.
+        payloads = [b'{"a":1}\n', b'{"a":2}\n', b'{"a":3}\n']
+        with patch("shared.config_store.is_log_type_disabled", return_value=False):
+            calls, _ = _patched_run(
+                proc_env,
+                [("PT1H.json", payloads, datetime.now(timezone.utc))],
+            )
+        assert len(calls) >= 1
+
+
 class TestBlockListProcessing:
     def test_skips_last_block_on_first_run(self, proc_env):
         # 3 blocks: only the first 2 should be read (last is in-flight tail).

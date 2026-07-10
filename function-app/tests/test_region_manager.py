@@ -100,6 +100,33 @@ class TestGetProvisionedRegions:
             assert result == {}
 
 
+class TestGetPrimaryStorageAccount:
+    def _acct(self, region, name):
+        a = MagicMock()
+        a.tags = {"managed-by": "s247-diag-logs", "purpose": "diag-logs-regional"}
+        a.primary_location = region
+        a.name = name
+        return a
+
+    def test_picks_first_region_alphabetically(self, rm):
+        # westus provisioned first, but eastus sorts first → deterministic
+        accts = [self._acct("westus", "s247diagwestusx"), self._acct("eastus", "s247diageastusx")]
+        with patch("shared.region_manager.StorageManagementClient") as mock_cls:
+            mock_cls.return_value.storage_accounts.list_by_resource_group.return_value = accts
+            result = rm.get_primary_storage_account("my-rg")
+            assert result["region"] == "eastus"
+            assert result["name"] == "s247diageastusx"
+            assert result["id"] == (
+                "/subscriptions/sub-123/resourceGroups/my-rg"
+                "/providers/Microsoft.Storage/storageAccounts/s247diageastusx"
+            )
+
+    def test_empty_when_none_provisioned(self, rm):
+        with patch("shared.region_manager.StorageManagementClient") as mock_cls:
+            mock_cls.return_value.storage_accounts.list_by_resource_group.return_value = []
+            assert rm.get_primary_storage_account("my-rg") == {}
+
+
 class TestProvisionStorageAccount:
     def test_creates_account_and_container(self, rm):
         mock_sa = MagicMock()
