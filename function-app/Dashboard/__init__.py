@@ -521,10 +521,8 @@ function _entraStatusPill(lt) {
       return `<span class="badge badge-red" style="font-size:10px" title="${escAttr(lt.message||'')}">⚠ Create failed</span>`;
     return `<span class="badge" style="font-size:10px">${esc(lt.status||'')}</span>`;
   }
-  // Toggle off. Disabling only stops our collection — it never deletes the
-  // log type in Site24x7, so don't say "not created" for one that was created.
-  if (lt.status === 'disabled')
-    return `<span class="badge" style="font-size:10px" title="Not collecting. The log type still exists in Site24x7 — disabling only stops forwarding.">Off · kept in Site24x7</span>`;
+  // Toggle off (whether never created or created-then-disabled). Disabling
+  // only stops our collection; it never deletes the Site24x7 log type.
   return `<span class="badge" style="font-size:10px">Off</span>`;
 }
 
