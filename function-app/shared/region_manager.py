@@ -230,6 +230,21 @@ class RegionManager:
         )
         return result
 
+    def deprovision_tenant_storage_account(self, resource_group: str) -> bool:
+        """Delete the dedicated tenant SA when no Entra log type is enabled.
+
+        Reuses ``deprovision_storage_account`` so the same safeguards apply —
+        it skips deletion if the account still has recent (unprocessed) blobs,
+        and restores the lock if the delete fails. No-op if the account doesn't
+        exist. Returns True only if it was actually deleted.
+        """
+        existing = self.get_tenant_storage_account(resource_group)
+        if not existing:
+            return False
+        return self.deprovision_storage_account(
+            resource_group, existing.get("region", ""), existing["name"]
+        )
+
     # ------------------------------------------------------------------
     # Provision / deprovision
     # ------------------------------------------------------------------

@@ -428,15 +428,24 @@ def run_scan():
     _log_event("info", "DiagSettingsManager",
                f"Phase 4 done: {len(resource_category_map)} mapped, {len(categories_to_create)} to create in {_time.monotonic()-phase_start:.1f}s [total={_elapsed():.0f}s]")
 
-    # ── Phase 4d: ensure the dedicated tenant-log (Entra) storage account ──
-    # Entra logs are tenant-scoped (no region) and provisioned per-category on
-    # demand from the dashboard's Entra tab; the tenant admin points the Entra
-    # diagnostic setting at a storage account manually. We give them a stable,
-    # dedicated SA (tag diag-logs-tenant) that region reconciliation never
-    # touches, so the target never changes out from under them. Idempotent.
-    entra_target_sa = region_mgr.ensure_tenant_storage_account(
-        resource_group, diag_storage_suffix
-    )
+    # ── Phase 4d: dedicated tenant-log (Entra) storage account ──
+    # Entra logs are tenant-scoped (no region). The dedicated SA (tag
+    # diag-logs-tenant) is created ONLY while at least one Entra log type is
+    # enabled on the dashboard, and cleaned up here when all are turned off —
+    # so we don't provision idle storage for deployments not using Entra. When
+    # present it's a stable target region reconciliation never touches.
+    from shared.config_store import get_entra_logtype_states
+    _entra_states = get_entra_logtype_states()
+    _any_entra_enabled = any(s.get("enabled") for s in _entra_states.values())
+    if _any_entra_enabled:
+        entra_target_sa = region_mgr.ensure_tenant_storage_account(
+            resource_group, diag_storage_suffix
+        )
+    else:
+        # No Entra type enabled — remove the dedicated SA if one exists
+        # (safe-delete guard skips it while it still holds recent blobs).
+        region_mgr.deprovision_tenant_storage_account(resource_group)
+        entra_target_sa = {}
 
     # ── Phase 5: Create log types ──
     _update_phase(5, progress=f"{len(categories_to_create)} log types")

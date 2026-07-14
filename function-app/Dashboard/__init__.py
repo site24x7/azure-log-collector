@@ -611,7 +611,9 @@ async function loadStatus() {
       warnEl.style.display = 'none';
     } else {
       idEl.textContent = '(not available yet)';
-      warnEl.textContent = 'The dedicated tenant storage account has not been created yet. Run a scan (or wait for one) — it is provisioned automatically and the exact target then appears here.';
+      warnEl.textContent = entra.any_enabled
+        ? 'A log type is enabled but the dedicated storage account has not been created yet. Run a scan (or wait for one) — it is provisioned automatically and the exact target then appears here.'
+        : 'Enable at least one log type in Step 1 first. The dedicated storage account is created on the next scan (and removed when all types are turned off); its ID then appears here.';
       warnEl.style.display = 'block';
     }
 

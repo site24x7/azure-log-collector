@@ -38,10 +38,11 @@ the row shows the result:
   yet (the sign-in family is added over time). Toggle it on again once it exists.
 
 The tab also shows the **target storage account** for Step 3 — a dedicated,
-non-regional storage account (tagged `diag-logs-tenant`) provisioned
-automatically and left untouched by region reconciliation, so the target never
-changes. If no scan has run yet, it says so — run a scan first so the account is
-created.
+non-regional storage account (tagged `diag-logs-tenant`). It's created on the
+next scan **once at least one log type is enabled**, left untouched by region
+reconciliation (so the target never changes), and **removed** on a later scan if
+you turn all Entra log types back off. Until a type is enabled and a scan runs,
+the tab tells you what to do.
 
 > This is our side only. It does not, and cannot, enable anything in Azure —
 > that's Step 3.
@@ -136,9 +137,9 @@ storage account, and the collector begins forwarding. Check the dashboard's
 - **403 creating the setting** — you're authenticating as a service principal /
   managed identity, or you lack Security Administrator. Use a user login with the
   right role.
-- **Dashboard shows no target storage account** — the dedicated tenant storage
-  account hasn't been created yet. Run a scan (or wait for the scheduled one) —
-  it's provisioned automatically.
+- **Dashboard shows no target storage account** — enable at least one log type
+  (Step 1), then run a scan (or wait for the scheduled one). The dedicated
+  tenant storage account is created only while a type is enabled.
 - **Logs land but aren't forwarded** — the Site24x7 log type may not exist yet
   server-side (the sign-in family requires server-side log-type definitions).
   `auditlogs` works out of the box.

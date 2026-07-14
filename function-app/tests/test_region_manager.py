@@ -162,6 +162,25 @@ class TestTenantStorageAccount:
             assert tags["purpose"] == "diag-logs-tenant"
             assert "region" not in tags
 
+    def test_deprovision_noop_when_absent(self, rm):
+        with patch("shared.region_manager.StorageManagementClient") as mock_cls:
+            mock_cls.return_value.storage_accounts.list_by_resource_group.return_value = [
+                self._regional_acct()
+            ]
+            # No tenant SA present → nothing to delete
+            assert rm.deprovision_tenant_storage_account("my-rg") is False
+
+    def test_deprovision_delegates_when_present(self, rm):
+        with patch("shared.region_manager.StorageManagementClient") as mock_cls, \
+             patch.object(rm, "deprovision_storage_account", return_value=True) as dep:
+            mock_cls.return_value.storage_accounts.list_by_resource_group.return_value = [
+                self._tenant_acct()
+            ]
+            assert rm.deprovision_tenant_storage_account("my-rg") is True
+            dep.assert_called_once()
+            # called with the tenant SA's name
+            assert dep.call_args[0][2] == "s247diagtenantabc"
+
 
 class TestProvisionStorageAccount:
     def test_creates_account_and_container(self, rm):
