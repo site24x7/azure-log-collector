@@ -22,14 +22,14 @@ pipeline as everything else — no ongoing manual work.
 
 | Step | Who |
 |------|-----|
-| Create the Site24x7 log types for Entra categories | **Collector** (per-category toggle on the Entra tab) |
+| Create the Site24x7 log types for Entra categories | **Collector** (per-category toggle on the Platform Logs tab) |
 | Expose a target storage account to send Entra logs to | **Collector** (shown in the dashboard) |
 | Create the Entra ID diagnostic setting pointed at that account | **You** (tenant admin, one-time, manual) |
 | Poll the storage account and forward logs to Site24x7 AppLogs | **Collector** (automatic) |
 
 ## Step 1 — Provision the log types (dashboard)
 
-Open the dashboard's **Entra ID** tab and toggle on each log type you want to
+Open the dashboard's **Platform Logs** tab (Entra ID section) and toggle on each log type you want to
 collect. Toggling one on **creates that log type in Site24x7 immediately** and
 the row shows the result:
 
@@ -51,7 +51,7 @@ the tab tells you what to do.
 
 You need the **Security Administrator** or **Global Administrator** role in Entra ID.
 
-Copy the exact storage account resource ID from the dashboard's **Entra ID** tab
+Copy the exact storage account resource ID from the dashboard's **Platform Logs** tab
 first, then use any one of the following.
 
 ### Portal
@@ -66,7 +66,7 @@ first, then use any one of the following.
 ### Azure CLI
 
 ```bash
-# STORAGE_ID = the value copied from the dashboard's Entra ID tab
+# STORAGE_ID = the value copied from the dashboard's Platform Logs tab
 az monitor diagnostic-settings create \
   --name s247-entra-logs \
   --resource /providers/microsoft.aadiam \
@@ -100,7 +100,7 @@ Set-AzDiagnosticSetting `
 
 ## Categories
 
-Toggle any of these on from the Entra tab to create their Site24x7 log type:
+Toggle any of these on from the Platform Logs tab to create their Site24x7 log type:
 
 | Azure category | Site24x7 log type | Availability |
 |----------------|-------------------|--------------|

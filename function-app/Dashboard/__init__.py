@@ -176,7 +176,7 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
   <button class="tab-btn active" onclick="switchTab('overview')">Overview</button>
   <button class="tab-btn" onclick="switchTab('filters')">Filters</button>
   <button class="tab-btn" onclick="switchTab('resources')">Resources</button>
-  <button class="tab-btn" onclick="switchTab('entra')" id="entraTabBtn">Entra ID</button>
+  <button class="tab-btn" onclick="switchTab('entra')" id="entraTabBtn">Platform Logs</button>
   <button class="tab-btn" onclick="switchTab('debug')">🔍 Debug</button>
 </div>
 
@@ -322,17 +322,28 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
   </div>
 </div>
 
-<!-- Tab: Entra ID — tenant-log setup -->
+<!-- Tab: Platform Logs — non-resource (tenant/subscription) log sources -->
 <div id="tab-entra" class="tab-panel">
   <div class="card" style="margin-bottom:16px">
-    <h2>Entra ID (Tenant) Logs</h2>
+    <h2>Platform Logs</h2>
     <div class="alert alert-info" style="font-size:13px">
-      Entra ID logs (sign-ins, audit, provisioning, risk) are <strong>tenant-scoped</strong>,
-      not tied to any resource — so a fresh install collects none of them. Azure does
-      <strong>not</strong> let this Function App's managed identity turn them on, so setup is
-      two parts: <strong>(1)</strong> pick the log types below to provision them in Site24x7,
-      and <strong>(2)</strong> a tenant admin enables the matching Entra diagnostic setting in
-      Azure. We can confirm part 1 (created/failed); we <strong>cannot</strong> verify part 2.
+      Logs that live <strong>above individual resources</strong> — at the tenant or
+      subscription level — and so aren't picked up by the resource scan. Configure them here.
+      Resource-level diagnostic logs are handled automatically and don't appear on this tab.
+      <div style="margin-top:8px">
+        <strong>Available:</strong> Microsoft Entra ID (tenant). &nbsp;
+        <strong>Planned:</strong> Azure Activity logs (subscription), and other non-resource sources.
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:8px;background:transparent;border:none;padding:0 2px">
+    <h2 style="font-size:14px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Microsoft Entra ID (tenant)</h2>
+    <div style="font-size:12px;color:var(--muted)">
+      Sign-ins, audit, provisioning, risk. Setup is two parts: <strong>(1)</strong> enable the
+      log types below to provision them in Site24x7, and <strong>(2)</strong> a tenant admin
+      enables the matching Entra diagnostic setting in Azure. We confirm part 1 (created/failed);
+      we <strong>cannot</strong> verify part 2.
     </div>
   </div>
 
