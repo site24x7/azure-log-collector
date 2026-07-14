@@ -361,10 +361,22 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
 
   <div class="card" style="margin-bottom:16px">
     <h2>Step 2 — Target storage account</h2>
-    <p style="font-size:12px;color:var(--muted);margin-bottom:8px">In Step 3, point the Entra diagnostic setting's "Archive to a storage account" at this account:</p>
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <code id="entraTargetId" style="flex:1;min-width:280px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:12px;word-break:break-all">—</code>
-      <button class="btn btn-primary btn-sm" onclick="copyEntraTarget()">📋 Copy</button>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:8px">In Step 3's "Archive to a storage account", select exactly these — matching the dropdowns on the Azure diagnostic settings page:</p>
+    <div id="entraTargetFields" style="display:none;flex-direction:column;gap:6px">
+      <div style="display:flex;gap:8px;align-items:center">
+        <span style="min-width:110px;font-size:12px;color:var(--muted)">Subscription</span>
+        <code id="entraTargetSub" style="flex:1;min-width:0;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:12px;word-break:break-all"></code>
+        <button class="btn btn-primary btn-sm" onclick="copyField('entraTargetSub','Subscription')">📋</button>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span style="min-width:110px;font-size:12px;color:var(--muted)">Storage account</span>
+        <code id="entraTargetName" style="flex:1;min-width:0;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:12px;word-break:break-all"></code>
+        <button class="btn btn-primary btn-sm" onclick="copyField('entraTargetName','Storage account')">📋</button>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span style="min-width:110px;font-size:12px;color:var(--muted)">Resource group</span>
+        <code id="entraTargetRg" style="flex:1;min-width:0;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:12px;word-break:break-all;color:var(--muted)"></code>
+      </div>
     </div>
     <div id="entraTargetWarn" style="display:none;font-size:12px;color:var(--yellow);margin-top:8px"></div>
   </div>
@@ -475,11 +487,11 @@ function switchTab(name) {
 function escAttr(s) { return s.replace(/&/g,'&amp;').replace(/'/g,'&#39;').replace(/"/g,'&quot;'); }
 function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
-function copyEntraTarget() {
-  const val = document.getElementById('entraTargetId').textContent;
-  if (!val || val.startsWith('(')) { showToast('No target storage account yet', 'warning'); return; }
+function copyField(elId, label) {
+  const val = (document.getElementById(elId).textContent || '').trim();
+  if (!val) { showToast('Nothing to copy yet', 'warning'); return; }
   navigator.clipboard.writeText(val).then(
-    () => showToast('Storage account ID copied'),
+    () => showToast(`${label} copied`),
     () => showToast('Copy failed — select and copy manually', 'error')
   );
 }
@@ -615,16 +627,25 @@ async function loadStatus() {
     // Entra ID tab — always visible.
     const entra = s.entra || {};
     renderEntraLogTypes(entra.logtypes || []);
-    const idEl = document.getElementById('entraTargetId');
+    const fieldsEl = document.getElementById('entraTargetFields');
     const warnEl = document.getElementById('entraTargetWarn');
-    if (entra.target_storage_account_id) {
-      idEl.textContent = entra.target_storage_account_id;
+    const tid = entra.target_storage_account_id || '';
+    if (tid) {
+      // Split the resource ID into the pieces the Azure portal asks for.
+      const parts = tid.split('/');
+      const sub = parts[2] || '';
+      const rg = parts[4] || '';
+      const name = entra.target_storage_account_name || parts[parts.length - 1] || '';
+      document.getElementById('entraTargetSub').textContent = sub;
+      document.getElementById('entraTargetName').textContent = name;
+      document.getElementById('entraTargetRg').textContent = rg;
+      fieldsEl.style.display = 'flex';
       warnEl.style.display = 'none';
     } else {
-      idEl.textContent = '(not available yet)';
+      fieldsEl.style.display = 'none';
       warnEl.textContent = entra.any_enabled
-        ? 'A log type is enabled but the dedicated storage account has not been created yet. Run a scan (or wait for one) — it is provisioned automatically and the exact target then appears here.'
-        : 'Enable at least one log type in Step 1 first. The dedicated storage account is created on the next scan (and removed when all types are turned off); its ID then appears here.';
+        ? 'A log type is enabled but the dedicated storage account has not been created yet. Run a scan (or wait for one) — it is provisioned automatically and the fields then appear here.'
+        : 'Enable at least one log type in Step 1 first. The dedicated storage account is created on the next scan (and removed when all types are turned off); the subscription and account then appear here.';
       warnEl.style.display = 'block';
     }
 
