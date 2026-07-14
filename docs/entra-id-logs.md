@@ -37,9 +37,11 @@ the row shows the result:
 - **⚠ Create failed** — usually means the log type isn't defined in Site24x7
   yet (the sign-in family is added over time). Toggle it on again once it exists.
 
-The tab also shows the **target storage account** for Step 3 (the first
-provisioned regional storage account). If no scan has run yet, it says so — run
-a scan first so a storage account exists.
+The tab also shows the **target storage account** for Step 3 — a dedicated,
+non-regional storage account (tagged `diag-logs-tenant`) provisioned
+automatically and left untouched by region reconciliation, so the target never
+changes. If no scan has run yet, it says so — run a scan first so the account is
+created.
 
 > This is our side only. It does not, and cannot, enable anything in Azure —
 > that's Step 3.
@@ -134,8 +136,9 @@ storage account, and the collector begins forwarding. Check the dashboard's
 - **403 creating the setting** — you're authenticating as a service principal /
   managed identity, or you lack Security Administrator. Use a user login with the
   right role.
-- **Dashboard shows no target storage account** — no regional storage account
-  exists yet. Run a scan (or wait for the scheduled one) so one is provisioned.
+- **Dashboard shows no target storage account** — the dedicated tenant storage
+  account hasn't been created yet. Run a scan (or wait for the scheduled one) —
+  it's provisioned automatically.
 - **Logs land but aren't forwarded** — the Site24x7 log type may not exist yet
   server-side (the sign-in family requires server-side log-type definitions).
   `auditlogs` works out of the box.

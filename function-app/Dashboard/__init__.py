@@ -611,7 +611,7 @@ async function loadStatus() {
       warnEl.style.display = 'none';
     } else {
       idEl.textContent = '(not available yet)';
-      warnEl.textContent = 'No storage account provisioned yet. Run a scan (or wait for one) so a regional storage account exists — the exact target then appears here.';
+      warnEl.textContent = 'The dedicated tenant storage account has not been created yet. Run a scan (or wait for one) — it is provisioned automatically and the exact target then appears here.';
       warnEl.style.display = 'block';
     }
 

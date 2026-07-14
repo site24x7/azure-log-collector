@@ -428,13 +428,15 @@ def run_scan():
     _log_event("info", "DiagSettingsManager",
                f"Phase 4 done: {len(resource_category_map)} mapped, {len(categories_to_create)} to create in {_time.monotonic()-phase_start:.1f}s [total={_elapsed():.0f}s]")
 
-    # ── Phase 4d: record the Entra ID (tenant-log) target storage account ──
-    # Entra logs are provisioned per-category on demand from the dashboard's
-    # Entra tab (UpdateEntraLogTypes), and the tenant admin points the Entra
-    # diagnostic setting at a storage account manually. We only need to publish
-    # WHICH storage account they should target — the first regional SA. Recorded
-    # unconditionally (cheap) so the guide always has a concrete target to show.
-    entra_target_sa = region_mgr.get_primary_storage_account(resource_group)
+    # ── Phase 4d: ensure the dedicated tenant-log (Entra) storage account ──
+    # Entra logs are tenant-scoped (no region) and provisioned per-category on
+    # demand from the dashboard's Entra tab; the tenant admin points the Entra
+    # diagnostic setting at a storage account manually. We give them a stable,
+    # dedicated SA (tag diag-logs-tenant) that region reconciliation never
+    # touches, so the target never changes out from under them. Idempotent.
+    entra_target_sa = region_mgr.ensure_tenant_storage_account(
+        resource_group, diag_storage_suffix
+    )
 
     # ── Phase 5: Create log types ──
     _update_phase(5, progress=f"{len(categories_to_create)} log types")
