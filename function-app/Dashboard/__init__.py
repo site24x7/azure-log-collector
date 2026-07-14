@@ -75,6 +75,14 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
   .ignore-input { flex: 1; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 6px 10px; border-radius: 6px; font-size: 12px; transition: background .3s, border-color .3s; }
   .ignore-input:focus { outline: none; border-color: var(--accent); }
   .btn-sm { padding: 6px 12px; font-size: 12px; }
+  /* Copy box — value with an inline copy icon, sized to its content */
+  .copybox { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px 5px 10px; }
+  .copybox code { background: transparent; border: none; padding: 0; font-size: 12px; word-break: break-all; }
+  .copybtn { position: relative; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 22px; height: 22px; border: none; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; transition: background .15s, color .15s; }
+  .copybtn:hover { background: var(--border); color: var(--accent); }
+  .copybtn svg { width: 14px; height: 14px; }
+  .copybtn::after { content: 'Copy'; visibility: hidden; opacity: 0; position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%); background: var(--card); border: 1px solid var(--border); color: var(--text); padding: 3px 8px; border-radius: 6px; font-size: 11px; white-space: nowrap; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,.3); transition: opacity .15s; pointer-events: none; }
+  .copybtn:hover::after { visibility: visible; opacity: 1; }
   /* Tabs */
   .tab-bar { display: flex; gap: 0; margin-bottom: 16px; border-bottom: 2px solid var(--border); position: sticky; top: 0; z-index: 50; background: var(--bg); padding-top: 8px; }
   .tab-btn { padding: 10px 20px; font-size: 14px; font-weight: 600; background: none; border: none; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -2px; transition: .2s; }
@@ -362,23 +370,27 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
   <div class="card" style="margin-bottom:16px">
     <h2>Step 2 — Target storage account</h2>
     <p style="font-size:12px;color:var(--muted);margin-bottom:8px">In Step 3's "Archive to a storage account", select exactly these — matching the dropdowns on the Azure diagnostic settings page:</p>
-    <div id="entraTargetFields" style="display:none;flex-direction:column;gap:6px">
+    <div id="entraTargetFields" style="display:none;flex-direction:column;gap:8px">
       <div style="display:flex;gap:8px;align-items:flex-start">
-        <span style="min-width:110px;font-size:12px;color:var(--muted);padding-top:8px">Subscription</span>
-        <div style="flex:1;min-width:0">
-          <code id="entraTargetSub" style="display:block;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:12px;word-break:break-all"></code>
-          <div id="entraTargetSubId" style="font-size:11px;color:var(--muted);margin-top:2px;word-break:break-all"></div>
+        <span style="min-width:110px;font-size:12px;color:var(--muted);padding-top:6px">Subscription</span>
+        <div style="display:inline-flex;flex-direction:column;align-items:flex-start;gap:2px;min-width:0">
+          <span class="copybox">
+            <code id="entraTargetSub"></code>
+            <button class="copybtn" aria-label="Copy" onclick="copyField('entraTargetSub','Subscription')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button>
+          </span>
+          <div id="entraTargetSubId" style="font-size:11px;color:var(--muted);padding-left:2px;word-break:break-all"></div>
         </div>
-        <button class="btn btn-primary btn-sm" onclick="copyField('entraTargetSub','Subscription')">📋</button>
       </div>
       <div style="display:flex;gap:8px;align-items:center">
         <span style="min-width:110px;font-size:12px;color:var(--muted)">Storage account</span>
-        <code id="entraTargetName" style="flex:1;min-width:0;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:12px;word-break:break-all"></code>
-        <button class="btn btn-primary btn-sm" onclick="copyField('entraTargetName','Storage account')">📋</button>
+        <span class="copybox">
+          <code id="entraTargetName"></code>
+          <button class="copybtn" aria-label="Copy" onclick="copyField('entraTargetName','Storage account')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button>
+        </span>
       </div>
       <div style="display:flex;gap:8px;align-items:center">
         <span style="min-width:110px;font-size:12px;color:var(--muted)">Resource group</span>
-        <code id="entraTargetRg" style="flex:1;min-width:0;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:12px;word-break:break-all;color:var(--muted)"></code>
+        <code id="entraTargetRg" style="font-size:12px;color:var(--muted);word-break:break-all"></code>
       </div>
     </div>
     <div id="entraTargetWarn" style="display:none;font-size:12px;color:var(--yellow);margin-top:8px"></div>
