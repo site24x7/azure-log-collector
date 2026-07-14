@@ -6,16 +6,6 @@ from datetime import datetime, timezone
 import azure.functions as func
 
 
-_PHASE_NAMES = {
-    1: "Fetching supported log types from Site24x7",
-    2: "Discovering Azure resources",
-    3: "Provisioning regional storage accounts",
-    4: "Mapping diagnostic categories to resources",
-    5: "Creating log types in Site24x7",
-    6: "Configuring diagnostic settings",
-}
-
-
 def _update_phase(phase_num, progress=None, extra=None):
     """Merge the current phase into scan state so the dashboard can show progress.
 
@@ -26,10 +16,11 @@ def _update_phase(phase_num, progress=None, extra=None):
     the fields the dashboard reads while a scan is running.
     """
     from shared.config_store import update_scan_state
+    from shared.scan_phases import SCAN_PHASES
     patch = {
         "in_progress": True,
         "current_phase": phase_num,
-        "current_phase_name": _PHASE_NAMES.get(phase_num, f"Phase {phase_num}"),
+        "current_phase_name": SCAN_PHASES.get(phase_num, f"Phase {phase_num}"),
     }
     if progress is not None:
         patch["phase_progress"] = progress
@@ -44,6 +35,7 @@ def _update_phase(phase_num, progress=None, extra=None):
 def _save_early_scan_state(save_scan_state, all_resources, active_resources, ignored_count):
     """Save a preliminary scan state so the Dashboard updates even if the
     full scan times out.  The final save at the end overwrites this."""
+    from shared.scan_phases import SCAN_PHASES
     scan_time = datetime.now(timezone.utc).isoformat()
     save_scan_state({
         "last_scan_time": scan_time,
@@ -58,7 +50,7 @@ def _save_early_scan_state(save_scan_state, all_resources, active_resources, ign
         "s247_reachable": None,
         "in_progress": True,
         "current_phase": 3,
-        "current_phase_name": _PHASE_NAMES[3],
+        "current_phase_name": SCAN_PHASES[3],
     })
 
 

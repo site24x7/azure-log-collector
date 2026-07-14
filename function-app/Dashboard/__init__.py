@@ -587,19 +587,31 @@ async function loadStatus() {
     }
     document.getElementById('lastScan').textContent = scanText;
 
-    // Show phase progress banner when scan is running
+    // Show the full phase stepper while a scan is running
     let phaseEl = document.getElementById('scanPhase');
     if (inProgress && s.current_phase) {
-      const total = 6;
-      const pct = Math.round((s.current_phase / total) * 100);
-      const prog = s.phase_progress ? ` \u2014 ${s.phase_progress}` : '';
-      phaseEl.innerHTML = `
-        <div style="margin:6px 0 2px;font-size:12px;color:var(--text-muted)">
-          Phase ${s.current_phase}/6: ${s.current_phase_name}${prog}
-        </div>
-        <div style="background:var(--border);border-radius:4px;height:4px;overflow:hidden">
-          <div style="background:var(--accent);width:${pct}%;height:100%;transition:width .4s"></div>
+      const phases = (s.scan_phases && s.scan_phases.length)
+        ? s.scan_phases
+        : [{num: s.current_phase, name: s.current_phase_name}];
+      const total = phases.length;
+      const cur = s.current_phase;
+      const pct = Math.round((cur / total) * 100);
+      const rows = phases.map(p => {
+        let icon, color, weight;
+        if (p.num < cur)      { icon = '\u2713'; color = 'var(--green)'; weight = '400'; }   // done
+        else if (p.num === cur) { icon = '\u25b6'; color = 'var(--accent)'; weight = '600'; } // active
+        else                  { icon = '\u00b7'; color = 'var(--muted)'; weight = '400'; }    // pending
+        const prog = (p.num === cur && s.phase_progress) ? ` \u2014 ${esc(s.phase_progress)}` : '';
+        return `<div style="display:flex;gap:8px;font-size:12px;color:${color};font-weight:${weight};line-height:1.7">
+          <span style="width:12px;text-align:center;flex-shrink:0">${icon}</span>
+          <span>${p.num}. ${esc(p.name)}${prog}</span>
         </div>`;
+      }).join('');
+      phaseEl.innerHTML = `
+        <div style="background:var(--border);border-radius:4px;height:4px;overflow:hidden;margin:6px 0 8px">
+          <div style="background:var(--accent);width:${pct}%;height:100%;transition:width .4s"></div>
+        </div>
+        <div style="padding-left:2px">${rows}</div>`;
       phaseEl.style.display = 'block';
     } else {
       phaseEl.style.display = 'none';

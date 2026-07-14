@@ -76,6 +76,13 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             last_scan_time = os.environ.get("LAST_SCAN_TIME", "never")
         update_check_url = os.environ.get("UPDATE_CHECK_URL", "")
 
+        def _scan_phase_list():
+            try:
+                from shared.scan_phases import phase_list
+                return phase_list()
+            except Exception:
+                return []
+
         logger.info(
             "GetStatus: Config loaded — subs=%s, rg=%s, processing=%s",
             subscription_ids, resource_group, processing_enabled,
@@ -87,6 +94,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             "current_phase": current_phase,
             "current_phase_name": current_phase_name,
             "phase_progress": phase_progress,
+            "scan_phases": _scan_phase_list(),
             "s247_reachable": s247_reachable,
             "s247_errors": s247_errors,
             "scan_details": scan_details,
