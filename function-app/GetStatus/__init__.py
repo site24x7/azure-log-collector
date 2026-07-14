@@ -117,15 +117,21 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         # surface its per-category state (created/failed). See docs/entra-id-logs.md.
         try:
             from shared.entra_config import ENTRA_LOG_CATEGORIES
-            from shared.config_store import get_entra_logtype_states
+            from shared.config_store import get_entra_logtype_states, get_supported_log_types
             states = get_entra_logtype_states()
+            supported_map = get_supported_log_types() or {}
+            # Only mark "not supported" when we actually know the supported set
+            # (a scan has populated it); before that, don't prejudge.
+            know_supported = bool(supported_map)
             logtypes = []
             for c in ENTRA_LOG_CATEGORIES:
                 st = states.get(c["normalized"], {})
+                is_supported = (not know_supported) or (c["normalized"] in supported_map)
                 logtypes.append({
                     "category": c["category"],
                     "normalized": c["normalized"],
-                    "enabled": bool(st.get("enabled", False)),
+                    "supported": is_supported,
+                    "enabled": bool(st.get("enabled", False)) and is_supported,
                     "status": st.get("status", "not_created"),
                     "message": st.get("message", ""),
                     "updated": st.get("updated", ""),

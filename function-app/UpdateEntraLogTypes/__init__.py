@@ -90,9 +90,11 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 if e.get("message"):
                     msg = e["message"]
                     break
-            # Common, expected case: the sign-in family isn't defined server-side yet.
+            # Don't leave it "enabled" if the create didn't take — otherwise a
+            # failed/unsupported type lingers as enabled (and keeps the tenant SA
+            # provisioned). The toggle simply reverts.
             msg += " If this log type hasn't been created in Site24x7 yet, it will succeed once it is."
-            state = {"enabled": True, "status": "failed", "message": msg, "updated": now}
+            state = {"enabled": False, "status": "failed", "message": msg, "updated": now}
 
         set_entra_logtype_state(normalized, state)
         return _ok({"category": normalized, **state, "states": get_entra_logtype_states()})

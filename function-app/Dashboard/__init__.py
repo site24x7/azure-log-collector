@@ -358,9 +358,9 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
   <div class="card" style="margin-bottom:16px">
     <h2>Step 1 — Choose log types to collect</h2>
     <p style="font-size:12px;color:var(--muted);margin-bottom:10px">
-      Toggling one on creates that log type in Site24x7 now. Status shows whether creation
-      succeeded. (Log types not yet defined in Site24x7 will report "failed" until they exist —
-      turn them on again afterwards.)
+      Toggling one on creates that log type in Site24x7 now; the status shows whether it
+      succeeded. Categories not yet available in Site24x7 are marked <em>Not supported yet</em>
+      and can't be toggled — they become available automatically once added.
     </p>
     <div id="entraLogTypeList" style="display:flex;flex-direction:column;gap:6px">
       <span class="stat-label">Loading…</span>
@@ -512,6 +512,8 @@ function copyField(elId, label) {
 }
 
 function _entraStatusPill(lt) {
+  if (lt.supported === false)
+    return `<span class="badge" style="font-size:10px" title="This log type isn't available in Site24x7 yet — it will appear here once added.">Not supported yet</span>`;
   if (!lt.enabled) return `<span class="badge" style="font-size:10px">Not created</span>`;
   if (lt.status === 'created')
     return `<span class="badge badge-green" style="font-size:10px">✓ Created in Site24x7</span>`;
@@ -523,18 +525,24 @@ function _entraStatusPill(lt) {
 function renderEntraLogTypes(logtypes) {
   const el = document.getElementById('entraLogTypeList');
   if (!logtypes.length) { el.innerHTML = '<span class="stat-label">No categories defined.</span>'; return; }
-  el.innerHTML = logtypes.map(lt => `
-    <div class="toggle-row" style="padding:6px 10px;background:var(--bg);border-radius:6px;border:1px solid var(--border)">
+  el.innerHTML = logtypes.map(lt => {
+    const unsupported = lt.supported === false;
+    const toggle = unsupported
+      ? `<button class="toggle" disabled style="opacity:.4;cursor:not-allowed"></button>`
+      : `<button class="toggle ${lt.enabled ? 'on' : ''}" onclick="toggleEntraLogType('${escAttr(lt.normalized)}', ${lt.enabled})"></button>`;
+    return `
+    <div class="toggle-row" style="padding:6px 10px;background:var(--bg);border-radius:6px;border:1px solid var(--border);${unsupported ? 'opacity:.65' : ''}">
       <div style="min-width:0">
         <div style="font-size:13px"><strong>${esc(lt.category)}</strong></div>
         <div style="margin-top:3px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
           <span style="font-size:11px;color:var(--muted);font-family:monospace">${esc(lt.normalized)}</span>
           ${_entraStatusPill(lt)}
         </div>
-        ${lt.status === 'failed' && lt.message ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">${esc(lt.message)}</div>` : ''}
+        ${(!unsupported && lt.status === 'failed' && lt.message) ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">${esc(lt.message)}</div>` : ''}
       </div>
-      <button class="toggle ${lt.enabled ? 'on' : ''}" onclick="toggleEntraLogType('${escAttr(lt.normalized)}', ${lt.enabled})"></button>
-    </div>`).join('');
+      ${toggle}
+    </div>`;
+  }).join('');
 }
 
 async function toggleEntraLogType(normalized, currentlyEnabled) {
