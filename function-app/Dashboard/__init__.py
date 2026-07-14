@@ -42,8 +42,8 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
   .btn-danger:hover { opacity: .85; }
   .btn:disabled { opacity: .4; cursor: not-allowed; }
   .btn-group { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
-  .info-tip { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; background: var(--border); color: var(--muted); font-size: 11px; font-weight: 700; cursor: default; margin-left: 6px; flex-shrink: 0; font-style: normal; line-height: 1; }
-  .info-tip:hover { background: var(--accent); color: white; }
+  .info-tip { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; border-radius: 50%; border: 1px solid var(--muted); background: transparent; color: var(--muted); font-size: 10px; font-weight: 700; cursor: help; margin-left: 6px; flex-shrink: 0; font-style: normal; font-family: Georgia, 'Times New Roman', serif; line-height: 1; text-transform: none; letter-spacing: 0; vertical-align: middle; transition: background .15s, color .15s, border-color .15s; }
+  .info-tip:hover { background: var(--accent); border-color: var(--accent); color: white; }
   .info-tip .tip-text { visibility: hidden; opacity: 0; position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); background: var(--card); border: 1px solid var(--border); color: var(--text); padding: 8px 12px; border-radius: 8px; font-size: 12px; font-weight: 400; white-space: normal; width: 240px; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,.3); transition: opacity .2s; pointer-events: none; text-align: left; line-height: 1.4; }
   .info-tip:hover .tip-text { visibility: visible; opacity: 1; }
   .info-tip .tip-text::after { content: ''; position: absolute; top: 100%; left: 50%; transform: translateX(-50%); border: 6px solid transparent; border-top-color: var(--border); }
