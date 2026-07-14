@@ -40,6 +40,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         scan_details = {}
         entra_target_sa_id = ""
         entra_target_sa_name = ""
+        entra_target_sub_name = ""
         try:
             from shared.config_store import get_scan_state
             scan_state = get_scan_state()
@@ -68,6 +69,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             }
             entra_target_sa_id = scan_state.get("entra_target_storage_account_id", "")
             entra_target_sa_name = scan_state.get("entra_target_storage_account_name", "")
+            entra_target_sub_name = scan_state.get("entra_target_subscription_name", "")
         except Exception:
             pass
         if last_scan_time == "never":
@@ -123,6 +125,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             status["entra"] = {
                 "target_storage_account_id": entra_target_sa_id,
                 "target_storage_account_name": entra_target_sa_name,
+                "target_subscription_name": entra_target_sub_name,
                 "logtypes": logtypes,
                 "any_enabled": any(lt["enabled"] for lt in logtypes),
             }

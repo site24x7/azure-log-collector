@@ -133,6 +133,22 @@ class RegionManager:
             )
         return region_map
 
+    def get_subscription_name(self, subscription_id: str) -> str:
+        """Resolve a subscription's display name (as shown in the Azure portal).
+
+        Best-effort — returns "" if it can't be resolved (needs Reader on the
+        subscription, which the managed identity has). The resource ID only
+        carries the GUID, but the portal's diagnostic-settings dropdown lists
+        subscriptions by name, so we surface the name for the operator.
+        """
+        try:
+            from azure.mgmt.resource import SubscriptionClient
+            sub_client = SubscriptionClient(self.credential)
+            return sub_client.subscriptions.get(subscription_id).display_name or ""
+        except Exception as e:
+            logger.warning(f"Could not resolve subscription name for {subscription_id}: {e}")
+            return ""
+
     def _resource_group_location(self, resource_group: str) -> str:
         """Return the location of the resource group (used to place the
         non-regional tenant SA somewhere sensible)."""

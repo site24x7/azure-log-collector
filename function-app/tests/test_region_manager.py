@@ -162,6 +162,17 @@ class TestTenantStorageAccount:
             assert tags["purpose"] == "diag-logs-tenant"
             assert "region" not in tags
 
+    def test_get_subscription_name(self, rm):
+        with patch("azure.mgmt.resource.SubscriptionClient") as mock_sc:
+            mock_sc.return_value.subscriptions.get.return_value = MagicMock(
+                display_name="Prod Subscription")
+            assert rm.get_subscription_name("sub-123") == "Prod Subscription"
+
+    def test_get_subscription_name_best_effort(self, rm):
+        with patch("azure.mgmt.resource.SubscriptionClient") as mock_sc:
+            mock_sc.return_value.subscriptions.get.side_effect = Exception("no access")
+            assert rm.get_subscription_name("sub-123") == ""
+
     def test_deprovision_noop_when_absent(self, rm):
         with patch("shared.region_manager.StorageManagementClient") as mock_cls:
             mock_cls.return_value.storage_accounts.list_by_resource_group.return_value = [

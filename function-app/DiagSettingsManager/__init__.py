@@ -437,10 +437,14 @@ def run_scan():
     from shared.config_store import get_entra_logtype_states
     _entra_states = get_entra_logtype_states()
     _any_entra_enabled = any(s.get("enabled") for s in _entra_states.values())
+    entra_target_sub_name = ""
     if _any_entra_enabled:
         entra_target_sa = region_mgr.ensure_tenant_storage_account(
             resource_group, diag_storage_suffix
         )
+        if entra_target_sa.get("id"):
+            # Resolve the subscription display name (portal shows name, not GUID)
+            entra_target_sub_name = region_mgr.get_subscription_name(subscription_ids[0])
     else:
         # No Entra type enabled — remove the dedicated SA if one exists
         # (safe-delete guard skips it while it still holds recent blobs).
@@ -898,6 +902,7 @@ def run_scan():
         "unique_resource_types": len(_category_cache_by_type),
         "entra_target_storage_account_id": entra_target_sa.get("id", ""),
         "entra_target_storage_account_name": entra_target_sa.get("name", ""),
+        "entra_target_subscription_name": entra_target_sub_name,
         "in_progress": False,
     }
     save_scan_state(scan_state)

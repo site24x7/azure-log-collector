@@ -363,9 +363,12 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
     <h2>Step 2 — Target storage account</h2>
     <p style="font-size:12px;color:var(--muted);margin-bottom:8px">In Step 3's "Archive to a storage account", select exactly these — matching the dropdowns on the Azure diagnostic settings page:</p>
     <div id="entraTargetFields" style="display:none;flex-direction:column;gap:6px">
-      <div style="display:flex;gap:8px;align-items:center">
-        <span style="min-width:110px;font-size:12px;color:var(--muted)">Subscription</span>
-        <code id="entraTargetSub" style="flex:1;min-width:0;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:12px;word-break:break-all"></code>
+      <div style="display:flex;gap:8px;align-items:flex-start">
+        <span style="min-width:110px;font-size:12px;color:var(--muted);padding-top:8px">Subscription</span>
+        <div style="flex:1;min-width:0">
+          <code id="entraTargetSub" style="display:block;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:12px;word-break:break-all"></code>
+          <div id="entraTargetSubId" style="font-size:11px;color:var(--muted);margin-top:2px;word-break:break-all"></div>
+        </div>
         <button class="btn btn-primary btn-sm" onclick="copyField('entraTargetSub','Subscription')">📋</button>
       </div>
       <div style="display:flex;gap:8px;align-items:center">
@@ -636,7 +639,10 @@ async function loadStatus() {
       const sub = parts[2] || '';
       const rg = parts[4] || '';
       const name = entra.target_storage_account_name || parts[parts.length - 1] || '';
-      document.getElementById('entraTargetSub').textContent = sub;
+      const subName = entra.target_subscription_name || '';
+      // Portal lists subscriptions by name — show name primary, GUID beneath.
+      document.getElementById('entraTargetSub').textContent = subName || sub;
+      document.getElementById('entraTargetSubId').textContent = subName ? sub : '';
       document.getElementById('entraTargetName').textContent = name;
       document.getElementById('entraTargetRg').textContent = rg;
       fieldsEl.style.display = 'flex';
