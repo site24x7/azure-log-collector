@@ -514,12 +514,18 @@ function copyField(elId, label) {
 function _entraStatusPill(lt) {
   if (lt.supported === false)
     return `<span class="badge" style="font-size:10px" title="This log type isn't available in Site24x7 yet — it will appear here once added.">Not supported yet</span>`;
-  if (!lt.enabled) return `<span class="badge" style="font-size:10px">Not created</span>`;
-  if (lt.status === 'created')
-    return `<span class="badge badge-green" style="font-size:10px">✓ Created in Site24x7</span>`;
-  if (lt.status === 'failed')
-    return `<span class="badge badge-red" style="font-size:10px" title="${escAttr(lt.message||'')}">⚠ Create failed</span>`;
-  return `<span class="badge" style="font-size:10px">${esc(lt.status||'')}</span>`;
+  if (lt.enabled) {
+    if (lt.status === 'created')
+      return `<span class="badge badge-green" style="font-size:10px">✓ Collecting</span>`;
+    if (lt.status === 'failed')
+      return `<span class="badge badge-red" style="font-size:10px" title="${escAttr(lt.message||'')}">⚠ Create failed</span>`;
+    return `<span class="badge" style="font-size:10px">${esc(lt.status||'')}</span>`;
+  }
+  // Toggle off. Disabling only stops our collection — it never deletes the
+  // log type in Site24x7, so don't say "not created" for one that was created.
+  if (lt.status === 'disabled')
+    return `<span class="badge" style="font-size:10px" title="Not collecting. The log type still exists in Site24x7 — disabling only stops forwarding.">Off · kept in Site24x7</span>`;
+  return `<span class="badge" style="font-size:10px">Off</span>`;
 }
 
 function renderEntraLogTypes(logtypes) {
