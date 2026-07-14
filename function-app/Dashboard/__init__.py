@@ -568,6 +568,7 @@ function fmtTime(iso) {
 
 // ─── Status & Health ─────────────────────────────────────────────────────
 
+let _statusPollTimer = null;
 async function loadStatus() {
   try {
     const s = await api('status');
@@ -596,11 +597,12 @@ async function loadStatus() {
       const total = phases.length;
       const cur = s.current_phase;
       const pct = Math.round((cur / total) * 100);
+      const spinner = '<span style="display:inline-block;width:11px;height:11px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle"></span>';
       const rows = phases.map(p => {
         let icon, color, weight;
-        if (p.num < cur)      { icon = '\u2713'; color = 'var(--green)'; weight = '400'; }   // done
-        else if (p.num === cur) { icon = '\u25b6'; color = 'var(--accent)'; weight = '600'; } // active
-        else                  { icon = '\u00b7'; color = 'var(--muted)'; weight = '400'; }    // pending
+        if (p.num < cur)      { icon = '\u2713'; color = 'var(--green)'; weight = '400'; }        // done
+        else if (p.num === cur) { icon = spinner; color = 'var(--accent)'; weight = '600'; } // active (spinning)
+        else                  { icon = '\u00b7'; color = 'var(--muted)'; weight = '400'; }        // pending
         const prog = (p.num === cur && s.phase_progress) ? ` \u2014 ${esc(s.phase_progress)}` : '';
         return `<div style="display:flex;gap:8px;font-size:12px;color:${color};font-weight:${weight};line-height:1.7">
           <span style="width:12px;text-align:center;flex-shrink:0">${icon}</span>
@@ -616,6 +618,12 @@ async function loadStatus() {
     } else {
       phaseEl.style.display = 'none';
     }
+
+    // Real-time refresh: while a scan runs, re-poll status every few seconds.
+    // Single guarded timer (cleared+reset each call) so it never multiplies,
+    // and it stops on its own once the scan finishes.
+    if (_statusPollTimer) { clearTimeout(_statusPollTimer); _statusPollTimer = null; }
+    if (inProgress) { _statusPollTimer = setTimeout(loadStatus, 4000); }
 
     // Reflect scan-in-progress state on the trigger button
     const scanBtn = document.getElementById('scanBtn');
