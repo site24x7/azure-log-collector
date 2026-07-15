@@ -100,31 +100,97 @@ class TestGetProvisionedRegions:
             assert result == {}
 
 
-class TestGetPrimaryStorageAccount:
-    def _acct(self, region, name):
+class TestTenantStorageAccount:
+    def _tenant_acct(self, name="s247diagtenantabc"):
         a = MagicMock()
-        a.tags = {"managed-by": "s247-diag-logs", "purpose": "diag-logs-regional"}
-        a.primary_location = region
+        a.tags = {"managed-by": "s247-diag-logs", "purpose": "diag-logs-tenant"}
+        a.primary_location = "eastus"
         a.name = name
         return a
 
-    def test_picks_first_region_alphabetically(self, rm):
-        # westus provisioned first, but eastus sorts first → deterministic
-        accts = [self._acct("westus", "s247diagwestusx"), self._acct("eastus", "s247diageastusx")]
+    def _regional_acct(self):
+        a = MagicMock()
+        a.tags = {"managed-by": "s247-diag-logs", "purpose": "diag-logs-regional"}
+        a.primary_location = "westus"
+        a.name = "s247diagwestusx"
+        return a
+
+    def test_get_finds_tenant_account_ignoring_regional(self, rm):
+        accts = [self._regional_acct(), self._tenant_acct()]
         with patch("shared.region_manager.StorageManagementClient") as mock_cls:
             mock_cls.return_value.storage_accounts.list_by_resource_group.return_value = accts
-            result = rm.get_primary_storage_account("my-rg")
-            assert result["region"] == "eastus"
-            assert result["name"] == "s247diageastusx"
-            assert result["id"] == (
-                "/subscriptions/sub-123/resourceGroups/my-rg"
-                "/providers/Microsoft.Storage/storageAccounts/s247diageastusx"
-            )
+            result = rm.get_tenant_storage_account("my-rg")
+            assert result["name"] == "s247diagtenantabc"
+            assert result["id"].endswith("/storageAccounts/s247diagtenantabc")
 
-    def test_empty_when_none_provisioned(self, rm):
+    def test_get_empty_when_no_tenant_account(self, rm):
         with patch("shared.region_manager.StorageManagementClient") as mock_cls:
-            mock_cls.return_value.storage_accounts.list_by_resource_group.return_value = []
-            assert rm.get_primary_storage_account("my-rg") == {}
+            mock_cls.return_value.storage_accounts.list_by_resource_group.return_value = [
+                self._regional_acct()
+            ]
+            assert rm.get_tenant_storage_account("my-rg") == {}
+
+    def test_ensure_returns_existing_without_creating(self, rm):
+        with patch("shared.region_manager.StorageManagementClient") as mock_cls:
+            mock_cls.return_value.storage_accounts.list_by_resource_group.return_value = [
+                self._tenant_acct()
+            ]
+            result = rm.ensure_tenant_storage_account("my-rg", "abc")
+            assert result["name"] == "s247diagtenantabc"
+            # No create call when it already exists
+            mock_cls.return_value.storage_accounts.begin_create.assert_not_called()
+
+    def test_ensure_creates_when_missing(self, rm):
+        with patch("shared.region_manager.StorageManagementClient") as mock_cls, \
+             patch("shared.region_manager.ResourceManagementClient") as mock_rc, \
+             patch.object(rm, "apply_lock"), \
+             patch.object(rm, "apply_lifecycle_policy"):
+            sc = mock_cls.return_value
+            sc.storage_accounts.list_by_resource_group.return_value = []  # none yet
+            mock_rc.return_value.resource_groups.get.return_value = MagicMock(location="eastus")
+            created = MagicMock()
+            created.id = "/subscriptions/sub-123/resourceGroups/my-rg/providers/Microsoft.Storage/storageAccounts/s247diagtenantabc"
+            sc.storage_accounts.begin_create.return_value.result.return_value = created
+
+            result = rm.ensure_tenant_storage_account("my-rg", "abc")
+            assert result["name"] == "s247diagtenantabc"
+            assert result["region"] == "eastus"
+            assert result["id"].endswith("/storageAccounts/s247diagtenantabc")
+            # created with the tenant tag (no region tag)
+            _, kwargs = sc.storage_accounts.begin_create.call_args
+            tags = kwargs["parameters"]["tags"]
+            assert tags["purpose"] == "diag-logs-tenant"
+            assert "region" not in tags
+
+    def test_get_subscription_name(self, rm):
+        with patch("azure.mgmt.resource.SubscriptionClient") as mock_sc:
+            mock_sc.return_value.subscriptions.get.return_value = MagicMock(
+                display_name="Prod Subscription")
+            assert rm.get_subscription_name("sub-123") == "Prod Subscription"
+
+    def test_get_subscription_name_best_effort(self, rm):
+        with patch("azure.mgmt.resource.SubscriptionClient") as mock_sc:
+            mock_sc.return_value.subscriptions.get.side_effect = Exception("no access")
+            assert rm.get_subscription_name("sub-123") == ""
+
+    def test_deprovision_noop_when_absent(self, rm):
+        with patch("shared.region_manager.StorageManagementClient") as mock_cls:
+            mock_cls.return_value.storage_accounts.list_by_resource_group.return_value = [
+                self._regional_acct()
+            ]
+            # No tenant SA present → nothing to delete
+            assert rm.deprovision_tenant_storage_account("my-rg") is False
+
+    def test_deprovision_delegates_when_present(self, rm):
+        with patch("shared.region_manager.StorageManagementClient") as mock_cls, \
+             patch.object(rm, "deprovision_storage_account", return_value=True) as dep:
+            mock_cls.return_value.storage_accounts.list_by_resource_group.return_value = [
+                self._tenant_acct()
+            ]
+            assert rm.deprovision_tenant_storage_account("my-rg") is True
+            dep.assert_called_once()
+            # called with the tenant SA's name
+            assert dep.call_args[0][2] == "s247diagtenantabc"
 
 
 class TestProvisionStorageAccount:

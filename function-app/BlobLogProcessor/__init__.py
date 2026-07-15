@@ -102,7 +102,8 @@ def _process_all_regions():
     regional_accounts = []
     for acct in storage_mgmt.storage_accounts.list_by_resource_group(resource_group):
         tags = acct.tags or {}
-        if tags.get("managed-by") == "s247-diag-logs" and tags.get("purpose") == "diag-logs-regional":
+        if tags.get("managed-by") == "s247-diag-logs" and \
+                tags.get("purpose") in ("diag-logs-regional", "diag-logs-tenant"):
             regional_accounts.append(acct)
 
     if not regional_accounts:

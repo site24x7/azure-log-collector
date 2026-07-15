@@ -42,8 +42,8 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
   .btn-danger:hover { opacity: .85; }
   .btn:disabled { opacity: .4; cursor: not-allowed; }
   .btn-group { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
-  .info-tip { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; background: var(--border); color: var(--muted); font-size: 11px; font-weight: 700; cursor: default; margin-left: 6px; flex-shrink: 0; font-style: normal; line-height: 1; }
-  .info-tip:hover { background: var(--accent); color: white; }
+  .info-tip { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; border-radius: 50%; border: 1px solid var(--muted); background: transparent; color: var(--muted); font-size: 10px; font-weight: 700; cursor: help; margin-left: 6px; flex-shrink: 0; font-style: normal; font-family: Georgia, 'Times New Roman', serif; line-height: 1; text-transform: none; letter-spacing: 0; vertical-align: middle; transition: background .15s, color .15s, border-color .15s; }
+  .info-tip:hover { background: var(--accent); border-color: var(--accent); color: white; }
   .info-tip .tip-text { visibility: hidden; opacity: 0; position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); background: var(--card); border: 1px solid var(--border); color: var(--text); padding: 8px 12px; border-radius: 8px; font-size: 12px; font-weight: 400; white-space: normal; width: 240px; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,.3); transition: opacity .2s; pointer-events: none; text-align: left; line-height: 1.4; }
   .info-tip:hover .tip-text { visibility: visible; opacity: 1; }
   .info-tip .tip-text::after { content: ''; position: absolute; top: 100%; left: 50%; transform: translateX(-50%); border: 6px solid transparent; border-top-color: var(--border); }
@@ -75,6 +75,14 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
   .ignore-input { flex: 1; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 6px 10px; border-radius: 6px; font-size: 12px; transition: background .3s, border-color .3s; }
   .ignore-input:focus { outline: none; border-color: var(--accent); }
   .btn-sm { padding: 6px 12px; font-size: 12px; }
+  /* Copy box — value with an inline copy icon, sized to its content */
+  .copybox { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px 5px 10px; }
+  .copybox code { background: transparent; border: none; padding: 0; font-size: 12px; word-break: break-all; }
+  .copybtn { position: relative; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 22px; height: 22px; border: none; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; transition: background .15s, color .15s; }
+  .copybtn:hover { background: var(--border); color: var(--accent); }
+  .copybtn svg { width: 14px; height: 14px; }
+  .copybtn::after { content: 'Copy'; visibility: hidden; opacity: 0; position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%); background: var(--card); border: 1px solid var(--border); color: var(--text); padding: 3px 8px; border-radius: 6px; font-size: 11px; white-space: nowrap; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,.3); transition: opacity .15s; pointer-events: none; }
+  .copybtn:hover::after { visibility: visible; opacity: 1; }
   /* Tabs */
   .tab-bar { display: flex; gap: 0; margin-bottom: 16px; border-bottom: 2px solid var(--border); position: sticky; top: 0; z-index: 50; background: var(--bg); padding-top: 8px; }
   .tab-btn { padding: 10px 20px; font-size: 14px; font-weight: 600; background: none; border: none; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -2px; transition: .2s; }
@@ -176,7 +184,7 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
   <button class="tab-btn active" onclick="switchTab('overview')">Overview</button>
   <button class="tab-btn" onclick="switchTab('filters')">Filters</button>
   <button class="tab-btn" onclick="switchTab('resources')">Resources</button>
-  <button class="tab-btn" onclick="switchTab('entra')" id="entraTabBtn">Entra ID</button>
+  <button class="tab-btn" onclick="switchTab('entra')" id="entraTabBtn">Platform Logs</button>
   <button class="tab-btn" onclick="switchTab('debug')">🔍 Debug</button>
 </div>
 
@@ -322,26 +330,37 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
   </div>
 </div>
 
-<!-- Tab: Entra ID — tenant-log setup -->
+<!-- Tab: Platform Logs — non-resource (tenant/subscription) log sources -->
 <div id="tab-entra" class="tab-panel">
   <div class="card" style="margin-bottom:16px">
-    <h2>Entra ID (Tenant) Logs</h2>
+    <h2>Platform Logs</h2>
     <div class="alert alert-info" style="font-size:13px">
-      Entra ID logs (sign-ins, audit, provisioning, risk) are <strong>tenant-scoped</strong>,
-      not tied to any resource — so a fresh install collects none of them. Azure does
-      <strong>not</strong> let this Function App's managed identity turn them on, so setup is
-      two parts: <strong>(1)</strong> pick the log types below to provision them in Site24x7,
-      and <strong>(2)</strong> a tenant admin enables the matching Entra diagnostic setting in
-      Azure. We can confirm part 1 (created/failed); we <strong>cannot</strong> verify part 2.
+      Logs that live <strong>above individual resources</strong> — at the tenant or
+      subscription level — and so aren't picked up by the resource scan. Configure them here.
+      Resource-level diagnostic logs are handled automatically and don't appear on this tab.
+      <div style="margin-top:8px">
+        <strong>Available:</strong> Microsoft Entra ID (tenant). &nbsp;
+        <strong>Planned:</strong> Azure Activity logs (subscription), and other non-resource sources.
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:8px;background:transparent;border:none;padding:0 2px">
+    <h2 style="font-size:14px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Microsoft Entra ID (tenant)</h2>
+    <div style="font-size:12px;color:var(--muted)">
+      Sign-ins, audit, provisioning, risk. Setup is two parts: <strong>(1)</strong> enable the
+      log types below to provision them in Site24x7, and <strong>(2)</strong> a tenant admin
+      enables the matching Entra diagnostic setting in Azure. We confirm part 1 (created/failed);
+      we <strong>cannot</strong> verify part 2.
     </div>
   </div>
 
   <div class="card" style="margin-bottom:16px">
     <h2>Step 1 — Choose log types to collect</h2>
     <p style="font-size:12px;color:var(--muted);margin-bottom:10px">
-      Toggling one on creates that log type in Site24x7 now. Status shows whether creation
-      succeeded. (Log types not yet defined in Site24x7 will report "failed" until they exist —
-      turn them on again afterwards.)
+      Toggling one on creates that log type in Site24x7 now; the status shows whether it
+      succeeded. Categories not yet available in Site24x7 are marked <em>Not supported yet</em>
+      and can't be toggled — they become available automatically once added.
     </p>
     <div id="entraLogTypeList" style="display:flex;flex-direction:column;gap:6px">
       <span class="stat-label">Loading…</span>
@@ -350,10 +369,29 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
 
   <div class="card" style="margin-bottom:16px">
     <h2>Step 2 — Target storage account</h2>
-    <p style="font-size:12px;color:var(--muted);margin-bottom:8px">In Step 3, point the Entra diagnostic setting's "Archive to a storage account" at this account:</p>
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <code id="entraTargetId" style="flex:1;min-width:280px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:12px;word-break:break-all">—</code>
-      <button class="btn btn-primary btn-sm" onclick="copyEntraTarget()">📋 Copy</button>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:8px">In Step 3's "Archive to a storage account", select exactly these — matching the dropdowns on the Azure diagnostic settings page:</p>
+    <div id="entraTargetFields" style="display:none;flex-direction:column;gap:8px">
+      <div style="display:flex;gap:8px;align-items:flex-start">
+        <span style="min-width:110px;font-size:12px;color:var(--muted);padding-top:6px">Subscription</span>
+        <div style="display:inline-flex;flex-direction:column;align-items:flex-start;gap:2px;min-width:0">
+          <span class="copybox">
+            <code id="entraTargetSub"></code>
+            <button class="copybtn" aria-label="Copy" onclick="copyField('entraTargetSub','Subscription')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button>
+          </span>
+          <div id="entraTargetSubId" style="font-size:11px;color:var(--muted);padding-left:2px;word-break:break-all"></div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span style="min-width:110px;font-size:12px;color:var(--muted)">Storage account</span>
+        <span class="copybox">
+          <code id="entraTargetName"></code>
+          <button class="copybtn" aria-label="Copy" onclick="copyField('entraTargetName','Storage account')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button>
+        </span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span style="min-width:110px;font-size:12px;color:var(--muted)">Resource group</span>
+        <code id="entraTargetRg" style="font-size:12px;color:var(--muted);word-break:break-all"></code>
+      </div>
     </div>
     <div id="entraTargetWarn" style="display:none;font-size:12px;color:var(--yellow);margin-top:8px"></div>
   </div>
@@ -464,39 +502,51 @@ function switchTab(name) {
 function escAttr(s) { return s.replace(/&/g,'&amp;').replace(/'/g,'&#39;').replace(/"/g,'&quot;'); }
 function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
-function copyEntraTarget() {
-  const val = document.getElementById('entraTargetId').textContent;
-  if (!val || val.startsWith('(')) { showToast('No target storage account yet', 'warning'); return; }
+function copyField(elId, label) {
+  const val = (document.getElementById(elId).textContent || '').trim();
+  if (!val) { showToast('Nothing to copy yet', 'warning'); return; }
   navigator.clipboard.writeText(val).then(
-    () => showToast('Storage account ID copied'),
+    () => showToast(`${label} copied`),
     () => showToast('Copy failed — select and copy manually', 'error')
   );
 }
 
 function _entraStatusPill(lt) {
-  if (!lt.enabled) return `<span class="badge" style="font-size:10px">Not created</span>`;
-  if (lt.status === 'created')
-    return `<span class="badge badge-green" style="font-size:10px">✓ Created in Site24x7</span>`;
-  if (lt.status === 'failed')
-    return `<span class="badge badge-red" style="font-size:10px" title="${escAttr(lt.message||'')}">⚠ Create failed</span>`;
-  return `<span class="badge" style="font-size:10px">${esc(lt.status||'')}</span>`;
+  if (lt.supported === false)
+    return `<span class="badge" style="font-size:10px" title="This log type isn't available in Site24x7 yet — it will appear here once added.">Not supported yet</span>`;
+  if (lt.enabled) {
+    if (lt.status === 'created')
+      return `<span class="badge badge-green" style="font-size:10px">✓ Collecting</span>`;
+    if (lt.status === 'failed')
+      return `<span class="badge badge-red" style="font-size:10px" title="${escAttr(lt.message||'')}">⚠ Create failed</span>`;
+    return `<span class="badge" style="font-size:10px">${esc(lt.status||'')}</span>`;
+  }
+  // Toggle off (whether never created or created-then-disabled). Disabling
+  // only stops our collection; it never deletes the Site24x7 log type.
+  return `<span class="badge" style="font-size:10px">Off</span>`;
 }
 
 function renderEntraLogTypes(logtypes) {
   const el = document.getElementById('entraLogTypeList');
   if (!logtypes.length) { el.innerHTML = '<span class="stat-label">No categories defined.</span>'; return; }
-  el.innerHTML = logtypes.map(lt => `
-    <div class="toggle-row" style="padding:6px 10px;background:var(--bg);border-radius:6px;border:1px solid var(--border)">
+  el.innerHTML = logtypes.map(lt => {
+    const unsupported = lt.supported === false;
+    const toggle = unsupported
+      ? `<button class="toggle" disabled style="opacity:.4;cursor:not-allowed"></button>`
+      : `<button class="toggle ${lt.enabled ? 'on' : ''}" onclick="toggleEntraLogType('${escAttr(lt.normalized)}', ${lt.enabled})"></button>`;
+    return `
+    <div class="toggle-row" style="padding:6px 10px;background:var(--bg);border-radius:6px;border:1px solid var(--border);${unsupported ? 'opacity:.65' : ''}">
       <div style="min-width:0">
         <div style="font-size:13px"><strong>${esc(lt.category)}</strong></div>
         <div style="margin-top:3px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
           <span style="font-size:11px;color:var(--muted);font-family:monospace">${esc(lt.normalized)}</span>
           ${_entraStatusPill(lt)}
         </div>
-        ${lt.status === 'failed' && lt.message ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">${esc(lt.message)}</div>` : ''}
+        ${(!unsupported && lt.status === 'failed' && lt.message) ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">${esc(lt.message)}</div>` : ''}
       </div>
-      <button class="toggle ${lt.enabled ? 'on' : ''}" onclick="toggleEntraLogType('${escAttr(lt.normalized)}', ${lt.enabled})"></button>
-    </div>`).join('');
+      ${toggle}
+    </div>`;
+  }).join('');
 }
 
 async function toggleEntraLogType(normalized, currentlyEnabled) {
@@ -530,6 +580,7 @@ function fmtTime(iso) {
 
 // ─── Status & Health ─────────────────────────────────────────────────────
 
+let _statusPollTimer = null;
 async function loadStatus() {
   try {
     const s = await api('status');
@@ -549,23 +600,42 @@ async function loadStatus() {
     }
     document.getElementById('lastScan').textContent = scanText;
 
-    // Show phase progress banner when scan is running
+    // Show the full phase stepper while a scan is running
     let phaseEl = document.getElementById('scanPhase');
     if (inProgress && s.current_phase) {
-      const total = 6;
-      const pct = Math.round((s.current_phase / total) * 100);
-      const prog = s.phase_progress ? ` \u2014 ${s.phase_progress}` : '';
-      phaseEl.innerHTML = `
-        <div style="margin:6px 0 2px;font-size:12px;color:var(--text-muted)">
-          Phase ${s.current_phase}/6: ${s.current_phase_name}${prog}
-        </div>
-        <div style="background:var(--border);border-radius:4px;height:4px;overflow:hidden">
-          <div style="background:var(--accent);width:${pct}%;height:100%;transition:width .4s"></div>
+      const phases = (s.scan_phases && s.scan_phases.length)
+        ? s.scan_phases
+        : [{num: s.current_phase, name: s.current_phase_name}];
+      const total = phases.length;
+      const cur = s.current_phase;
+      const pct = Math.round((cur / total) * 100);
+      const spinner = '<span style="display:inline-block;width:11px;height:11px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle"></span>';
+      const rows = phases.map(p => {
+        let icon, color, weight;
+        if (p.num < cur)      { icon = '\u2713'; color = 'var(--green)'; weight = '400'; }        // done
+        else if (p.num === cur) { icon = spinner; color = 'var(--accent)'; weight = '600'; } // active (spinning)
+        else                  { icon = '\u00b7'; color = 'var(--muted)'; weight = '400'; }        // pending
+        const prog = (p.num === cur && s.phase_progress) ? ` \u2014 ${esc(s.phase_progress)}` : '';
+        return `<div style="display:flex;gap:8px;font-size:12px;color:${color};font-weight:${weight};line-height:1.7">
+          <span style="width:12px;text-align:center;flex-shrink:0">${icon}</span>
+          <span>${p.num}. ${esc(p.name)}${prog}</span>
         </div>`;
+      }).join('');
+      phaseEl.innerHTML = `
+        <div style="background:var(--border);border-radius:4px;height:4px;overflow:hidden;margin:6px 0 8px">
+          <div style="background:var(--accent);width:${pct}%;height:100%;transition:width .4s"></div>
+        </div>
+        <div style="padding-left:2px">${rows}</div>`;
       phaseEl.style.display = 'block';
     } else {
       phaseEl.style.display = 'none';
     }
+
+    // Real-time refresh: while a scan runs, re-poll status every few seconds.
+    // Single guarded timer (cleared+reset each call) so it never multiplies,
+    // and it stops on its own once the scan finishes.
+    if (_statusPollTimer) { clearTimeout(_statusPollTimer); _statusPollTimer = null; }
+    if (inProgress) { _statusPollTimer = setTimeout(loadStatus, 4000); }
 
     // Reflect scan-in-progress state on the trigger button
     const scanBtn = document.getElementById('scanBtn');
@@ -604,14 +674,28 @@ async function loadStatus() {
     // Entra ID tab — always visible.
     const entra = s.entra || {};
     renderEntraLogTypes(entra.logtypes || []);
-    const idEl = document.getElementById('entraTargetId');
+    const fieldsEl = document.getElementById('entraTargetFields');
     const warnEl = document.getElementById('entraTargetWarn');
-    if (entra.target_storage_account_id) {
-      idEl.textContent = entra.target_storage_account_id;
+    const tid = entra.target_storage_account_id || '';
+    if (tid) {
+      // Split the resource ID into the pieces the Azure portal asks for.
+      const parts = tid.split('/');
+      const sub = parts[2] || '';
+      const rg = parts[4] || '';
+      const name = entra.target_storage_account_name || parts[parts.length - 1] || '';
+      const subName = entra.target_subscription_name || '';
+      // Portal lists subscriptions by name — show name primary, GUID beneath.
+      document.getElementById('entraTargetSub').textContent = subName || sub;
+      document.getElementById('entraTargetSubId').textContent = subName ? sub : '';
+      document.getElementById('entraTargetName').textContent = name;
+      document.getElementById('entraTargetRg').textContent = rg;
+      fieldsEl.style.display = 'flex';
       warnEl.style.display = 'none';
     } else {
-      idEl.textContent = '(not available yet)';
-      warnEl.textContent = 'No storage account provisioned yet. Run a scan (or wait for one) so a regional storage account exists — the exact target then appears here.';
+      fieldsEl.style.display = 'none';
+      warnEl.textContent = entra.any_enabled
+        ? 'A log type is enabled but the dedicated storage account has not been created yet. Run a scan (or wait for one) — it is provisioned automatically and the fields then appear here.'
+        : 'Enable at least one log type in Step 1 first. The dedicated storage account is created on the next scan (and removed when all types are turned off); the subscription and account then appear here.';
       warnEl.style.display = 'block';
     }
 

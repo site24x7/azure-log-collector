@@ -25,6 +25,11 @@ logger = logging.getLogger(__name__)
 STORAGE_PREFIX = "s247diag"
 LOGS_CONTAINER = "insights-logs"
 LOCK_PREFIX = "s247-lock-sa"
+# Dedicated, non-regional storage account for tenant-scoped logs (Entra ID).
+# Tagged distinctly so BlobLogProcessor polls it but region reconciliation
+# (which only considers ``diag-logs-regional``) never deprovisions it — giving
+# a stable target the tenant admin can point an Entra diagnostic setting at.
+TENANT_STORAGE_PURPOSE = "diag-logs-tenant"
 # Default: don't delete storage accounts with blobs newer than this.
 # Overridable via SAFE_DELETE_MAX_AGE_DAYS env var.
 SAFE_DELETE_MAX_AGE_DAYS_DEFAULT = 7
@@ -65,6 +70,15 @@ def _storage_account_name(region: str, suffix: str) -> str:
     Format: s247diag{region}{suffix}  (e.g., s247diageastus<suffix>)
     """
     name = f"{STORAGE_PREFIX}{_sanitize_region(region)}{suffix}"
+    return name[:24]
+
+
+def _tenant_storage_name(suffix: str) -> str:
+    """Build the dedicated tenant-log storage account name.
+
+    Format: s247diagtenant{suffix}  (<= 24 chars). One per deployment.
+    """
+    name = f"{STORAGE_PREFIX}tenant{_sanitize_region(suffix)}"
     return name[:24]
 
 
@@ -119,29 +133,133 @@ class RegionManager:
             )
         return region_map
 
-    def get_primary_storage_account(self, resource_group: str) -> Dict[str, str]:
-        """Return a stable "primary" regional storage account for non-regional
-        log sources (e.g. tenant-scoped Entra ID logs, which have no region).
+    def get_subscription_name(self, subscription_id: str) -> str:
+        """Resolve a subscription's display name (as shown in the Azure portal).
 
-        Tenant/subscription-scoped diagnostic settings must target *some*
-        storage account; there's no natural region for them. We deterministically
-        pick the first provisioned regional SA (sorted by region name) so the
-        target is stable across scans. BlobLogProcessor already polls all
-        ``diag-logs-regional`` accounts, so logs landing here are processed.
-
-        Returns ``{"region", "name", "id"}`` or ``{}`` if none are provisioned
-        yet (e.g. before the first scan discovers any resource regions).
+        Best-effort — returns "" if it can't be resolved (needs Reader on the
+        subscription, which the managed identity has). The resource ID only
+        carries the GUID, but the portal's diagnostic-settings dropdown lists
+        subscriptions by name, so we surface the name for the operator.
         """
-        region_map = self.get_provisioned_regions(resource_group)
-        if not region_map:
-            return {}
-        region = sorted(region_map.keys())[0]
-        name = region_map[region]
-        sa_id = (
-            f"/subscriptions/{self.subscription_id}/resourceGroups/{resource_group}"
-            f"/providers/Microsoft.Storage/storageAccounts/{name}"
+        try:
+            from azure.mgmt.resource import SubscriptionClient
+            sub_client = SubscriptionClient(self.credential)
+            return sub_client.subscriptions.get(subscription_id).display_name or ""
+        except Exception as e:
+            logger.warning(f"Could not resolve subscription name for {subscription_id}: {e}")
+            return ""
+
+    def _resource_group_location(self, resource_group: str) -> str:
+        """Return the location of the resource group (used to place the
+        non-regional tenant SA somewhere sensible)."""
+        try:
+            rc = ResourceManagementClient(self.credential, self.subscription_id)
+            return rc.resource_groups.get(resource_group).location
+        except Exception as e:
+            logger.error(f"Failed to get location of RG '{resource_group}': {e}")
+            return "eastus"
+
+    def get_tenant_storage_account(self, resource_group: str) -> Dict[str, str]:
+        """Return the dedicated tenant-log storage account, or ``{}`` if none.
+
+        Identified by the ``diag-logs-tenant`` tag (not a region), so it's
+        immune to region reconciliation.
+        """
+        try:
+            client = StorageManagementClient(self.credential, self.subscription_id)
+            for acct in client.storage_accounts.list_by_resource_group(resource_group):
+                tags = acct.tags or {}
+                if tags.get("managed-by") == "s247-diag-logs" and \
+                        tags.get("purpose") == TENANT_STORAGE_PURPOSE:
+                    sa_id = (
+                        f"/subscriptions/{self.subscription_id}/resourceGroups/{resource_group}"
+                        f"/providers/Microsoft.Storage/storageAccounts/{acct.name}"
+                    )
+                    return {"region": acct.primary_location or "", "name": acct.name, "id": sa_id}
+        except Exception as e:
+            logger.error(f"Failed to list tenant storage account in '{resource_group}': {e}")
+        return {}
+
+    def ensure_tenant_storage_account(self, resource_group: str, suffix: str) -> Dict[str, str]:
+        """Ensure the dedicated tenant-log storage account exists; return it.
+
+        Idempotent — returns the existing account if present, otherwise creates
+        one in the RG's location, tagged ``diag-logs-tenant`` (no region tag so
+        region reconciliation leaves it alone), with the base insights-logs
+        container, a resource lock, and the standard retention lifecycle policy.
+        Returns ``{"region", "name", "id"}`` (id empty on create failure).
+        """
+        existing = self.get_tenant_storage_account(resource_group)
+        if existing:
+            return existing
+
+        region = self._resource_group_location(resource_group)
+        sa_name = _tenant_storage_name(suffix)
+        result: Dict[str, str] = {"region": region, "name": sa_name, "id": ""}
+        storage_client = StorageManagementClient(self.credential, self.subscription_id)
+
+        try:
+            poller = storage_client.storage_accounts.begin_create(
+                resource_group_name=resource_group,
+                account_name=sa_name,
+                parameters={
+                    "location": region,
+                    "sku": {"name": "Standard_LRS"},
+                    "kind": "StorageV2",
+                    "properties": {
+                        "minimum_tls_version": "TLS1_2",
+                        "allow_blob_public_access": False,
+                    },
+                    "tags": {
+                        "managed-by": "s247-diag-logs",
+                        "purpose": TENANT_STORAGE_PURPOSE,
+                    },
+                },
+            )
+            sa_resource = poller.result()
+            result["id"] = sa_resource.id or ""
+            logger.info(f"Created tenant storage account '{sa_name}' in {region}")
+        except Exception as e:
+            logger.error(f"Failed to create tenant storage account '{sa_name}': {e}")
+            return result
+
+        try:
+            storage_client.blob_containers.create(
+                resource_group_name=resource_group,
+                account_name=sa_name,
+                container_name=LOGS_CONTAINER,
+                blob_container={},
+            )
+        except Exception as e:
+            if "already exists" not in str(e).lower():
+                logger.warning(f"Failed to create container in '{sa_name}': {e}")
+
+        self.apply_lock(
+            resource_group=resource_group,
+            resource_name=sa_name,
+            resource_type="Microsoft.Storage/storageAccounts",
         )
-        return {"region": region, "name": name, "id": sa_id}
+        self.apply_lifecycle_policy(
+            storage_client=storage_client,
+            resource_group=resource_group,
+            sa_name=sa_name,
+        )
+        return result
+
+    def deprovision_tenant_storage_account(self, resource_group: str) -> bool:
+        """Delete the dedicated tenant SA when no Entra log type is enabled.
+
+        Reuses ``deprovision_storage_account`` so the same safeguards apply —
+        it skips deletion if the account still has recent (unprocessed) blobs,
+        and restores the lock if the delete fails. No-op if the account doesn't
+        exist. Returns True only if it was actually deleted.
+        """
+        existing = self.get_tenant_storage_account(resource_group)
+        if not existing:
+            return False
+        return self.deprovision_storage_account(
+            resource_group, existing.get("region", ""), existing["name"]
+        )
 
     # ------------------------------------------------------------------
     # Provision / deprovision

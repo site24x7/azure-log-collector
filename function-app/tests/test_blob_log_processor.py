@@ -192,10 +192,11 @@ def proc_env(monkeypatch, tmp_path):
 
 
 def _patched_run(proc_env, blob_specs, all_configs=None,
-                  initial_checkpoints=None):
+                  initial_checkpoints=None, sa_purpose="diag-logs-regional"):
     """Execute _process_all_regions with mocked Azure + S247 + checkpoints.
 
     blob_specs: list of (blob_name, blocks_payload_list, last_modified)
+    sa_purpose: the storage account's ``purpose`` tag (regional or tenant).
     Returns (post_logs_calls, saved_checkpoints).
     """
     from BlobLogProcessor import _save_checkpoints  # noqa
@@ -214,7 +215,7 @@ def _patched_run(proc_env, blob_specs, all_configs=None,
     sa = SimpleNamespace(
         name="s247diagtest",
         primary_location="eastus",
-        tags={"managed-by": "s247-diag-logs", "purpose": "diag-logs-regional",
+        tags={"managed-by": "s247-diag-logs", "purpose": sa_purpose,
               "region": "eastus"},
     )
     fake_storage_mgmt = MagicMock()
@@ -247,6 +248,19 @@ def _patched_run(proc_env, blob_specs, all_configs=None,
         _process_all_regions()
 
     return fake_client.post_logs.call_args_list, saved
+
+
+class TestTenantStorageAccountPolled:
+    def test_tenant_tagged_account_is_processed(self, proc_env):
+        # A diag-logs-tenant account (dedicated Entra SA) must be polled just
+        # like a regional one, so tenant logs landing there get forwarded.
+        payloads = [b'{"a":1}\n', b'{"a":2}\n', b'{"a":3}\n']
+        calls, _ = _patched_run(
+            proc_env,
+            [("PT1H.json", payloads, datetime.now(timezone.utc))],
+            sa_purpose="diag-logs-tenant",
+        )
+        assert len(calls) >= 1
 
 
 class TestDisabledLogTypeSkip:

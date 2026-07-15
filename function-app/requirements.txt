@@ -1,7 +1,7 @@
 azure-functions>=1.13.0,<2.0.0
 azure-identity>=1.10.0,<2.0.0
 azure-mgmt-resource>=23.0.0,<25.0.0
-azure-mgmt-monitor>=8.0.0b1
+azure-mgmt-monitor==8.0.0b2
 azure-mgmt-storage>=21.0.0,<25.0.0
 azure-mgmt-web>=7.0.0,<8.0.0
 azure-storage-blob>=12.20.0,<12.28.0

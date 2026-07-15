@@ -6,16 +6,6 @@ from datetime import datetime, timezone
 import azure.functions as func
 
 
-_PHASE_NAMES = {
-    1: "Fetching supported log types from Site24x7",
-    2: "Discovering Azure resources",
-    3: "Provisioning regional storage accounts",
-    4: "Mapping diagnostic categories to resources",
-    5: "Creating log types in Site24x7",
-    6: "Configuring diagnostic settings",
-}
-
-
 def _update_phase(phase_num, progress=None, extra=None):
     """Merge the current phase into scan state so the dashboard can show progress.
 
@@ -26,10 +16,11 @@ def _update_phase(phase_num, progress=None, extra=None):
     the fields the dashboard reads while a scan is running.
     """
     from shared.config_store import update_scan_state
+    from shared.scan_phases import SCAN_PHASES
     patch = {
         "in_progress": True,
         "current_phase": phase_num,
-        "current_phase_name": _PHASE_NAMES.get(phase_num, f"Phase {phase_num}"),
+        "current_phase_name": SCAN_PHASES.get(phase_num, f"Phase {phase_num}"),
     }
     if progress is not None:
         patch["phase_progress"] = progress
@@ -44,6 +35,7 @@ def _update_phase(phase_num, progress=None, extra=None):
 def _save_early_scan_state(save_scan_state, all_resources, active_resources, ignored_count):
     """Save a preliminary scan state so the Dashboard updates even if the
     full scan times out.  The final save at the end overwrites this."""
+    from shared.scan_phases import SCAN_PHASES
     scan_time = datetime.now(timezone.utc).isoformat()
     save_scan_state({
         "last_scan_time": scan_time,
@@ -58,7 +50,7 @@ def _save_early_scan_state(save_scan_state, all_resources, active_resources, ign
         "s247_reachable": None,
         "in_progress": True,
         "current_phase": 3,
-        "current_phase_name": _PHASE_NAMES[3],
+        "current_phase_name": SCAN_PHASES[3],
     })
 
 
@@ -428,13 +420,28 @@ def run_scan():
     _log_event("info", "DiagSettingsManager",
                f"Phase 4 done: {len(resource_category_map)} mapped, {len(categories_to_create)} to create in {_time.monotonic()-phase_start:.1f}s [total={_elapsed():.0f}s]")
 
-    # ── Phase 4d: record the Entra ID (tenant-log) target storage account ──
-    # Entra logs are provisioned per-category on demand from the dashboard's
-    # Entra tab (UpdateEntraLogTypes), and the tenant admin points the Entra
-    # diagnostic setting at a storage account manually. We only need to publish
-    # WHICH storage account they should target — the first regional SA. Recorded
-    # unconditionally (cheap) so the guide always has a concrete target to show.
-    entra_target_sa = region_mgr.get_primary_storage_account(resource_group)
+    # ── Phase 4d: dedicated tenant-log (Entra) storage account ──
+    # Entra logs are tenant-scoped (no region). The dedicated SA (tag
+    # diag-logs-tenant) is created ONLY while at least one Entra log type is
+    # enabled on the dashboard, and cleaned up here when all are turned off —
+    # so we don't provision idle storage for deployments not using Entra. When
+    # present it's a stable target region reconciliation never touches.
+    from shared.config_store import get_entra_logtype_states
+    _entra_states = get_entra_logtype_states()
+    _any_entra_enabled = any(s.get("enabled") for s in _entra_states.values())
+    entra_target_sub_name = ""
+    if _any_entra_enabled:
+        entra_target_sa = region_mgr.ensure_tenant_storage_account(
+            resource_group, diag_storage_suffix
+        )
+        if entra_target_sa.get("id"):
+            # Resolve the subscription display name (portal shows name, not GUID)
+            entra_target_sub_name = region_mgr.get_subscription_name(subscription_ids[0])
+    else:
+        # No Entra type enabled — remove the dedicated SA if one exists
+        # (safe-delete guard skips it while it still holds recent blobs).
+        region_mgr.deprovision_tenant_storage_account(resource_group)
+        entra_target_sa = {}
 
     # ── Phase 5: Create log types ──
     _update_phase(5, progress=f"{len(categories_to_create)} log types")
@@ -887,6 +894,7 @@ def run_scan():
         "unique_resource_types": len(_category_cache_by_type),
         "entra_target_storage_account_id": entra_target_sa.get("id", ""),
         "entra_target_storage_account_name": entra_target_sa.get("name", ""),
+        "entra_target_subscription_name": entra_target_sub_name,
         "in_progress": False,
     }
     save_scan_state(scan_state)

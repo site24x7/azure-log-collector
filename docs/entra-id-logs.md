@@ -22,14 +22,14 @@ pipeline as everything else — no ongoing manual work.
 
 | Step | Who |
 |------|-----|
-| Create the Site24x7 log types for Entra categories | **Collector** (per-category toggle on the Entra tab) |
+| Create the Site24x7 log types for Entra categories | **Collector** (per-category toggle on the Platform Logs tab) |
 | Expose a target storage account to send Entra logs to | **Collector** (shown in the dashboard) |
 | Create the Entra ID diagnostic setting pointed at that account | **You** (tenant admin, one-time, manual) |
 | Poll the storage account and forward logs to Site24x7 AppLogs | **Collector** (automatic) |
 
 ## Step 1 — Provision the log types (dashboard)
 
-Open the dashboard's **Entra ID** tab and toggle on each log type you want to
+Open the dashboard's **Platform Logs** tab (Entra ID section) and toggle on each log type you want to
 collect. Toggling one on **creates that log type in Site24x7 immediately** and
 the row shows the result:
 
@@ -37,9 +37,12 @@ the row shows the result:
 - **⚠ Create failed** — usually means the log type isn't defined in Site24x7
   yet (the sign-in family is added over time). Toggle it on again once it exists.
 
-The tab also shows the **target storage account** for Step 3 (the first
-provisioned regional storage account). If no scan has run yet, it says so — run
-a scan first so a storage account exists.
+The tab also shows the **target storage account** for Step 3 — a dedicated,
+non-regional storage account (tagged `diag-logs-tenant`). It's created on the
+next scan **once at least one log type is enabled**, left untouched by region
+reconciliation (so the target never changes), and **removed** on a later scan if
+you turn all Entra log types back off. Until a type is enabled and a scan runs,
+the tab tells you what to do.
 
 > This is our side only. It does not, and cannot, enable anything in Azure —
 > that's Step 3.
@@ -48,7 +51,7 @@ a scan first so a storage account exists.
 
 You need the **Security Administrator** or **Global Administrator** role in Entra ID.
 
-Copy the exact storage account resource ID from the dashboard's **Entra ID** tab
+Copy the exact storage account resource ID from the dashboard's **Platform Logs** tab
 first, then use any one of the following.
 
 ### Portal
@@ -63,7 +66,7 @@ first, then use any one of the following.
 ### Azure CLI
 
 ```bash
-# STORAGE_ID = the value copied from the dashboard's Entra ID tab
+# STORAGE_ID = the value copied from the dashboard's Platform Logs tab
 az monitor diagnostic-settings create \
   --name s247-entra-logs \
   --resource /providers/microsoft.aadiam \
@@ -97,7 +100,7 @@ Set-AzDiagnosticSetting `
 
 ## Categories
 
-Toggle any of these on from the Entra tab to create their Site24x7 log type:
+Toggle any of these on from the Platform Logs tab to create their Site24x7 log type:
 
 | Azure category | Site24x7 log type | Availability |
 |----------------|-------------------|--------------|
@@ -134,8 +137,9 @@ storage account, and the collector begins forwarding. Check the dashboard's
 - **403 creating the setting** — you're authenticating as a service principal /
   managed identity, or you lack Security Administrator. Use a user login with the
   right role.
-- **Dashboard shows no target storage account** — no regional storage account
-  exists yet. Run a scan (or wait for the scheduled one) so one is provisioned.
+- **Dashboard shows no target storage account** — enable at least one log type
+  (Step 1), then run a scan (or wait for the scheduled one). The dedicated
+  tenant storage account is created only while a type is enabled.
 - **Logs land but aren't forwarded** — the Site24x7 log type may not exist yet
   server-side (the sign-in family requires server-side log-type definitions).
   `auditlogs` works out of the box.
