@@ -396,3 +396,51 @@ def test_strict_state_snapshot_rejects_corrupt_data(blob_data):
     with patch.object(config_store, '_read_blob', return_value=blob_data):
         with pytest.raises(ValueError):
             config_store.get_entra_logtype_states(strict=True)
+
+
+@pytest.mark.parametrize('strict', [False, True])
+def test_empty_logtype_config_keeps_legacy_reads_but_rejects_mutation_snapshot(strict):
+    with patch.object(config_store, '_read_blob', return_value=''):
+        if strict:
+            with pytest.raises(json.JSONDecodeError):
+                config_store.get_logtype_config('auditlogs', strict=True)
+            assert 'S247_auditlogs' not in config_store._cache['logtype_configs']
+        else:
+            assert config_store.get_logtype_config('auditlogs') is None
+            assert config_store.get_logtype_config('auditlogs') is None
+
+
+@pytest.mark.parametrize('outcome', ['existing_config', 'missing_blob', 'read_error', 'init_error', 'concurrent_create'])
+def test_strict_snapshot_initializes_missing_container_and_rechecks_blob(outcome):
+    from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
+    container_missing = ResourceNotFoundError('Container missing')
+    container_missing.error_code = 'ContainerNotFound'
+    blob_missing = ResourceNotFoundError('Blob missing')
+    blob_missing.error_code = 'BlobNotFound'
+    config = {'logType': 'auditlogs', 'path': 'existing-schema'}
+    svc = _mock_service_client(blob_data=config)
+    blob = svc.get_blob_client.return_value
+    container = svc.get_container_client.return_value
+    container.exists.return_value = False
+    download = blob.download_blob.return_value
+    second_read = blob_missing if outcome == 'missing_blob' else download
+    if outcome == 'read_error':
+        second_read = RuntimeError('storage unavailable')
+    if outcome == 'init_error':
+        container.create_container.side_effect = RuntimeError('permission denied')
+    if outcome == 'concurrent_create':
+        container.create_container.side_effect = ResourceExistsError('Already initialized')
+    blob.download_blob.side_effect = [container_missing, second_read]
+    with patch.object(config_store, '_get_service_client', return_value=svc):
+        if outcome in ('read_error', 'init_error'):
+            with pytest.raises(RuntimeError):
+                config_store.get_logtype_config('auditlogs', strict=True)
+            assert 'S247_auditlogs' not in config_store._cache['logtype_configs']
+        else:
+            assert config_store.get_logtype_config('auditlogs', strict=True) == (
+                None if outcome == 'missing_blob' else config
+            )
+    container.create_container.assert_called_once_with()
+    assert blob.download_blob.call_count == (1 if outcome == 'init_error' else 2)
+    blob.upload_blob.assert_not_called()
+    blob.delete_blob.assert_not_called()

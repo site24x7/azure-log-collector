@@ -12,7 +12,7 @@ import time
 from typing import Callable, Dict, List, Optional, Tuple
 
 from azure.core import MatchConditions
-from azure.core.exceptions import ResourceNotFoundError
+from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
 from azure.storage.blob import BlobServiceClient
 
 logger = logging.getLogger(__name__)
@@ -49,8 +49,11 @@ def _get_service_client() -> Optional[BlobServiceClient]:
 def _ensure_container(service_client: BlobServiceClient) -> None:
     container_client = service_client.get_container_client(CONTAINER_NAME)
     if not container_client.exists():
-        container_client.create_container()
-        logger.info("Created blob container '%s'", CONTAINER_NAME)
+        try:
+            container_client.create_container()
+            logger.info("Created blob container '%s'", CONTAINER_NAME)
+        except ResourceExistsError:
+            pass  # Another worker initialized the container concurrently.
 
 
 def _read_blob(blob_path: str, strict: bool = False) -> Optional[str]:
@@ -68,23 +71,34 @@ def _read_blob_with_etag(blob_path: str, strict: bool = False) -> Tuple[Optional
         if strict:
             raise RuntimeError("Configuration storage is unavailable")
         return None, None
-    try:
-        blob_client = service_client.get_blob_client(
-            container=CONTAINER_NAME, blob=blob_path
-        )
-        stream = blob_client.download_blob()
-        etag = getattr(stream.properties, "etag", None)
-        return stream.readall().decode("utf-8"), etag
-    except Exception as e:
-        if strict:
-            if isinstance(e, ResourceNotFoundError) and getattr(e, "error_code", None) == "BlobNotFound":
-                return None, None
-            raise RuntimeError(f"Failed to read configuration blob {blob_path}") from e
-        if "BlobNotFound" in str(e) or "not found" in str(e).lower():
-            logger.debug("Blob not found: %s", blob_path)
-        else:
-            logger.error("Failed to read blob %s: %s", blob_path, e)
-        return None, None
+    for attempt in range(2):
+        try:
+            blob_client = service_client.get_blob_client(
+                container=CONTAINER_NAME, blob=blob_path
+            )
+            stream = blob_client.download_blob()
+            etag = getattr(stream.properties, "etag", None)
+            return stream.readall().decode("utf-8"), etag
+        except Exception as e:
+            if strict:
+                if isinstance(e, ResourceNotFoundError):
+                    error_code = getattr(e, "error_code", None)
+                    if error_code == "BlobNotFound":
+                        return None, None
+                    if error_code == "ContainerNotFound" and attempt == 0:
+                        # Bootstrap storage, then re-read: a missing container
+                        # must never stand in for a reliable mutation snapshot.
+                        try:
+                            _ensure_container(service_client)
+                        except Exception as init_error:
+                            raise RuntimeError("Failed to initialize configuration storage") from init_error
+                        continue
+                raise RuntimeError(f"Failed to read configuration blob {blob_path}") from e
+            if "BlobNotFound" in str(e) or "not found" in str(e).lower():
+                logger.debug("Blob not found: %s", blob_path)
+            else:
+                logger.error("Failed to read blob %s: %s", blob_path, e)
+            return None, None
 
 
 def _write_blob(blob_path: str, data: str) -> bool:
@@ -270,7 +284,7 @@ def get_logtype_config(category: str, force_refresh: bool = False, strict: bool 
 
     blob_path = f"{LOGTYPE_CONFIGS_PREFIX}{config_key}.json"
     data = _read_blob(blob_path, strict=True) if strict else _read_blob(blob_path)
-    if data is not None:
+    if data is not None and (strict or data):
         config = json.loads(data)
         if strict and not isinstance(config, dict):
             raise ValueError("Invalid log type configuration")

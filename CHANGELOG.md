@@ -19,6 +19,9 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 - Abort Entra toggles before mutation when snapshot reads fail; only confirmed
   BlobNotFound is treated as absent. Preserve server error details on retries of
   already-enabled categories without disabling their working config.
+- Initialize a missing config container during strict snapshot reads and retry
+  the blob read, including concurrent startup by multiple workers. Preserve
+  legacy empty-config reads while rejecting empty mutation snapshots.
 - Preserve the scan lock, last completed scan, connectivity, and previous results
   when publishing preliminary discovery progress.
 - Shell setup now writes `SITE24X7_API_KEY`, accepts legacy `SITE24X7_API_TOKEN`
