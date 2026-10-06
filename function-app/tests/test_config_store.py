@@ -325,3 +325,46 @@ class TestScanLock:
         mock_rmw.side_effect = fake_rmw
         # Stale > 15 min — should take lock
         assert config_store.try_acquire_scan_lock(ttl_seconds=900) is True
+
+
+def test_catalog_force_refresh_sees_updates_from_another_worker():
+    config_store._cache['supported_types'] = {'auditlogs': {}}
+    remote = {'auditlogs': {}, 'signinlogs': {}}
+    with patch.object(config_store, '_read_blob', return_value=json.dumps(remote)):
+        assert config_store.get_supported_log_types(force_refresh=True) == remote
+        assert config_store.get_supported_log_types() == remote
+
+
+def test_deleting_already_missing_config_succeeds_and_evicts_cache():
+    from azure.core.exceptions import ResourceNotFoundError
+    error = ResourceNotFoundError('The specified blob does not exist.')
+    error.error_code = 'BlobNotFound'
+    svc = MagicMock()
+    svc.get_blob_client.return_value.delete_blob.side_effect = error
+    config_store._cache['logtype_configs']['S247_auditlogs'] = {'logType': 'auditlogs'}
+    with patch.object(config_store, '_get_service_client', return_value=svc):
+        assert config_store.delete_logtype_config('auditlogs') is True
+    assert 'S247_auditlogs' not in config_store._cache['logtype_configs']
+
+
+def test_delete_storage_failure_is_not_treated_as_missing():
+    from azure.core.exceptions import ResourceNotFoundError
+    svc = MagicMock()
+    svc.get_blob_client.return_value.delete_blob.side_effect = ResourceNotFoundError('Container missing')
+    with patch.object(config_store, '_get_service_client', return_value=svc):
+        assert config_store.delete_logtype_config('auditlogs') is False
+
+
+@pytest.mark.parametrize('blob_data', [None, 'invalid-json', '[]'])
+def test_catalog_refresh_outage_preserves_worker_last_good_catalog(blob_data):
+    cached = {'auditlogs': {'logtype': 'auditlogs'}}
+    config_store._cache['supported_types'] = cached
+    with patch.object(config_store, '_read_blob', return_value=blob_data):
+        assert config_store.get_supported_log_types(force_refresh=True) == cached
+
+
+def test_logtype_snapshot_refresh_bypasses_stale_worker_cache():
+    config_store._cache['logtype_configs']['S247_auditlogs'] = config_store._MISSING
+    current = {'logType': 'auditlogs', 'path': 'current-schema'}
+    with patch.object(config_store, '_read_blob', return_value=json.dumps(current)):
+        assert config_store.get_logtype_config('auditlogs', force_refresh=True) == current

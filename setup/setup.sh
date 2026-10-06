@@ -29,7 +29,7 @@ log_debug()   { echo -e "[DEBUG] $*" >> "$LOG_FILE"; }
 run_az() {
     local description="$1"
     shift
-    log_debug "Running: az $*"
+    log_debug "Running Azure command: ${description}"
     local output
     if output=$(az "$@" 2>&1); then
         log_debug "Success: ${description}"
@@ -38,7 +38,7 @@ run_az() {
     else
         local exit_code=$?
         log_error "${description} failed (exit code: ${exit_code})"
-        log_error "Command: az $*"
+        log_error "Azure operation: ${description}"
         log_error "Output: ${output}"
         echo "$output"
         return $exit_code
@@ -127,9 +127,11 @@ preflight_checks() {
     done
     log_ok "All subscriptions accessible"
 
-    # Site24x7 token
-    if [[ -z "${SITE24X7_API_TOKEN:-}" || "${SITE24X7_API_TOKEN}" == "your-token-here" ]]; then
-        log_info "SITE24X7_API_TOKEN is placeholder — Site24x7 integration will use stubs"
+    # Accept existing config.env files while standardizing the runtime setting.
+    SITE24X7_API_KEY="${SITE24X7_API_KEY:-${SITE24X7_API_TOKEN:-}}"
+    if [[ -z "$SITE24X7_API_KEY" || "$SITE24X7_API_KEY" == "your-token-here" || "$SITE24X7_API_KEY" == "your-device-key-here" ]]; then
+        log_error "Set SITE24X7_API_KEY to your Site24x7 Device Key in config.env"
+        exit 1
     fi
 
     # Check storage account name availability (skip if it already belongs to our RG)
@@ -232,7 +234,7 @@ provision_infrastructure() {
         fi
     done
 
-    # Contributor on RG only (for dynamic Event Hub + lock management)
+    # Contributor on RG only (for storage account + lock management)
     local rg_id
     rg_id=$(az group show --name "$RG" --query id -o tsv)
     if az role assignment create \
@@ -332,7 +334,7 @@ provision_infrastructure() {
         --resource-group "$RG" \
         --settings \
             "SUBSCRIPTION_IDS=${SUBSCRIPTION_IDS}" \
-            "SITE24X7_API_TOKEN=${SITE24X7_API_TOKEN:-}" \
+            "SITE24X7_API_KEY=${SITE24X7_API_KEY}" \
             "SITE24X7_BASE_URL=https://www.${SITE24X7_DOMAIN:-site24x7.com}" \
             "GENERAL_LOGTYPE_ENABLED=${GENERAL_LOGTYPE}" \
             "TIMER_SCHEDULE=${TIMER}" \

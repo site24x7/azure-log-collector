@@ -12,6 +12,7 @@ import time
 from typing import Callable, Dict, List, Optional, Tuple
 
 from azure.core import MatchConditions
+from azure.core.exceptions import ResourceNotFoundError
 from azure.storage.blob import BlobServiceClient
 
 logger = logging.getLogger(__name__)
@@ -193,25 +194,35 @@ def _delete_blob(blob_path: str) -> bool:
         )
         blob_client.delete_blob()
         return True
+    except ResourceNotFoundError as e:
+        if getattr(e, "error_code", None) == "BlobNotFound":
+            return True  # already deleted; retries are idempotent
+        logger.error("Failed to delete blob %s: %s", blob_path, e)
+        return False
     except Exception as e:
-        if "BlobNotFound" not in str(e):
-            logger.error("Failed to delete blob %s: %s", blob_path, e)
+        logger.error("Failed to delete blob %s: %s", blob_path, e)
         return False
 
 
 # ─── Supported Azure Log Types ───────────────────────────────────────────────
 
 
-def get_supported_log_types() -> Dict:
-    """Get supported Azure log types (cached in memory, persisted in blob)."""
-    if _cache["supported_types"] is not None:
+def get_supported_log_types(force_refresh: bool = False) -> Dict:
+    """Read the catalog; force a blob read for requests served by other workers."""
+    if not force_refresh and _cache["supported_types"] is not None:
         return _cache["supported_types"]
 
     data = _read_blob(SUPPORTED_TYPES_BLOB)
     if data:
-        _cache["supported_types"] = json.loads(data)
-        return _cache["supported_types"]
-    return {}
+        try:
+            catalog = json.loads(data)
+            if isinstance(catalog, dict):
+                _cache["supported_types"] = catalog
+                return catalog
+        except json.JSONDecodeError:
+            logger.error("Invalid JSON in supported log type catalog")
+    # A transient blob outage must not discard this worker's last good catalog.
+    return _cache["supported_types"] or {}
 
 
 def save_supported_log_types(types_data: Dict) -> bool:
@@ -239,11 +250,11 @@ def _normalize_category(category: str) -> str:
     return category.replace("-", "").replace("_", "").replace(" ", "").lower()
 
 
-def get_logtype_config(category: str) -> Optional[Dict]:
+def get_logtype_config(category: str, force_refresh: bool = False) -> Optional[Dict]:
     """Get the sourceConfig for a specific log category."""
     config_key = f"S247_{_normalize_category(category)}"
 
-    if config_key in _cache["logtype_configs"]:
+    if not force_refresh and config_key in _cache["logtype_configs"]:
         cached = _cache["logtype_configs"][config_key]
         # _MISSING sentinel means we already checked and it doesn't exist
         return None if cached is _MISSING else cached

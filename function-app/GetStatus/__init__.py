@@ -119,7 +119,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             from shared.entra_config import ENTRA_LOG_CATEGORIES
             from shared.config_store import get_entra_logtype_states, get_supported_log_types
             states = get_entra_logtype_states()
-            supported_map = get_supported_log_types() or {}
+            supported_map = get_supported_log_types(force_refresh=True) or {}
             # Only mark "not supported" when we actually know the supported set
             # (a scan has populated it); before that, don't prejudge.
             know_supported = bool(supported_map)

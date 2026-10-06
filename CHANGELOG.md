@@ -7,6 +7,21 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [Unreleased]
+
+### Fixed
+- Refresh supported Azure log types on every scan, preserving the cached catalog
+  during server outages; status/filter requests read the persisted catalog so
+  changes are visible across Function App workers.
+- Check Entra config/state persistence before reporting toggle success. Failed
+  state writes attempt to restore the previous config; failed creation no longer
+  enables a new category, and failed retries preserve an existing enabled category.
+- Preserve the scan lock, last completed scan, connectivity, and previous results
+  when publishing preliminary discovery progress.
+- Shell setup now writes `SITE24X7_API_KEY`, accepts legacy `SITE24X7_API_TOKEN`
+  config files, and rejects missing/placeholder keys before provisioning.
+- Entra status now says "Ready to receive" rather than implying verified ingestion.
+
 ## [1.0.0] — 2026-05-14 — First official release
 
 Inaugural release of the Site24x7 Azure Log Collector. Production-hardened
