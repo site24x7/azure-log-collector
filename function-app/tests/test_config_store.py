@@ -325,3 +325,122 @@ class TestScanLock:
         mock_rmw.side_effect = fake_rmw
         # Stale > 15 min — should take lock
         assert config_store.try_acquire_scan_lock(ttl_seconds=900) is True
+
+
+def test_catalog_force_refresh_sees_updates_from_another_worker():
+    config_store._cache['supported_types'] = {'auditlogs': {}}
+    remote = {'auditlogs': {}, 'signinlogs': {}}
+    with patch.object(config_store, '_read_blob', return_value=json.dumps(remote)):
+        assert config_store.get_supported_log_types(force_refresh=True) == remote
+        assert config_store.get_supported_log_types() == remote
+
+
+def test_deleting_already_missing_config_succeeds_and_evicts_cache():
+    from azure.core.exceptions import ResourceNotFoundError
+    error = ResourceNotFoundError('The specified blob does not exist.')
+    error.error_code = 'BlobNotFound'
+    svc = MagicMock()
+    svc.get_blob_client.return_value.delete_blob.side_effect = error
+    config_store._cache['logtype_configs']['S247_auditlogs'] = {'logType': 'auditlogs'}
+    with patch.object(config_store, '_get_service_client', return_value=svc):
+        assert config_store.delete_logtype_config('auditlogs') is True
+    assert 'S247_auditlogs' not in config_store._cache['logtype_configs']
+
+
+def test_delete_storage_failure_is_not_treated_as_missing():
+    from azure.core.exceptions import ResourceNotFoundError
+    svc = MagicMock()
+    svc.get_blob_client.return_value.delete_blob.side_effect = ResourceNotFoundError('Container missing')
+    with patch.object(config_store, '_get_service_client', return_value=svc):
+        assert config_store.delete_logtype_config('auditlogs') is False
+
+
+@pytest.mark.parametrize('blob_data', [None, 'invalid-json', '[]'])
+def test_catalog_refresh_outage_preserves_worker_last_good_catalog(blob_data):
+    cached = {'auditlogs': {'logtype': 'auditlogs'}}
+    config_store._cache['supported_types'] = cached
+    with patch.object(config_store, '_read_blob', return_value=blob_data):
+        assert config_store.get_supported_log_types(force_refresh=True) == cached
+
+
+def test_logtype_snapshot_refresh_bypasses_stale_worker_cache():
+    config_store._cache['logtype_configs']['S247_auditlogs'] = config_store._MISSING
+    current = {'logType': 'auditlogs', 'path': 'current-schema'}
+    with patch.object(config_store, '_read_blob', return_value=json.dumps(current)):
+        assert config_store.get_logtype_config('auditlogs', force_refresh=True) == current
+
+
+@pytest.mark.parametrize('reader', [
+    lambda: config_store.get_logtype_config('auditlogs', strict=True),
+    lambda: config_store.get_entra_logtype_states(strict=True),
+])
+@pytest.mark.parametrize('failure', ['unavailable', 'read_error', 'container_missing', 'blob_missing'])
+def test_strict_snapshots_only_accept_confirmed_blob_not_found(reader, failure):
+    from azure.core.exceptions import ResourceNotFoundError
+    svc = MagicMock()
+    error = RuntimeError('network unavailable')
+    if failure in ('container_missing', 'blob_missing'):
+        error = ResourceNotFoundError('not found')
+        error.error_code = 'BlobNotFound' if failure == 'blob_missing' else 'ContainerNotFound'
+    svc.get_blob_client.return_value.download_blob.side_effect = error
+    with patch.object(config_store, '_get_service_client', return_value=None if failure == 'unavailable' else svc):
+        if failure == 'blob_missing':
+            assert reader() in (None, {})
+        else:
+            with pytest.raises(RuntimeError):
+                reader()
+
+
+@pytest.mark.parametrize('blob_data', ['', '[]', 'invalid-json'])
+def test_strict_state_snapshot_rejects_corrupt_data(blob_data):
+    with patch.object(config_store, '_read_blob', return_value=blob_data):
+        with pytest.raises(ValueError):
+            config_store.get_entra_logtype_states(strict=True)
+
+
+@pytest.mark.parametrize('strict', [False, True])
+def test_empty_logtype_config_keeps_legacy_reads_but_rejects_mutation_snapshot(strict):
+    with patch.object(config_store, '_read_blob', return_value=''):
+        if strict:
+            with pytest.raises(json.JSONDecodeError):
+                config_store.get_logtype_config('auditlogs', strict=True)
+            assert 'S247_auditlogs' not in config_store._cache['logtype_configs']
+        else:
+            assert config_store.get_logtype_config('auditlogs') is None
+            assert config_store.get_logtype_config('auditlogs') is None
+
+
+@pytest.mark.parametrize('outcome', ['existing_config', 'missing_blob', 'read_error', 'init_error', 'concurrent_create'])
+def test_strict_snapshot_initializes_missing_container_and_rechecks_blob(outcome):
+    from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
+    container_missing = ResourceNotFoundError('Container missing')
+    container_missing.error_code = 'ContainerNotFound'
+    blob_missing = ResourceNotFoundError('Blob missing')
+    blob_missing.error_code = 'BlobNotFound'
+    config = {'logType': 'auditlogs', 'path': 'existing-schema'}
+    svc = _mock_service_client(blob_data=config)
+    blob = svc.get_blob_client.return_value
+    container = svc.get_container_client.return_value
+    container.exists.return_value = False
+    download = blob.download_blob.return_value
+    second_read = blob_missing if outcome == 'missing_blob' else download
+    if outcome == 'read_error':
+        second_read = RuntimeError('storage unavailable')
+    if outcome == 'init_error':
+        container.create_container.side_effect = RuntimeError('permission denied')
+    if outcome == 'concurrent_create':
+        container.create_container.side_effect = ResourceExistsError('Already initialized')
+    blob.download_blob.side_effect = [container_missing, second_read]
+    with patch.object(config_store, '_get_service_client', return_value=svc):
+        if outcome in ('read_error', 'init_error'):
+            with pytest.raises(RuntimeError):
+                config_store.get_logtype_config('auditlogs', strict=True)
+            assert 'S247_auditlogs' not in config_store._cache['logtype_configs']
+        else:
+            assert config_store.get_logtype_config('auditlogs', strict=True) == (
+                None if outcome == 'missing_blob' else config
+            )
+    container.create_container.assert_called_once_with()
+    assert blob.download_blob.call_count == (1 if outcome == 'init_error' else 2)
+    blob.upload_blob.assert_not_called()
+    blob.delete_blob.assert_not_called()

@@ -26,6 +26,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     """
     from shared.config_store import (
         get_supported_log_types,
+        get_logtype_config,
         save_logtype_config,
         delete_logtype_config,
         set_entra_logtype_state,
@@ -55,56 +56,89 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
     now = datetime.now(timezone.utc).isoformat()
 
+    previous_state = {}
+    previous_config = None
+    config_category = normalized
+    config_changed = False
+    snapshot_loaded = False
+    failure_message = None
     try:
+        previous_state = get_entra_logtype_states(strict=True).get(normalized, {})
+        previous_config = get_logtype_config(normalized, force_refresh=True, strict=True)
+        snapshot_loaded = True
         if action == "disable":
-            delete_logtype_config(normalized)
-            set_entra_logtype_state(normalized, {
-                "enabled": False, "status": "disabled", "message": "", "updated": now,
-            })
-            return _ok({"category": normalized, "enabled": False, "status": "disabled",
-                        "states": get_entra_logtype_states()})
+            if not delete_logtype_config(normalized):
+                raise RuntimeError("Failed to delete Entra log type configuration")
+            config_changed = True
+            state = {"enabled": False, "status": "disabled", "message": "", "updated": now}
+        else:
+            client = Site24x7Client()
+            supported = get_supported_log_types(force_refresh=True)
+            created = client.create_log_types([normalized], supported_types=supported)
+            batch_errors = []
+            if created and isinstance(created[0], dict):
+                batch_errors = created[0].get("_errors", [])
 
-        # enable → create the log type in Site24x7
-        client = Site24x7Client()
-        supported = get_supported_log_types()
-        created = client.create_log_types([normalized], supported_types=supported)
-
-        # Pull structured errors (first element may carry an _errors list)
-        batch_errors = []
-        if created:
-            batch_errors = created[0].pop("_errors", []) if isinstance(created[0], dict) else []
-
-        saved_config = None
-        for lt in (created or []):
-            if lt.get("sourceConfig"):
+            saved_config = None
+            for lt in (created or []):
+                if not isinstance(lt, dict) or not lt.get("sourceConfig"):
+                    continue
+                config_category = lt.get("category", "").replace("S247_", "") or normalized
+                previous_config = get_logtype_config(config_category, force_refresh=True, strict=True)
+                if not save_logtype_config(config_category, lt["sourceConfig"]):
+                    raise RuntimeError("Failed to save Entra log type configuration")
+                config_changed = True
                 saved_config = lt["sourceConfig"]
-                cat_name = lt.get("category", "").replace("S247_", "") or normalized
-                save_logtype_config(cat_name, saved_config)
                 break
 
-        if saved_config:
-            state = {"enabled": True, "status": "created", "message": "", "updated": now}
-        else:
-            msg = "Site24x7 did not return a config for this log type."
-            for e in batch_errors:
-                if e.get("message"):
-                    msg = e["message"]
-                    break
-            # Don't leave it "enabled" if the create didn't take — otherwise a
-            # failed/unsupported type lingers as enabled (and keeps the tenant SA
-            # provisioned). The toggle simply reverts.
-            msg += " If this log type hasn't been created in Site24x7 yet, it will succeed once it is."
-            state = {"enabled": False, "status": "failed", "message": msg, "updated": now}
+            if saved_config:
+                state = {"enabled": True, "status": "created", "message": "", "updated": now}
+            else:
+                msg = "Site24x7 did not return a config for this log type."
+                for error in batch_errors:
+                    if error.get("message"):
+                        msg = error["message"]
+                        break
+                # A failed retry must not disable a previously working category.
+                if previous_state.get("enabled"):
+                    failure_message = msg
+                    # Preserve the working state/config while retaining the server's
+                    # explanation of the failed retry for the caller and dashboard.
+                    if set_entra_logtype_state(normalized, {"message": msg, "updated": now}) is None:
+                        logging.error("UpdateEntraLogTypes: Failed to persist retry error for %s", normalized)
+                    raise RuntimeError("Failed to refresh existing Entra log type")
+                state = {"enabled": False, "status": "failed", "message": msg, "updated": now}
 
-        set_entra_logtype_state(normalized, state)
-        return _ok({"category": normalized, **state, "states": get_entra_logtype_states()})
+        states = set_entra_logtype_state(normalized, state)
+        if states is None:
+            raise RuntimeError("Failed to persist Entra log type state")
+        return _ok({"category": normalized, **state, "states": states})
 
-    except Exception as e:
-        logging.error("UpdateEntraLogTypes: %s", e)
-        set_entra_logtype_state(normalized, {
-            "enabled": True, "status": "failed", "message": str(e)[:300], "updated": now,
-        })
-        return _err("Failed to update Entra log type", 500)
+    except Exception:
+        logging.exception("UpdateEntraLogTypes: Failed to %s %s", action, normalized)
+        if config_changed:
+            # Config and UI state live in separate blobs. Restore the original
+            # config if committing the state fails, so a failed toggle is retryable.
+            try:
+                restored = (save_logtype_config(config_category, previous_config)
+                            if previous_config is not None
+                            else delete_logtype_config(config_category))
+                if not restored:
+                    logging.error("UpdateEntraLogTypes: Config rollback failed for %s", normalized)
+            except Exception:
+                logging.exception("UpdateEntraLogTypes: Config rollback failed for %s", normalized)
+        if snapshot_loaded and action == "enable" and not previous_state.get("enabled"):
+            try:
+                failed = set_entra_logtype_state(normalized, {
+                    "enabled": False, "status": "failed",
+                    "message": "Could not provision this log type. Check collector logs and retry.",
+                    "updated": now,
+                })
+                if failed is None:
+                    logging.error("UpdateEntraLogTypes: Failed to persist failure state for %s", normalized)
+            except Exception:
+                logging.exception("UpdateEntraLogTypes: Failed to persist failure state for %s", normalized)
+        return _err(failure_message or "Failed to update Entra log type. Retry the operation.", 500)
 
 
 def _ok(payload):

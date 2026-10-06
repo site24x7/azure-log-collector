@@ -32,26 +32,49 @@ def _update_phase(phase_num, progress=None, extra=None):
         pass  # never let a progress update abort the scan
 
 
-def _save_early_scan_state(save_scan_state, all_resources, active_resources, ignored_count):
-    """Save a preliminary scan state so the Dashboard updates even if the
-    full scan times out.  The final save at the end overwrites this."""
+def _save_early_scan_state(all_resources, active_resources, ignored_count):
+    """Merge discovery progress without replacing the scan lock or prior results."""
+    from shared.config_store import update_scan_state
     from shared.scan_phases import SCAN_PHASES
-    scan_time = datetime.now(timezone.utc).isoformat()
-    save_scan_state({
-        "last_scan_time": scan_time,
+    update_scan_state({
         "total_resources": len(all_resources),
         "active_resources": len(active_resources),
         "ignored_resources": ignored_count,
-        "newly_configured": 0,
-        "updated": 0,
-        "already_configured": 0,
-        "removed": 0,
-        "errors": 0,
-        "s247_reachable": None,
         "in_progress": True,
         "current_phase": 3,
         "current_phase_name": SCAN_PHASES[3],
     })
+
+
+def _refresh_supported_types(client):
+    """Fetch the current server catalog each scan; retain cached data on outage."""
+    from shared.config_store import get_supported_log_types, save_supported_log_types
+    cached = get_supported_log_types(force_refresh=True)
+    try:
+        result = client.get_supported_log_types()
+        entries = result.get("supported_types") if isinstance(result, dict) else None
+        if not isinstance(entries, list) or not entries:
+            logging.warning("DiagSettingsManager: Catalog unavailable; using cached types")
+            return cached
+        if any(not isinstance(t, dict) or not isinstance(t.get("logtype"), str)
+               or not t["logtype"] for t in entries):
+            logging.warning("DiagSettingsManager: Invalid catalog; using cached types")
+            return cached
+        types_map = {t["logtype"]: t for t in entries}
+        for entry in entries:
+            logtype = entry["logtype"]
+            for category in entry.get("log_categories", []):
+                normalized = category.replace("-", "").replace("_", "").replace(" ", "").lower()
+                existing = types_map.get(normalized)
+                if not existing or (existing.get("logtype") == normalized
+                                    and logtype != normalized):
+                    types_map[normalized] = entry
+        if not save_supported_log_types(types_map):
+            logging.warning("DiagSettingsManager: Failed to persist refreshed catalog")
+        return types_map
+    except Exception:
+        logging.exception("DiagSettingsManager: Catalog refresh failed; using cached types")
+        return cached
 
 
 def run_scan():
@@ -60,8 +83,6 @@ def run_scan():
     from shared.ignore_list import load_ignore_list, is_ignored
     from shared.site24x7_client import Site24x7Client
     from shared.config_store import (
-        get_supported_log_types,
-        save_supported_log_types,
         get_logtype_config,
         save_logtype_config,
         get_all_logtype_configs,
@@ -123,37 +144,7 @@ def run_scan():
     # ── Phase 1: Get supported log types ──
     _update_phase(1)
     phase_start = _time.monotonic()
-    supported_types = get_supported_log_types()
-    if not supported_types:
-        logging.info("DiagSettingsManager: Fetching supported log types from Site24x7")
-        result = s247_client.get_supported_log_types()
-        if result and "supported_types" in result:
-            # Build lookup map: normalized_name -> type_info
-            # Two-pass to handle sub-categories correctly:
-            # Pass 1: Index every entry by its logtype
-            # Pass 2: Index sub-categories, preferring entries where
-            #   logtype != sub-category (i.e., the "parent" logtype)
-            types_map = {}
-            for t in result["supported_types"]:
-                logtype = t.get("logtype", "")
-                types_map[logtype] = t
-
-            for t in result["supported_types"]:
-                logtype = t.get("logtype", "")
-                for cat in t.get("log_categories", []):
-                    cat_normalized = cat.replace("-", "").replace("_", "").lower()
-                    existing = types_map.get(cat_normalized)
-                    if not existing:
-                        # No entry yet — set it
-                        types_map[cat_normalized] = t
-                    elif existing.get("logtype") == cat_normalized and logtype != cat_normalized:
-                        # Existing entry is self-referencing (logtype == category name)
-                        # but this entry is a true parent — prefer the parent
-                        types_map[cat_normalized] = t
-
-            save_supported_log_types(types_map)
-            supported_types = types_map
-            logging.info("DiagSettingsManager: Cached %d supported log types", len(types_map))
+    supported_types = _refresh_supported_types(s247_client)
     logging.info("DiagSettingsManager: Phase 1 (supported types) done in %.1fs [total=%.1fs]",
                  _time.monotonic() - phase_start, _elapsed())
     phase_timings["phase1_supported_types"] = round(_time.monotonic() - phase_start, 1)
@@ -201,8 +192,8 @@ def run_scan():
         ignored_count,
     )
 
-    # Save early scan state so "Last Scan" updates even if the full scan times out
-    _save_early_scan_state(save_scan_state, all_resources, active_resources, ignored_count)
+    # Publish discovery counts while preserving the previous completed scan and lock
+    _save_early_scan_state(all_resources, active_resources, ignored_count)
 
     # Build a set of active resource IDs for cleanup
     active_resource_ids = {r.get("id", "") for r in active_resources}

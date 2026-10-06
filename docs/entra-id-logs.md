@@ -33,11 +33,16 @@ Open the dashboard's **Platform Logs** tab (Entra ID section) and toggle on each
 collect. Toggling one on **creates that log type in Site24x7 immediately** and
 the row shows the result:
 
-- **✓ Created in Site24x7** — ready to receive.
-- **⚠ Create failed** — usually means the log type isn't defined in Site24x7
-  yet (the sign-in family is added over time). Toggle it on again once it exists.
+- **✓ Ready to receive** — the log type and collector config are saved. This does
+  not confirm that Azure is sending logs; verify actual ingestion in AppLogs.
+- **Not supported yet** — the category is not in the server catalog; its toggle
+  is disabled. Each scan refreshes the catalog, so run a scan after support is added.
+- **Off** — forwarding for this category is off; an existing Site24x7 log type is kept.
 
-The tab also shows the **target storage account** for Step 3 — a dedicated,
+A failed toggle reports an error and attempts to restore the prior collector config.
+Check the collector logs and retry; storage failures never report a successful toggle.
+
+The tab also shows the **target storage account** for Step 2 — a dedicated,
 non-regional storage account (tagged `diag-logs-tenant`). It's created on the
 next scan **once at least one log type is enabled**, left untouched by region
 reconciliation (so the target never changes), and **removed** on a later scan if
@@ -45,7 +50,7 @@ you turn all Entra log types back off. Until a type is enabled and a scan runs,
 the tab tells you what to do.
 
 > This is our side only. It does not, and cannot, enable anything in Azure —
-> that's Step 3.
+> that's Step 2.
 
 ## Step 2 — Create the Entra diagnostic setting (tenant admin)
 

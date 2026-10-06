@@ -23,7 +23,7 @@ Azure Resources ──► Storage Accounts (per region) ──► Function App �
 
 ### Option A — Deploy to Azure (portal)
 
-One-click ARM deployment. Requires you to be signed into GitHub with access to this repo (the template is published as a release asset).
+One-click ARM deployment. The public template is published as a release asset; no GitHub sign-in is required.
 
 | Version | Button / URL |
 |---|---|
@@ -61,8 +61,8 @@ Edit `config.env`:
 # REQUIRED — your Azure subscription ID(s), comma-separated
 SUBSCRIPTION_IDS="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 
-# REQUIRED — your Site24x7 API token
-SITE24X7_API_TOKEN="your-token-here"
+# REQUIRED — your Site24x7 Device Key
+SITE24X7_API_KEY="your-device-key-here"
 
 # OPTIONAL — Azure region (default: eastus)
 FUNCTION_APP_REGION="eastus"

@@ -516,7 +516,7 @@ function _entraStatusPill(lt) {
     return `<span class="badge" style="font-size:10px" title="This log type isn't available in Site24x7 yet — it will appear here once added.">Not supported yet</span>`;
   if (lt.enabled) {
     if (lt.status === 'created')
-      return `<span class="badge badge-green" style="font-size:10px">✓ Collecting</span>`;
+      return `<span class="badge badge-green" style="font-size:10px" title="Ready to forward logs after the tenant admin configures Azure. Check AppLogs to verify ingestion.">✓ Ready to receive</span>`;
     if (lt.status === 'failed')
       return `<span class="badge badge-red" style="font-size:10px" title="${escAttr(lt.message||'')}">⚠ Create failed</span>`;
     return `<span class="badge" style="font-size:10px">${esc(lt.status||'')}</span>`;
@@ -542,7 +542,7 @@ function renderEntraLogTypes(logtypes) {
           <span style="font-size:11px;color:var(--muted);font-family:monospace">${esc(lt.normalized)}</span>
           ${_entraStatusPill(lt)}
         </div>
-        ${(!unsupported && lt.status === 'failed' && lt.message) ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">${esc(lt.message)}</div>` : ''}
+        ${(!unsupported && lt.message) ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">${esc(lt.message)}</div>` : ''}
       </div>
       ${toggle}
     </div>`;

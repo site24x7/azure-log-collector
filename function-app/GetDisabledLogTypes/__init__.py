@@ -14,7 +14,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
     try:
         disabled = get_disabled_log_types()
-        supported = get_supported_log_types()
+        supported = get_supported_log_types(force_refresh=True)
 
         # Category → resource types mapping (built from ALL discovered resources
         # during scan, not just configured ones)
