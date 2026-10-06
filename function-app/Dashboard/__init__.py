@@ -542,7 +542,7 @@ function renderEntraLogTypes(logtypes) {
           <span style="font-size:11px;color:var(--muted);font-family:monospace">${esc(lt.normalized)}</span>
           ${_entraStatusPill(lt)}
         </div>
-        ${(!unsupported && lt.status === 'failed' && lt.message) ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">${esc(lt.message)}</div>` : ''}
+        ${(!unsupported && lt.message) ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">${esc(lt.message)}</div>` : ''}
       </div>
       ${toggle}
     </div>`;

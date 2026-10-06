@@ -16,6 +16,9 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 - Check Entra config/state persistence before reporting toggle success. Failed
   state writes attempt to restore the previous config; failed creation no longer
   enables a new category, and failed retries preserve an existing enabled category.
+- Abort Entra toggles before mutation when snapshot reads fail; only confirmed
+  BlobNotFound is treated as absent. Preserve server error details on retries of
+  already-enabled categories without disabling their working config.
 - Preserve the scan lock, last completed scan, connectivity, and previous results
   when publishing preliminary discovery progress.
 - Shell setup now writes `SITE24X7_API_KEY`, accepts legacy `SITE24X7_API_TOKEN`

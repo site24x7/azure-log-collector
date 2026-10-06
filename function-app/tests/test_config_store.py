@@ -368,3 +368,31 @@ def test_logtype_snapshot_refresh_bypasses_stale_worker_cache():
     current = {'logType': 'auditlogs', 'path': 'current-schema'}
     with patch.object(config_store, '_read_blob', return_value=json.dumps(current)):
         assert config_store.get_logtype_config('auditlogs', force_refresh=True) == current
+
+
+@pytest.mark.parametrize('reader', [
+    lambda: config_store.get_logtype_config('auditlogs', strict=True),
+    lambda: config_store.get_entra_logtype_states(strict=True),
+])
+@pytest.mark.parametrize('failure', ['unavailable', 'read_error', 'container_missing', 'blob_missing'])
+def test_strict_snapshots_only_accept_confirmed_blob_not_found(reader, failure):
+    from azure.core.exceptions import ResourceNotFoundError
+    svc = MagicMock()
+    error = RuntimeError('network unavailable')
+    if failure in ('container_missing', 'blob_missing'):
+        error = ResourceNotFoundError('not found')
+        error.error_code = 'BlobNotFound' if failure == 'blob_missing' else 'ContainerNotFound'
+    svc.get_blob_client.return_value.download_blob.side_effect = error
+    with patch.object(config_store, '_get_service_client', return_value=None if failure == 'unavailable' else svc):
+        if failure == 'blob_missing':
+            assert reader() in (None, {})
+        else:
+            with pytest.raises(RuntimeError):
+                reader()
+
+
+@pytest.mark.parametrize('blob_data', ['', '[]', 'invalid-json'])
+def test_strict_state_snapshot_rejects_corrupt_data(blob_data):
+    with patch.object(config_store, '_read_blob', return_value=blob_data):
+        with pytest.raises(ValueError):
+            config_store.get_entra_logtype_states(strict=True)

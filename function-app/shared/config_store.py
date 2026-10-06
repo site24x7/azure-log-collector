@@ -53,15 +53,20 @@ def _ensure_container(service_client: BlobServiceClient) -> None:
         logger.info("Created blob container '%s'", CONTAINER_NAME)
 
 
-def _read_blob(blob_path: str) -> Optional[str]:
-    text, _etag = _read_blob_with_etag(blob_path)
+def _read_blob(blob_path: str, strict: bool = False) -> Optional[str]:
+    if strict:
+        text, _etag = _read_blob_with_etag(blob_path, strict=True)
+    else:
+        text, _etag = _read_blob_with_etag(blob_path)
     return text
 
 
-def _read_blob_with_etag(blob_path: str) -> Tuple[Optional[str], Optional[str]]:
-    """Return (text, etag). (None, None) if missing or error."""
+def _read_blob_with_etag(blob_path: str, strict: bool = False) -> Tuple[Optional[str], Optional[str]]:
+    """Read a blob; strict snapshots raise on errors except a confirmed missing blob."""
     service_client = _get_service_client()
     if not service_client:
+        if strict:
+            raise RuntimeError("Configuration storage is unavailable")
         return None, None
     try:
         blob_client = service_client.get_blob_client(
@@ -71,6 +76,10 @@ def _read_blob_with_etag(blob_path: str) -> Tuple[Optional[str], Optional[str]]:
         etag = getattr(stream.properties, "etag", None)
         return stream.readall().decode("utf-8"), etag
     except Exception as e:
+        if strict:
+            if isinstance(e, ResourceNotFoundError) and getattr(e, "error_code", None) == "BlobNotFound":
+                return None, None
+            raise RuntimeError(f"Failed to read configuration blob {blob_path}") from e
         if "BlobNotFound" in str(e) or "not found" in str(e).lower():
             logger.debug("Blob not found: %s", blob_path)
         else:
@@ -250,19 +259,21 @@ def _normalize_category(category: str) -> str:
     return category.replace("-", "").replace("_", "").replace(" ", "").lower()
 
 
-def get_logtype_config(category: str, force_refresh: bool = False) -> Optional[Dict]:
-    """Get the sourceConfig for a specific log category."""
+def get_logtype_config(category: str, force_refresh: bool = False, strict: bool = False) -> Optional[Dict]:
+    """Get sourceConfig; strict mode requires a reliable snapshot for mutations."""
     config_key = f"S247_{_normalize_category(category)}"
 
-    if not force_refresh and config_key in _cache["logtype_configs"]:
+    if not (force_refresh or strict) and config_key in _cache["logtype_configs"]:
         cached = _cache["logtype_configs"][config_key]
         # _MISSING sentinel means we already checked and it doesn't exist
         return None if cached is _MISSING else cached
 
     blob_path = f"{LOGTYPE_CONFIGS_PREFIX}{config_key}.json"
-    data = _read_blob(blob_path)
-    if data:
+    data = _read_blob(blob_path, strict=True) if strict else _read_blob(blob_path)
+    if data is not None:
         config = json.loads(data)
+        if strict and not isinstance(config, dict):
+            raise ValueError("Invalid log type configuration")
         _cache["logtype_configs"][config_key] = config
         return config
     # Negative cache — avoid repeated blob reads for missing configs
@@ -382,13 +393,18 @@ def is_log_type_disabled(category: str) -> bool:
 #                       "message": str, "updated": iso8601} }
 
 
-def get_entra_logtype_states() -> Dict[str, Dict]:
-    """Return the per-category Entra provisioning state map (may be empty)."""
-    raw = _read_blob(ENTRA_STATE_BLOB)
-    if raw:
+def get_entra_logtype_states(strict: bool = False) -> Dict[str, Dict]:
+    """Read state; strict snapshots distinguish missing blobs from read/corruption errors."""
+    raw = _read_blob(ENTRA_STATE_BLOB, strict=True) if strict else _read_blob(ENTRA_STATE_BLOB)
+    if raw is not None:
         try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
+            states = json.loads(raw)
+            if not isinstance(states, dict) or any(not isinstance(v, dict) for v in states.values()):
+                raise ValueError("Invalid Entra provisioning state")
+            return states
+        except ValueError:
+            if strict:
+                raise
             logger.error("Corrupt JSON in %s — treating as empty", ENTRA_STATE_BLOB)
     return {}
 

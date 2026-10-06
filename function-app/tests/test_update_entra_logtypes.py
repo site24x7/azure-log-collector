@@ -120,3 +120,35 @@ def test_failed_enable_state_commit_restores_existing_config(deps):
     assert toggle('enable').status_code == 500
     assert deps['save_logtype_config'].call_args_list[-1].args == ('auditlogs', old_config)
     deps['delete_logtype_config'].assert_not_called()
+
+
+@pytest.mark.parametrize('action', ['enable', 'disable'])
+@pytest.mark.parametrize('reader', ['get_logtype_config', 'get_entra_logtype_states'])
+def test_snapshot_read_error_aborts_before_any_mutation(deps, action, reader):
+    deps['get_entra_logtype_states'].return_value = {'auditlogs': {'enabled': True, 'status': 'created'}}
+    deps['get_logtype_config'].return_value = {'logType': 'auditlogs', 'path': 'working-config'}
+    deps[reader].side_effect = RuntimeError('temporary storage read error')
+    assert toggle(action).status_code == 500
+    deps['client'].create_log_types.assert_not_called()
+    deps['save_logtype_config'].assert_not_called()
+    deps['delete_logtype_config'].assert_not_called()
+    deps['set_entra_logtype_state'].assert_not_called()
+
+
+def test_snapshot_requires_strict_reads(deps):
+    assert toggle('disable').status_code == 200
+    deps['get_entra_logtype_states'].assert_called_once_with(strict=True)
+    deps['get_logtype_config'].assert_called_once_with('auditlogs', force_refresh=True, strict=True)
+
+
+def test_existing_enabled_retry_retains_server_error_without_disabling(deps):
+    deps['get_entra_logtype_states'].return_value = {'auditlogs': {'enabled': True, 'status': 'created'}}
+    deps['client'].create_log_types.return_value = [{'_errors': [{'message': 'Log type quota exceeded'}]}]
+    response = toggle('enable')
+    assert response.status_code == 500
+    assert json.loads(response.get_body())['error'] == 'Log type quota exceeded'
+    patch = deps['set_entra_logtype_state'].call_args.args[1]
+    assert patch['message'] == 'Log type quota exceeded'
+    assert 'enabled' not in patch and 'status' not in patch
+    deps['save_logtype_config'].assert_not_called()
+    deps['delete_logtype_config'].assert_not_called()

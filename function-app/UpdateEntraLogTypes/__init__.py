@@ -60,9 +60,12 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     previous_config = None
     config_category = normalized
     config_changed = False
+    snapshot_loaded = False
+    failure_message = None
     try:
-        previous_state = get_entra_logtype_states().get(normalized, {})
-        previous_config = get_logtype_config(normalized, force_refresh=True)
+        previous_state = get_entra_logtype_states(strict=True).get(normalized, {})
+        previous_config = get_logtype_config(normalized, force_refresh=True, strict=True)
+        snapshot_loaded = True
         if action == "disable":
             if not delete_logtype_config(normalized):
                 raise RuntimeError("Failed to delete Entra log type configuration")
@@ -81,7 +84,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 if not isinstance(lt, dict) or not lt.get("sourceConfig"):
                     continue
                 config_category = lt.get("category", "").replace("S247_", "") or normalized
-                previous_config = get_logtype_config(config_category, force_refresh=True)
+                previous_config = get_logtype_config(config_category, force_refresh=True, strict=True)
                 if not save_logtype_config(config_category, lt["sourceConfig"]):
                     raise RuntimeError("Failed to save Entra log type configuration")
                 config_changed = True
@@ -98,6 +101,11 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                         break
                 # A failed retry must not disable a previously working category.
                 if previous_state.get("enabled"):
+                    failure_message = msg
+                    # Preserve the working state/config while retaining the server's
+                    # explanation of the failed retry for the caller and dashboard.
+                    if set_entra_logtype_state(normalized, {"message": msg, "updated": now}) is None:
+                        logging.error("UpdateEntraLogTypes: Failed to persist retry error for %s", normalized)
                     raise RuntimeError("Failed to refresh existing Entra log type")
                 state = {"enabled": False, "status": "failed", "message": msg, "updated": now}
 
@@ -119,7 +127,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                     logging.error("UpdateEntraLogTypes: Config rollback failed for %s", normalized)
             except Exception:
                 logging.exception("UpdateEntraLogTypes: Config rollback failed for %s", normalized)
-        if action == "enable" and not previous_state.get("enabled"):
+        if snapshot_loaded and action == "enable" and not previous_state.get("enabled"):
             try:
                 failed = set_entra_logtype_state(normalized, {
                     "enabled": False, "status": "failed",
@@ -130,7 +138,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                     logging.error("UpdateEntraLogTypes: Failed to persist failure state for %s", normalized)
             except Exception:
                 logging.exception("UpdateEntraLogTypes: Failed to persist failure state for %s", normalized)
-        return _err("Failed to update Entra log type. Retry the operation.", 500)
+        return _err(failure_message or "Failed to update Entra log type. Retry the operation.", 500)
 
 
 def _ok(payload):
