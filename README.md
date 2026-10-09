@@ -250,3 +250,7 @@ See [docs/developer-guide.md](docs/developer-guide.md) for detailed development 
 ## License
 
 Internal — Site24x7 / Zoho Corporation
+
+Stable publication requires manual approval with live-validation evidence.
+See [Stable release validation](docs/release-validation.md) for fresh-install,
+repeat-deployment, upgrade, rollback, ingestion and client-workflow requirements.
