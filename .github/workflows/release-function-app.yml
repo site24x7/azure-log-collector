@@ -12,6 +12,15 @@ on:
         description: 'Force a release even if VERSION unchanged'
         required: false
         default: 'false'
+      stable_validation_confirmed:
+        description: 'Confirm matching candidate passed fresh install, repeat deploy, upgrade, rollback and real ingestion'
+        type: boolean
+        required: false
+        default: false
+      validation_report_url:
+        description: 'HTTPS evidence report URL for stable release validation'
+        type: string
+        required: false
 
 permissions:
   contents: write
@@ -50,6 +59,15 @@ jobs:
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Require production validation approval for stable releases
+        if: steps.check_release.outputs.exists == 'false' || github.event.inputs.force_release == 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_EVENT: ${{ github.event_name }}
+          STABLE_VALIDATION_CONFIRMED: ${{ inputs.stable_validation_confirmed }}
+          VALIDATION_REPORT_URL: ${{ inputs.validation_report_url }}
+        run: python3 setup/check-release-approval.py
 
       - name: Verify ARM template pins to this tag
         if: steps.check_release.outputs.exists == 'false' || github.event.inputs.force_release == 'true'
@@ -121,6 +139,16 @@ jobs:
           TAG="${{ steps.version.outputs.tag }}"
           VERSION="${{ steps.version.outputs.version }}"
 
+          NOTES="Auto-release of Site24x7 Diagnostic Logs Function App version $VERSION"
+          if [[ "$VERSION" != *-* ]]; then
+            NOTES="$NOTES. Production validation evidence: $VALIDATION_REPORT_URL"
+          fi
+
+          RELEASE_FLAGS=()
+          if [[ "$VERSION" == *-* ]]; then
+            RELEASE_FLAGS+=(--prerelease)
+          fi
+
           # Delete existing release if force
           if [ "${{ github.event.inputs.force_release }}" = "true" ]; then
             gh release delete "$TAG" --yes 2>/dev/null || true
@@ -129,14 +157,15 @@ jobs:
 
           gh release create "$TAG" \
             --title "Function App $VERSION" \
-            --notes "Auto-release of Site24x7 Diagnostic Logs Function App version $VERSION" \
+            --notes "$NOTES" \
             --target "${{ github.sha }}" \
-            $(echo "$VERSION" | grep -qE 'alpha|beta|rc' && echo --prerelease) \
+            "${RELEASE_FLAGS[@]}" \
             s247-function-app.zip \
             version.json \
             setup/azuredeploy.json
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VALIDATION_REPORT_URL: ${{ inputs.validation_report_url }}
 
       - name: Summary
         run: |

@@ -2,13 +2,13 @@
   "$schema": "https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#",
   "contentVersion": "1.0.0.0",
   "metadata": {
-    "description": "Site24x7 Azure Diagnostic Logs Collection — deploys a Function App that auto-discovers resources, configures diagnostic settings, and streams logs to Site24x7 AppLogs via per-region Storage Accounts."
+    "description": "Site24x7 Azure Diagnostic Logs Collection \u2014 deploys a Function App that auto-discovers resources, configures diagnostic settings, and streams logs to Site24x7 AppLogs via per-region Storage Accounts."
   },
   "parameters": {
     "site24x7DeviceKey": {
       "type": "securestring",
       "metadata": {
-        "description": "Site24x7 Device Key for AppLogs integration. Found in Site24x7 → Admin → Developer → Device Key."
+        "description": "Site24x7 Device Key for AppLogs integration. Found in Site24x7 \u2192 Admin \u2192 Developer \u2192 Device Key."
       }
     },
     "site24x7Domain": {
@@ -29,19 +29,30 @@
     "generalLogTypeEnabled": {
       "type": "string",
       "defaultValue": "true",
-      "allowedValues": ["true", "false"],
+      "allowedValues": [
+        "true",
+        "false"
+      ],
       "metadata": {
         "description": "Enable the general catch-all log type for unsupported categories."
+      }
+    },
+    "deploymentSuffix": {
+      "type": "string",
+      "defaultValue": "",
+      "maxLength": 13,
+      "metadata": {
+        "description": "Optional lowercase alphanumeric suffix (1\u201313 characters). Leave empty to retain existing deployment names. For a fresh install with a name collision, choose a new 12\u201313 character suffix and reuse it for all updates. Changing this on a live deployment creates different resources; this template supports one collector per resource group."
       }
     }
   },
   "variables": {
     "rgName": "s247-diag-logs-rg",
-    "uniqueSuffix": "[substring(uniqueString(subscription().id, 's247-diag-logs'), 0, 6)]",
+    "uniqueSuffix": "[if(empty(parameters('deploymentSuffix')), substring(uniqueString(subscription().id, 's247-diag-logs'), 0, 6), toLower(parameters('deploymentSuffix')))]",
     "storageAccountName": "[concat('s247diag', variables('uniqueSuffix'))]",
     "functionAppName": "[concat('s247-diag-func-', variables('uniqueSuffix'))]",
     "diagStorageSuffix": "[variables('uniqueSuffix')]",
-    "seedStorageName": "[take(concat('s247diag', replace(replace(deployment().location, ' ', ''), '-', ''), variables('uniqueSuffix')), 24)]",
+    "seedStorageName": "[if(greater(length(variables('uniqueSuffix')), 6), concat('s247dr', variables('uniqueSuffix')), take(concat('s247diag', replace(replace(deployment().location, ' ', ''), '-', ''), variables('uniqueSuffix')), 24))]",
     "hostingPlanName": "[concat('s247-diag-func-', variables('uniqueSuffix'), '-plan')]",
     "appInsightsName": "[concat('s247-diag-func-', variables('uniqueSuffix'), '-ai')]",
     "functionZipUrl": "https://github.com/site24x7/azure-log-collector/releases/download/v1.0.1-beta3/s247-function-app.zip",
@@ -73,37 +84,89 @@
           "scope": "inner"
         },
         "parameters": {
-          "location": { "value": "[deployment().location]" },
-          "storageAccountName": { "value": "[variables('storageAccountName')]" },
-          "seedStorageName": { "value": "[variables('seedStorageName')]" },
-          "functionAppName": { "value": "[variables('functionAppName')]" },
-          "hostingPlanName": { "value": "[variables('hostingPlanName')]" },
-          "appInsightsName": { "value": "[variables('appInsightsName')]" },
-          "rgName": { "value": "[variables('rgName')]" },
-          "subscriptionIds": { "value": "[subscription().subscriptionId]" },
-          "site24x7DeviceKey": { "value": "[parameters('site24x7DeviceKey')]" },
-          "generalLogTypeEnabled": { "value": "[parameters('generalLogTypeEnabled')]" },
-          "site24x7Domain": { "value": "[parameters('site24x7Domain')]" },
-          "diagStorageSuffix": { "value": "[variables('diagStorageSuffix')]" },
-          "functionZipUrl": { "value": "[variables('functionZipUrl')]" }
+          "location": {
+            "value": "[deployment().location]"
+          },
+          "storageAccountName": {
+            "value": "[variables('storageAccountName')]"
+          },
+          "seedStorageName": {
+            "value": "[variables('seedStorageName')]"
+          },
+          "functionAppName": {
+            "value": "[variables('functionAppName')]"
+          },
+          "hostingPlanName": {
+            "value": "[variables('hostingPlanName')]"
+          },
+          "appInsightsName": {
+            "value": "[variables('appInsightsName')]"
+          },
+          "rgName": {
+            "value": "[variables('rgName')]"
+          },
+          "subscriptionIds": {
+            "value": "[subscription().subscriptionId]"
+          },
+          "site24x7DeviceKey": {
+            "value": "[parameters('site24x7DeviceKey')]"
+          },
+          "generalLogTypeEnabled": {
+            "value": "[parameters('generalLogTypeEnabled')]"
+          },
+          "site24x7Domain": {
+            "value": "[parameters('site24x7Domain')]"
+          },
+          "diagStorageSuffix": {
+            "value": "[variables('diagStorageSuffix')]"
+          },
+          "functionZipUrl": {
+            "value": "[variables('functionZipUrl')]"
+          }
         },
         "template": {
           "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
           "contentVersion": "1.0.0.0",
           "parameters": {
-            "location": { "type": "string" },
-            "storageAccountName": { "type": "string" },
-            "seedStorageName": { "type": "string" },
-            "functionAppName": { "type": "string" },
-            "hostingPlanName": { "type": "string" },
-            "appInsightsName": { "type": "string" },
-            "rgName": { "type": "string" },
-            "subscriptionIds": { "type": "string" },
-            "site24x7DeviceKey": { "type": "securestring" },
-            "generalLogTypeEnabled": { "type": "string" },
-            "site24x7Domain": { "type": "string" },
-            "diagStorageSuffix": { "type": "string" },
-            "functionZipUrl": { "type": "string" }
+            "location": {
+              "type": "string"
+            },
+            "storageAccountName": {
+              "type": "string"
+            },
+            "seedStorageName": {
+              "type": "string"
+            },
+            "functionAppName": {
+              "type": "string"
+            },
+            "hostingPlanName": {
+              "type": "string"
+            },
+            "appInsightsName": {
+              "type": "string"
+            },
+            "rgName": {
+              "type": "string"
+            },
+            "subscriptionIds": {
+              "type": "string"
+            },
+            "site24x7DeviceKey": {
+              "type": "securestring"
+            },
+            "generalLogTypeEnabled": {
+              "type": "string"
+            },
+            "site24x7Domain": {
+              "type": "string"
+            },
+            "diagStorageSuffix": {
+              "type": "string"
+            },
+            "functionZipUrl": {
+              "type": "string"
+            }
           },
           "resources": [
             {
@@ -112,7 +175,9 @@
               "name": "[parameters('storageAccountName')]",
               "location": "[parameters('location')]",
               "kind": "StorageV2",
-              "sku": { "name": "Standard_LRS" },
+              "sku": {
+                "name": "Standard_LRS"
+              },
               "properties": {
                 "minimumTlsVersion": "TLS1_2",
                 "allowBlobPublicAccess": false
@@ -128,7 +193,9 @@
               "name": "[parameters('seedStorageName')]",
               "location": "[parameters('location')]",
               "kind": "StorageV2",
-              "sku": { "name": "Standard_LRS" },
+              "sku": {
+                "name": "Standard_LRS"
+              },
               "properties": {
                 "minimumTlsVersion": "TLS1_2",
                 "allowBlobPublicAccess": false
@@ -146,7 +213,9 @@
               "dependsOn": [
                 "[resourceId('Microsoft.Storage/storageAccounts', parameters('seedStorageName'))]"
               ],
-              "properties": { "publicAccess": "None" }
+              "properties": {
+                "publicAccess": "None"
+              }
             },
             {
               "type": "Microsoft.Insights/components",
@@ -154,8 +223,12 @@
               "name": "[parameters('appInsightsName')]",
               "location": "[parameters('location')]",
               "kind": "web",
-              "properties": { "Application_Type": "web" },
-              "tags": { "managed-by": "s247-diag-logs" }
+              "properties": {
+                "Application_Type": "web"
+              },
+              "tags": {
+                "managed-by": "s247-diag-logs"
+              }
             },
             {
               "type": "Microsoft.Web/serverfarms",
@@ -163,9 +236,16 @@
               "name": "[parameters('hostingPlanName')]",
               "location": "[parameters('location')]",
               "kind": "linux",
-              "sku": { "name": "Y1", "tier": "Dynamic" },
-              "properties": { "reserved": true },
-              "tags": { "managed-by": "s247-diag-logs" }
+              "sku": {
+                "name": "Y1",
+                "tier": "Dynamic"
+              },
+              "properties": {
+                "reserved": true
+              },
+              "tags": {
+                "managed-by": "s247-diag-logs"
+              }
             },
             {
               "type": "Microsoft.Web/sites",
@@ -173,7 +253,9 @@
               "name": "[parameters('functionAppName')]",
               "location": "[parameters('location')]",
               "kind": "functionapp,linux",
-              "identity": { "type": "SystemAssigned" },
+              "identity": {
+                "type": "SystemAssigned"
+              },
               "dependsOn": [
                 "[resourceId('Microsoft.Web/serverfarms', parameters('hostingPlanName'))]",
                 "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]",
@@ -197,28 +279,80 @@
                       "name": "WEBSITE_CONTENTSHARE",
                       "value": "[toLower(parameters('functionAppName'))]"
                     },
-                    { "name": "FUNCTIONS_EXTENSION_VERSION", "value": "~4" },
-                    { "name": "FUNCTIONS_WORKER_RUNTIME", "value": "python" },
+                    {
+                      "name": "FUNCTIONS_EXTENSION_VERSION",
+                      "value": "~4"
+                    },
+                    {
+                      "name": "FUNCTIONS_WORKER_RUNTIME",
+                      "value": "python"
+                    },
                     {
                       "name": "APPINSIGHTS_INSTRUMENTATIONKEY",
                       "value": "[reference(resourceId('Microsoft.Insights/components', parameters('appInsightsName')), '2020-02-02').InstrumentationKey]"
                     },
-                    { "name": "SUBSCRIPTION_IDS", "value": "[parameters('subscriptionIds')]" },
-                    { "name": "SITE24X7_API_KEY", "value": "[parameters('site24x7DeviceKey')]" },
-                    { "name": "SITE24X7_BASE_URL", "value": "[concat('https://www.', parameters('site24x7Domain'))]" },
-                    { "name": "GENERAL_LOGTYPE_ENABLED", "value": "[parameters('generalLogTypeEnabled')]" },
-                    { "name": "TIMER_SCHEDULE", "value": "0 0 */6 * * *" },
-                    { "name": "RESOURCE_GROUP_NAME", "value": "[parameters('rgName')]" },
-                    { "name": "PROCESSING_ENABLED", "value": "true" },
-                    { "name": "DIAG_STORAGE_SUFFIX", "value": "[parameters('diagStorageSuffix')]" },
-                    { "name": "UPDATE_CHECK_URL", "value": "site24x7/azure-log-collector" },
-                    { "name": "UPDATE_CHANNEL", "value": "stable" },
-                    { "name": "MIN_RELEASE_AGE_MINUTES", "value": "60" },
-                    { "name": "WEBSITE_RUN_FROM_PACKAGE", "value": "[parameters('functionZipUrl')]" }
+                    {
+                      "name": "SUBSCRIPTION_IDS",
+                      "value": "[parameters('subscriptionIds')]"
+                    },
+                    {
+                      "name": "SITE24X7_API_KEY",
+                      "value": "[parameters('site24x7DeviceKey')]"
+                    },
+                    {
+                      "name": "SITE24X7_BASE_URL",
+                      "value": "[concat('https://www.', parameters('site24x7Domain'))]"
+                    },
+                    {
+                      "name": "GENERAL_LOGTYPE_ENABLED",
+                      "value": "[parameters('generalLogTypeEnabled')]"
+                    },
+                    {
+                      "name": "TIMER_SCHEDULE",
+                      "value": "0 0 */6 * * *"
+                    },
+                    {
+                      "name": "RESOURCE_GROUP_NAME",
+                      "value": "[parameters('rgName')]"
+                    },
+                    {
+                      "name": "PROCESSING_ENABLED",
+                      "value": "true"
+                    },
+                    {
+                      "name": "DIAG_STORAGE_SUFFIX",
+                      "value": "[parameters('diagStorageSuffix')]"
+                    },
+                    {
+                      "name": "UPDATE_CHECK_URL",
+                      "value": "site24x7/azure-log-collector"
+                    },
+                    {
+                      "name": "UPDATE_CHANNEL",
+                      "value": "stable"
+                    },
+                    {
+                      "name": "MIN_RELEASE_AGE_MINUTES",
+                      "value": "60"
+                    },
+                    {
+                      "name": "DIAG_SEED_REGION",
+                      "value": "[parameters('location')]"
+                    },
+                    {
+                      "name": "SCM_DO_BUILD_DURING_DEPLOYMENT",
+                      "value": "true"
+                    },
+                    {
+                      "name": "ENABLE_ORYX_BUILD",
+                      "value": "true"
+                    }
                   ]
                 }
               },
-              "tags": { "managed-by": "s247-diag-logs" }
+              "tags": {
+                "managed-by": "s247-diag-logs"
+              }
             },
             {
               "type": "Microsoft.Web/sites/config",
@@ -255,6 +389,17 @@
                 "principalId": "[reference(resourceId('Microsoft.Web/sites', parameters('functionAppName')), '2023-01-01', 'Full').identity.principalId]",
                 "principalType": "ServicePrincipal"
               }
+            },
+            {
+              "type": "Microsoft.Web/sites/extensions",
+              "apiVersion": "2022-03-01",
+              "name": "[concat(parameters('functionAppName'), '/ZipDeploy')]",
+              "dependsOn": [
+                "[resourceId('Microsoft.Web/sites', parameters('functionAppName'))]"
+              ],
+              "properties": {
+                "packageUri": "[parameters('functionZipUrl')]"
+              }
             }
           ],
           "outputs": {
@@ -280,21 +425,33 @@
       ],
       "properties": {
         "mode": "Incremental",
-        "expressionEvaluationOptions": { "scope": "inner" },
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
         "parameters": {
           "principalId": {
             "value": "[reference('s247-diag-logs-resources').outputs.functionAppPrincipalId.value]"
           },
-          "readerRoleId": { "value": "[variables('readerRoleId')]" },
-          "monitoringContributorRoleId": { "value": "[variables('monitoringContributorRoleId')]" }
+          "readerRoleId": {
+            "value": "[variables('readerRoleId')]"
+          },
+          "monitoringContributorRoleId": {
+            "value": "[variables('monitoringContributorRoleId')]"
+          }
         },
         "template": {
           "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
           "contentVersion": "1.0.0.0",
           "parameters": {
-            "principalId": { "type": "string" },
-            "readerRoleId": { "type": "string" },
-            "monitoringContributorRoleId": { "type": "string" }
+            "principalId": {
+              "type": "string"
+            },
+            "readerRoleId": {
+              "type": "string"
+            },
+            "monitoringContributorRoleId": {
+              "type": "string"
+            }
           },
           "resources": [
             {
@@ -337,7 +494,11 @@
     },
     "cleanupNote": {
       "type": "string",
-      "value": "[concat('To fully remove this deployment, delete resource group \"', variables('rgName'), '\" AND the subscription-scope deployment named \"s247-diag-logs-sub-roles-', variables('uniqueSuffix'), '\" (found under Subscription → Deployments).')]"
+      "value": "[concat('To fully remove this deployment, delete resource group \"', variables('rgName'), '\" AND the subscription-scope deployment named \"s247-diag-logs-sub-roles-', variables('uniqueSuffix'), '\" (found under Subscription \u2192 Deployments).')]"
+    },
+    "deploymentSuffix": {
+      "type": "string",
+      "value": "[variables('uniqueSuffix')]"
     }
   }
 }

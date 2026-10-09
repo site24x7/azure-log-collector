@@ -10,6 +10,16 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 ## [Unreleased]
 
 ### Fixed
+- Require explicit live-validation approval and an HTTPS evidence report before
+  publishing stable releases; prerequisite CI alone no longer permits publication.
+- Authenticate updater health checks with a function key and require an alive JSON
+  response with healthy dependencies, rather than treating any HTTP 200 as success.
+- Add an optional stable deployment suffix for fresh-install storage-name
+  collisions, preserving legacy names when omitted. Longer suffixes use compact
+  seed/tenant names and hash the full suffix and region for other storage accounts.
+  Setup preflight checks host, seed and tenant names and stops on check failures.
+- Deploy Linux Consumption code through ZipDeploy with remote build instead of
+  setting WEBSITE_RUN_FROM_PACKAGE to a redirecting GitHub release URL.
 - Refresh supported Azure log types on every scan, preserving the cached catalog
   during server outages; status/filter requests read the persisted catalog so
   changes are visible across Function App workers.
