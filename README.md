@@ -19,6 +19,46 @@ Azure Resources ──► Storage Accounts (per region) ──► Function App �
 
 ---
 
+### Storage-name availability and repeat deployments
+
+Azure storage names are globally unique. An account can be unavailable even
+when it is absent from your subscription. Repeating the same deployment or
+changing its deployment name does not change the default subscription-derived
+suffix.
+
+For existing deployments, leave `deploymentSuffix` empty to preserve legacy
+names, or keep the exact suffix previously chosen. For a **fresh installation**,
+set `deploymentSuffix` in the Azure template parameters to a new 12–13 character
+lowercase alphanumeric value. The resolved suffix is included in deployment
+Outputs; save it and reuse it for updates. Shell setup uses `DEPLOYMENT_SUFFIX`
+in `config.env` for the same purpose. Do not change a live collector's suffix,
+location, or deployment method as an upgrade. One collector per resource group
+is supported; a suffix override is not a multi-instance migration.
+
+Check an explicit ARM suffix before deployment (Azure CLI login required):
+
+```bash
+python3 setup/check-storage-names.py --suffix <chosen-suffix> --region centralindia \
+  --subscription <subscription-id>
+```
+
+The check is read-only: it checks host, seed and optional tenant storage names,
+allows reuse of tagged collector accounts in the same resource group/location,
+and fails if availability or ownership cannot be verified. Availability can
+change after the check; Azure's deployment validation remains authoritative.
+Shell setup performs these checks before provisioning infrastructure.
+
+Suffixes of six characters or fewer retain legacy names. Longer suffixes keep
+the entire suffix in compact host/seed/tenant names; other regional names hash
+the full suffix and region into at most 24 characters. This requires the
+matching updated collector code—do not combine a new long suffix with an older
+collector package that still truncates regional names.
+
+The template uses ZipDeploy with remote build for Linux Consumption. GitHub
+release URLs redirect and cannot be used directly in `WEBSITE_RUN_FROM_PACKAGE`
+when creating this plan. A successful ARM validation is not proof of code
+startup; verify `/api/health` and actual ingestion after deployment.
+
 ## Quick Start
 
 ### Option A — Deploy to Azure (portal)
