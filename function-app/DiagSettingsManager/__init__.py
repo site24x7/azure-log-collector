@@ -892,11 +892,10 @@ def run_scan():
         "entra_target_subscription_name": entra_target_sub_name,
         "in_progress": False,
     }
+    # The scan state blob is the record of the last scan. Never write an app
+    # setting here: every app-setting change restarts the Function App, and
+    # runOnStartup then starts another scan (a restart loop every few minutes).
     save_scan_state(scan_state)
-    try:
-        azure_mgr.update_app_setting("LAST_SCAN_TIME", scan_time)
-    except Exception as e:
-        logging.warning("DiagSettingsManager: Failed to update LAST_SCAN_TIME app setting: %s", str(e))
 
     summary = {
         "scan_time": scan_time,
@@ -953,12 +952,37 @@ def run_scan():
     return summary
 
 
+def _completed_scan_age_minutes():
+    """Minutes since the last completed scan, or None if there is none."""
+    try:
+        from shared.config_store import get_scan_state
+        state = get_scan_state() or {}
+        if state.get("in_progress") or not state.get("last_scan_time"):
+            return None
+        last = datetime.fromisoformat(state["last_scan_time"].replace("Z", "+00:00"))
+        return (datetime.now(timezone.utc) - last).total_seconds() / 60
+    except Exception:
+        return None
+
+
 def main(timer: func.TimerRequest) -> None:
     if timer.past_due:
         logging.warning("DiagSettingsManager: Timer is past due")
     auto_scan = os.environ.get("AUTO_SCAN_ENABLED", "true").lower() == "true"
     if not auto_scan:
         logging.info("DiagSettingsManager: Auto-scan is DISABLED — skipping scheduled scan")
+        return
+
+    # runOnStartup fires on every host start (deploy, restart, scale-out,
+    # settings change). Keep the first scan after a fresh deploy, but skip a
+    # start-up run when a scan finished recently.
+    min_gap = float(os.environ.get("MIN_SCAN_INTERVAL_MINUTES", "30") or 30)
+    age = _completed_scan_age_minutes()
+    if age is not None and age < min_gap:
+        logging.info(
+            "DiagSettingsManager: Last scan finished %.0f min ago (< %.0f) — skipping",
+            age, min_gap,
+        )
         return
 
     # Concurrency guard: skip if another scan is already in progress.

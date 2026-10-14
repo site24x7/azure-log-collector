@@ -7,6 +7,17 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.0.1-beta7] — 2026-10-14
+
+### Fixed
+- Stop a restart loop present since v1.0.0: every scan wrote the
+  `LAST_SCAN_TIME` app setting, which restarts the Function App, and
+  `runOnStartup` then started another scan — roughly every 4-5 minutes, with
+  the dashboard showing "Unreachable" during each restart. The last scan time
+  now lives only in the scan state, and a start-up run is skipped when a scan
+  finished within `MIN_SCAN_INTERVAL_MINUTES` (default 30). The first scan
+  after a fresh deploy still runs.
+
 ## [1.0.1-beta6] — 2026-10-14
 
 ### Added
