@@ -245,7 +245,9 @@ def run_scan():
         prev_config = configured_resources.get(resource_id, {})
         if prev_config and prev_config.get("categories"):
             sa_name = provisioned_regions.get(location, "")
-            if sa_name:
+            # A changed regional account (e.g. a leftover one was chosen before)
+            # must not fast-path: rediscover and re-point the setting.
+            if sa_name and prev_config.get("storage_account", sa_name) == sa_name:
                 resource_category_map[resource_id] = {
                     "categories": prev_config["categories"],
                     "effective_categories": prev_config["categories"],
@@ -671,7 +673,8 @@ def run_scan():
     # Resources already fast-pathed above (already_configured) should be skipped
     fast_pathed_ids = {rid for rid, info in resource_category_map.items()
                        if rid in configured_resources
-                       and set(info.get("effective_categories", [])) == set(configured_resources[rid].get("categories", []))}
+                       and set(info.get("effective_categories", [])) == set(configured_resources[rid].get("categories", []))
+                       and configured_resources[rid].get("storage_account", info.get("sa_name")) == info.get("sa_name")}
 
     # Use ThreadPoolExecutor for parallel diagnostic settings creation
     from shared.azure_manager import _extract_subscription_id
@@ -699,7 +702,8 @@ def run_scan():
                 return "skipped", None, None
 
             if resource_id in configured_resources:
-                if new_categories == prev_categories:
+                same_storage = prev_config.get("storage_account", info["sa_name"]) == info["sa_name"]
+                if new_categories == prev_categories and same_storage:
                     return "already_configured", None, None
                 success = azure_mgr.create_diagnostic_setting(
                     resource_id=resource_id,
@@ -981,4 +985,10 @@ def main(timer: func.TimerRequest) -> None:
             guard_err,
         )
 
-    run_scan()
+    try:
+        run_scan()
+    finally:
+        # Keep Site24x7's copy of this collector (status, version, function
+        # key) current after every scan, including the first one after deploy.
+        from shared.registration import register_with_site24x7
+        register_with_site24x7()

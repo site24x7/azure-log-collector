@@ -7,6 +7,26 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.0.1-beta6] — 2026-10-14
+
+### Added
+- Register the collector with Site24x7 after every discovery scan (scheduled
+  and manual): Function App URL, ARM resource ID, region, version, a read-only
+  status summary and the function key, read fresh from ARM so a rotated key
+  re-syncs on the next scan. Keys travel only in the POST body. Site24x7 stores
+  the key encrypted and lists every collector on the Deploy Diagnostic Logs page.
+- "Download Log File" on the dashboard (`/api/debug?download=log`): a readable
+  log for Site24x7 support with keys, SAS tokens, connection strings and bearer
+  tokens removed. All debug events, audit entries and debug downloads are now
+  redacted.
+
+### Fixed
+- Portal installs: the deployment suffix is lowercased and stripped of `-`,
+  `_`, `.` and spaces, so `-Oct14` no longer produces invalid storage names.
+- A region with storage accounts left over from an earlier failed install now
+  uses this deployment's own account, and diagnostic settings that were pointed
+  at another account are re-pointed on the next scan.
+
 ## [1.0.1-beta5] — 2026-10-14
 
 ### Fixed

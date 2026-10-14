@@ -74,6 +74,19 @@ def test_preflight_checks_availability_and_ownership(scenario):
     assert all('create' not in cmd and 'delete' not in cmd for cmd in calls)
 
 
+def test_template_strips_separators_from_deployment_suffix():
+    # Storage account names allow only [a-z0-9]; a portal suffix like "-Oct14"
+    # must become "oct14" for every derived name, including DIAG_STORAGE_SUFFIX.
+    variables = json.loads((ROOT / 'setup/azuredeploy.json').read_text())['variables']
+    clean = variables['cleanSuffix']
+    assert "toLower(trim(parameters('deploymentSuffix')))" in clean
+    for separator in ("'-'", "'_'", "'.'", "' '"):
+        assert f"{separator}, '')" in clean
+    assert variables['uniqueSuffix'].startswith("[if(empty(variables('cleanSuffix'))")
+    assert variables['uniqueSuffix'].endswith(", variables('cleanSuffix'))]")
+    assert "parameters('deploymentSuffix')" not in variables['uniqueSuffix']
+
+
 def test_template_runs_from_direct_package_url():
     # Linux Consumption refuses to be created with a redirecting package URL
     # (GitHub release assets 302), so the template uses the raw.githubusercontent

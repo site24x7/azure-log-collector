@@ -9,7 +9,7 @@ import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 
 from azure.identity import DefaultAzureCredential
 from azure.mgmt.storage import StorageManagementClient
@@ -128,12 +128,21 @@ class RegionManager:
         logger.info(f"Active regions: {regions}")
         return regions
 
-    def get_provisioned_regions(self, resource_group: str) -> Dict[str, str]:
+    def get_provisioned_regions(self, resource_group: str,
+                                suffix: Optional[str] = None) -> Dict[str, str]:
         """List per-region storage accounts in the RG.
 
         Returns a dict mapping region → storage account name.
         Identifies our accounts by the ``managed-by: s247-diag-logs`` tag.
+
+        A failed earlier install can leave tagged accounts with another suffix
+        in the same RG. When a region has several, this deployment's own name
+        (from ``suffix``, default ``DIAG_STORAGE_SUFFIX``) wins; otherwise the
+        choice is the lowest name so it never depends on listing order.
         """
+        if suffix is None:
+            suffix = os.environ.get("DIAG_STORAGE_SUFFIX", "")
+        candidates: Dict[str, List[str]] = {}
         region_map: Dict[str, str] = {}
         try:
             client = StorageManagementClient(
@@ -143,7 +152,19 @@ class RegionManager:
                 tags = acct.tags or {}
                 if tags.get("managed-by") == "s247-diag-logs" and tags.get("purpose") == "diag-logs-regional":
                     if acct.primary_location:
-                        region_map[acct.primary_location.lower()] = acct.name
+                        candidates.setdefault(acct.primary_location.lower(), []).append(acct.name)
+            for region, names in candidates.items():
+                try:
+                    own = _storage_account_name(region, suffix) if suffix else ""
+                except ValueError:
+                    own = ""
+                region_map[region] = own if own in names else sorted(names)[0]
+                if len(names) > 1:
+                    logger.warning(
+                        "Region %s has %d tagged diag storage accounts %s — using %s; "
+                        "the others are likely left over from an earlier deployment",
+                        region, len(names), sorted(names), region_map[region],
+                    )
             logger.info(
                 f"Provisioned diag storage accounts in '{resource_group}': {region_map}"
             )

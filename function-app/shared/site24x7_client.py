@@ -17,6 +17,7 @@ import logging
 import calendar
 import datetime
 import traceback
+import urllib.error
 import urllib.parse
 import urllib.request
 from base64 import b64decode
@@ -524,6 +525,37 @@ class Site24x7Client:
         if errors:
             return [{"category": None, "sourceConfig": None, "_errors": errors}]
         return None
+
+    def register_collector(self, fields: Dict[str, str]) -> bool:
+        """POST this collector's details to Site24x7 (see shared/registration.py).
+
+        Unlike the GET helpers, the Device Key and function key go in the
+        form body so they never appear in URLs or access logs.
+        """
+        if not self.device_key:
+            logger.error("SITE24X7_API_KEY not configured")
+            return False
+        body = urllib.parse.urlencode({"deviceKey": self.device_key, **fields}).encode()
+        req = urllib.request.Request(
+            f"{self._get_api_base_url()}/applog/azure/register_collector",
+            data=body, method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded",
+                     "Accept": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+            if str(result.get("status", "")).lower() == "success":
+                return True
+            logger.error("Site24x7 collector registration rejected: %s",
+                         str(result.get("message", ""))[:200])
+            return False
+        except urllib.error.HTTPError as e:
+            logger.error("Site24x7 collector registration failed: HTTP %s", e.code)
+            return False
+        except Exception as e:
+            logger.error("Site24x7 collector registration failed: %s", type(e).__name__)
+            return False
 
     def preflight_check(self) -> Dict:
         """Quick connectivity check — call before a scan to validate the

@@ -418,6 +418,7 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
         <button class="btn btn-primary btn-sm" id="btnLoadDebug" onclick="loadDebugInfo(false)">🔄 Refresh Debug Info</button>
         <button class="btn btn-primary btn-sm" id="btnTestS247" onclick="loadDebugInfo(true)">🔌 Test S247 Connectivity</button>
         <button class="btn btn-primary btn-sm" id="btnExportDebug" onclick="exportDebugBundle()">📥 Export Debug Bundle</button>
+        <button class="btn btn-primary btn-sm" id="btnExportLog" onclick="exportDebugBundle('log')" title="Readable log with keys and tokens removed — safe to send to Site24x7 support">📄 Download Log File</button>
         <button class="btn btn-danger btn-sm" id="btnClearEvents" onclick="clearDebugEvents()">🗑 Clear Events</button>
       </div>
       <div id="debugS247Status" style="margin-top:10px"><span class="stat-label" style="font-size:11px">Run "Test S247 Connectivity" to check</span></div>
@@ -1424,19 +1425,20 @@ function renderDebugS247Status() {
   </div>`;
 }
 
-async function exportDebugBundle() {
-  setLoading('btnExportDebug', true);
+async function exportDebugBundle(format) {
+  const btn = format === 'log' ? 'btnExportLog' : 'btnExportDebug';
+  const download = format === 'log' ? 'log' : '1';
+  setLoading(btn, true);
   try {
-    const sep = '?';
     const url = FUNC_KEY
-      ? `${BASE}/api/debug?download=1&test_s247=1&code=${FUNC_KEY}`
-      : `${BASE}/api/debug?download=1&test_s247=1`;
+      ? `${BASE}/api/debug?download=${download}&test_s247=1&code=${FUNC_KEY}`
+      : `${BASE}/api/debug?download=${download}&test_s247=1`;
     const resp = await fetch(url);
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const blob = await resp.blob();
     const cd = resp.headers.get('content-disposition') || '';
     const fnMatch = cd.match(/filename="?([^"]+)"?/);
-    const filename = fnMatch ? fnMatch[1] : 's247-debug-bundle.json';
+    const filename = fnMatch ? fnMatch[1] : (format === 'log' ? 's247-collector.log' : 's247-debug-bundle.json');
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = filename;
@@ -1444,11 +1446,11 @@ async function exportDebugBundle() {
     a.click();
     a.remove();
     URL.revokeObjectURL(a.href);
-    showToast('Debug bundle downloaded');
+    showToast(format === 'log' ? 'Log file downloaded' : 'Debug bundle downloaded');
   } catch (e) {
     showToast('Export failed: ' + e.message, 'error');
   } finally {
-    setLoading('btnExportDebug', false);
+    setLoading(btn, false);
   }
 }
 

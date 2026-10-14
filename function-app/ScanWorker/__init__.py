@@ -71,6 +71,9 @@ def main(msg: func.QueueMessage) -> None:
                       {"traceback": tb[-1000:]})
         except Exception:
             pass
+    finally:
+        from shared.registration import register_with_site24x7
+        register_with_site24x7()
 
 
 def _clear_in_progress(error_msg=None):

@@ -42,20 +42,21 @@
       "defaultValue": "",
       "maxLength": 13,
       "metadata": {
-        "description": "Optional lowercase alphanumeric suffix (1\u201313 characters). Leave empty to retain existing deployment names. For a fresh install with a name collision, choose a new 12\u201313 character suffix and reuse it for all updates. Changing this on a live deployment creates different resources; this template supports one collector per resource group."
+        "description": "Optional suffix of letters and digits (1\u201313 characters). Upper case is lowered and dashes, underscores, dots and spaces are removed, e.g. -Oct14 becomes oct14; the deployment outputs show the value used. Leave empty to retain existing deployment names. For a fresh install with a name collision, choose a new 12\u201313 character suffix and reuse it for all updates. Changing this on a live deployment creates different resources; this template supports one collector per resource group."
       }
     }
   },
   "variables": {
     "rgName": "s247-diag-logs-rg",
-    "uniqueSuffix": "[if(empty(parameters('deploymentSuffix')), substring(uniqueString(subscription().id, 's247-diag-logs'), 0, 6), toLower(parameters('deploymentSuffix')))]",
+    "cleanSuffix": "[replace(replace(replace(replace(toLower(trim(parameters('deploymentSuffix'))), '-', ''), '_', ''), '.', ''), ' ', '')]",
+    "uniqueSuffix": "[if(empty(variables('cleanSuffix')), substring(uniqueString(subscription().id, 's247-diag-logs'), 0, 6), variables('cleanSuffix'))]",
     "storageAccountName": "[concat('s247diag', variables('uniqueSuffix'))]",
     "functionAppName": "[concat('s247-diag-func-', variables('uniqueSuffix'))]",
     "diagStorageSuffix": "[variables('uniqueSuffix')]",
     "seedStorageName": "[if(greater(length(variables('uniqueSuffix')), 6), concat('s247dr', variables('uniqueSuffix')), take(concat('s247diag', replace(replace(deployment().location, ' ', ''), '-', ''), variables('uniqueSuffix')), 24))]",
     "hostingPlanName": "[concat('s247-diag-func-', variables('uniqueSuffix'), '-plan')]",
     "appInsightsName": "[concat('s247-diag-func-', variables('uniqueSuffix'), '-ai')]",
-    "functionZipUrl": "https://raw.githubusercontent.com/site24x7/azure-log-collector/packages/v1.0.1-beta5/s247-function-app.zip",
+    "functionZipUrl": "https://raw.githubusercontent.com/site24x7/azure-log-collector/packages/v1.0.1-beta6/s247-function-app.zip",
     "readerRoleId": "acdd72a7-3385-48ef-bd42-f606fba81ae7",
     "monitoringContributorRoleId": "749f88d5-cbae-40b8-bcfc-e573ddc772fa"
   },

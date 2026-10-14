@@ -150,14 +150,16 @@ def log_event(
         message: Short description of what happened
         details: Optional dict with additional context (stack trace, resource IDs, etc.)
     """
+    from shared.redaction import redact
+
     event = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "level": level,
         "component": component,
-        "message": message,
+        "message": redact(message),
     }
     if details:
-        event["details"] = details
+        event["details"] = redact(details)
 
     try:
         _append_json_array_rmw(EVENTS_BLOB, event, MAX_EVENTS)
@@ -431,7 +433,8 @@ def log_audit(action: str, component: str, details: dict = None,
     if caller_ip:
         event["caller_ip"] = caller_ip
     if details:
-        event["details"] = details
+        from shared.redaction import redact
+        event["details"] = redact(details)
 
     try:
         blob_client = _get_blob_client(AUDIT_BLOB)
