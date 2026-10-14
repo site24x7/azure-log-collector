@@ -7,9 +7,13 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
-## [Unreleased]
+## [1.0.1-beta4] — 2026-10-14
 
 ### Fixed
+- Match Azure JSON field names case-insensitively, including nested properties
+  and JSON-object fields. Preserve APIM `apiId`, `responseCode` and other
+  camel-case values when templates use PascalCase names. Exact keys take priority;
+  genuinely absent fields remain absent. Historical records require replay.
 - Require explicit live-validation approval and an HTTPS evidence report before
   publishing stable releases; prerequisite CI alone no longer permits publication.
 - Authenticate updater health checks with a function key and require an alive JSON

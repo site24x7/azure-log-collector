@@ -660,10 +660,18 @@ def _get_timestamp(datetime_string: str, format_string: str) -> int:
 
 
 def _get_json_value(obj, key, datatype=None):
-    if key in obj or key.lower() in obj:
+    """Resolve literal or dotted diagnostic fields without depending on key casing."""
+    if not isinstance(obj, dict):
+        return None
+    resolved_key = key if key in obj else next(
+        (candidate for candidate in obj
+         if isinstance(candidate, str) and candidate.lower() == key.lower()),
+        None,
+    )
+    if resolved_key is not None:
         if datatype and datatype == "json-object":
             arr_json = []
-            child_obj = obj[key]
+            child_obj = obj[resolved_key]
             if isinstance(child_obj, str):
                 try:
                     child_obj = json.loads(child_obj, strict=False)
@@ -675,14 +683,13 @@ def _get_json_value(obj, key, datatype=None):
                 arr_json.append({"key": child_key, "value": str(child_obj[child_key])})
             return arr_json
         else:
-            return obj[key] if key in obj else obj[key.lower()]
+            return obj[resolved_key]
     elif "." in key:
         parent_key = key[: key.index(".")]
         child_key = key[key.index(".") + 1 :]
-        parent_val = parent_key if parent_key in obj else parent_key.capitalize()
-        if parent_val not in obj:
+        child_obj = _get_json_value(obj, parent_key)
+        if child_obj is None:
             return None
-        child_obj = obj[parent_val]
         if isinstance(child_obj, str):
             try:
                 child_obj = json.loads(child_obj, strict=False)
@@ -690,7 +697,7 @@ def _get_json_value(obj, key, datatype=None):
                 child_obj = json.loads(
                     child_obj.replace("\\", "\\\\"), strict=False
                 )
-        return _get_json_value(child_obj, child_key)
+        return _get_json_value(child_obj, child_key, datatype)
     return None
 
 
