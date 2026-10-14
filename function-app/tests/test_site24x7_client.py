@@ -110,6 +110,19 @@ class TestGetTimestamp:
         ts = _get_timestamp("2024-01-15 10:30:45", "%Y-%m-%d %H:%M:%S")
         assert ts > 0
 
+    @pytest.mark.parametrize("value, expected", [
+        ("2024-01-01T00:00:00.1234567Z", 1704067200123),
+        ("2024-01-01T00:00:00.12Z", 1704067200120),
+        ("2024-01-01T00:00:00Z", 1704067200000),
+        ("2024-01-01T05:30:00+05:30", 1704067200000),
+        ("2024-01-01T00:00:00.5-0100", 1704070800500),
+    ])
+    def test_azure_iso_fraction_and_zone_variants(self, value, expected):
+        assert _get_timestamp(value, "%Y-%m-%dT%H:%M:%S.%f") == expected
+
+    def test_non_string_value_is_unparsed(self):
+        assert _get_timestamp(12345, "%Y-%m-%dT%H:%M:%S.%f") == 0
+
 
 # ─── _get_json_value ─────────────────────────────────────────────────────────
 
@@ -262,6 +275,19 @@ class TestApplyDerivedFields:
 
 
 class TestJsonLogParser:
+    @pytest.mark.parametrize("date_field", ["Time", "EventTime", "time"])
+    def test_azure_event_time_survives_date_field_alias(self, date_field):
+        event = {"time": "2024-01-01T00:00:00.000000"}
+        config = {"dateField": date_field, "dateFormat": "%Y-%m-%dT%H:%M:%S.%f",
+                  "jsonPath": [{"name": date_field, "key": "time"}]}
+        lines, _ = _json_log_parser([event], config, None, None, None)
+        assert lines[0]["_zl_timestamp"] == 1704067200000
+
+    def test_unparseable_event_time_does_not_send_epoch_zero(self):
+        config = {"dateField": "Time", "jsonPath": [{"name": "Time", "key": "time"}]}
+        lines, _ = _json_log_parser([{"time": "yesterday"}], config, None, None, None)
+        assert "_zl_timestamp" not in lines[0]
+
     def test_gateway_fields_are_preserved_from_azure_camelcase_payload(self):
         event = {"time": "2024-01-01T00:00:00.000000", "properties": {
             "apiId": "dimtest", "operationId": "status", "responseCode": 500,

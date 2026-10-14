@@ -35,7 +35,7 @@ jobs:
           from pathlib import Path
           version = Path('function-app/VERSION').read_text().strip()
           template = json.loads(Path('setup/azuredeploy.json').read_text())
-          expected = f'https://github.com/${{ github.repository }}/releases/download/v{version}/s247-function-app.zip'
+          expected = f'https://raw.githubusercontent.com/${{ github.repository }}/packages/v{version}/s247-function-app.zip'
           assert template['variables']['functionZipUrl'] == expected, 'ARM package URL must match VERSION'
           for path in Path('function-app').rglob('function.json'):
               json.loads(path.read_text())

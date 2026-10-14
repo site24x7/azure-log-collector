@@ -645,11 +645,38 @@ class Site24x7Client:
 # ─── Log Parsing Functions (extracted from log_sender.py) ────────────────
 
 
-def _get_timestamp(datetime_string: str, format_string: str) -> int:
+_ISO_TIMESTAMP = re.compile(
+    r"^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:?\d{2})?$"
+)
+
+
+def _parse_iso_timestamp(datetime_string) -> Optional[datetime.datetime]:
+    """Azure emits ISO-8601 with 0-7 fraction digits; strptime %f needs 1-6."""
+    match = _ISO_TIMESTAMP.match(str(datetime_string).strip())
+    if not match:
+        return None
+    day, clock, fraction, zone = match.groups()
+    zone = "+00:00" if zone in (None, "Z") else zone
+    if ":" not in zone:
+        zone = zone[:3] + ":" + zone[3:]
+    fraction = ((fraction or "") + "000000")[:6]
     try:
-        datetime_data = datetime.datetime.strptime(
-            datetime_string[:26], format_string
-        )
+        return datetime.datetime.fromisoformat(f"{day}T{clock}.{fraction}{zone}")
+    except ValueError:
+        return None
+
+
+def _get_timestamp(datetime_string: str, format_string: str) -> int:
+    """Epoch millis, or 0 when the value cannot be parsed (caller must not send 0)."""
+    try:
+        try:
+            datetime_data = datetime.datetime.strptime(
+                datetime_string[:26], format_string
+            )
+        except (TypeError, ValueError):
+            datetime_data = _parse_iso_timestamp(datetime_string)
+            if datetime_data is None:
+                return 0
         timestamp = (
             calendar.timegm(datetime_data.utctimetuple()) * 1000
             + int(datetime_data.microsecond / 1000)
@@ -830,10 +857,13 @@ def _json_log_parser(
             log_size += json_log_size
 
             # Add timestamp
-            if date_field in event_obj:
-                formatted_line["_zl_timestamp"] = _get_timestamp(
-                    event_obj[date_field], date_format
-                )
+            event_time = _get_json_value(formatted_line, date_field)
+            if event_time is None:
+                event_time = _get_json_value(event_obj, date_field)
+            if event_time is not None:
+                event_ms = _get_timestamp(event_time, date_format)
+                if event_ms > 0:  # epoch 0 would file the record under 1970
+                    formatted_line["_zl_timestamp"] = event_ms
 
             # Extract resource group as agent uid
             if "resourceId" in event_obj:

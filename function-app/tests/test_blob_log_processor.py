@@ -11,6 +11,7 @@ from BlobLogProcessor import (
     _merge_checkpoints,
     _parse_records,
     _process_all_regions,
+    _read_append_records,
     _upload_records,
 )
 
@@ -165,8 +166,10 @@ class _FakeContainerClient:
         self._blobs = blobs
 
     def list_blobs(self):
-        return [SimpleNamespace(name=n, last_modified=lm)
-                for (n, _bc, lm) in self._blobs]
+        return [SimpleNamespace(name=n, last_modified=lm, size=len(bc._body),
+                                blob_type=getattr(bc, "blob_type", "BlockBlob"),
+                                creation_time=datetime(2024, 1, 1, tzinfo=timezone.utc))
+                for (n, bc, lm) in self._blobs]
 
     def get_blob_client(self, name):
         for n, bc, _lm in self._blobs:
@@ -192,7 +195,8 @@ def proc_env(monkeypatch, tmp_path):
 
 
 def _patched_run(proc_env, blob_specs, all_configs=None,
-                  initial_checkpoints=None, sa_purpose="diag-logs-regional"):
+                  initial_checkpoints=None, sa_purpose="diag-logs-regional",
+                  append_blob=False, upload_success=True):
     """Execute _process_all_regions with mocked Azure + S247 + checkpoints.
 
     blob_specs: list of (blob_name, blocks_payload_list, last_modified)
@@ -204,6 +208,8 @@ def _patched_run(proc_env, blob_specs, all_configs=None,
     fake_blobs = []
     for name, payloads, lm in blob_specs:
         _, _, fbc = _build_blob(payloads)
+        if append_blob:
+            fbc.blob_type = "AppendBlob"
         fake_blobs.append((name, fbc, lm))
 
     fake_container = _FakeContainerClient(fake_blobs)
@@ -225,7 +231,7 @@ def _patched_run(proc_env, blob_specs, all_configs=None,
     )
 
     fake_client = MagicMock()
-    fake_client.post_logs.return_value = True
+    fake_client.post_logs.return_value = upload_success
 
     saved = {}
 
@@ -248,6 +254,100 @@ def _patched_run(proc_env, blob_specs, all_configs=None,
         _process_all_regions()
 
     return fake_client.post_logs.call_args_list, saved
+
+
+class TestAppendPolling:
+    def test_only_new_records_are_sent_after_growth_and_restart(self, proc_env):
+        first = b'{"a":1}\n'
+        second = b'{"a":2}\n'
+        lm = datetime(2026, 10, 14, tzinfo=timezone.utc)
+        calls, saved = _patched_run(proc_env, [("b.json", [first], lm)], append_blob=True)
+        assert calls[0].args[1] == [{"a": 1}]
+        calls, saved = _patched_run(proc_env, [("b.json", [first, second], lm + timedelta(minutes=1))],
+                                    append_blob=True, initial_checkpoints=saved)
+        assert calls[0].args[1] == [{"a": 2}]
+        calls, _ = _patched_run(proc_env, [("b.json", [first, second], lm + timedelta(minutes=1))],
+                                append_blob=True, initial_checkpoints=saved)
+        assert calls == []
+
+    def test_partial_record_is_retained_until_complete(self, proc_env):
+        first = b'{"a":1}\n'
+        partial = b'{"a":'
+        lm = datetime(2026, 10, 14, tzinfo=timezone.utc)
+        calls, saved = _patched_run(proc_env, [("b.json", [first, partial], lm)], append_blob=True)
+        assert calls[0].args[1] == [{"a": 1}]
+        assert next(iter(saved.values()))["next_byte"] == len(first)
+        calls, _ = _patched_run(proc_env, [("b.json", [first, partial, b'2}\n'], lm)],
+                                append_blob=True, initial_checkpoints=saved)
+        assert calls[0].args[1] == [{"a": 2}]
+
+    def test_failed_upload_does_not_advance_byte_checkpoint(self, proc_env):
+        lm = datetime(2026, 10, 14, tzinfo=timezone.utc)
+        calls, saved = _patched_run(proc_env, [("b.json", [b'{"a":1}\n'], lm)],
+                                    append_blob=True, upload_success=False)
+        assert calls
+        assert saved == {}
+
+    def test_unchanged_legacy_full_read_checkpoint_migrates_without_redelivery(self, proc_env):
+        lm = datetime(2026, 10, 14, tzinfo=timezone.utc)
+        old = {"s247diagtest/insights-logs-test/b.json":
+               {"next_block": -1, "last_modified": lm.isoformat()}}
+        calls, saved = _patched_run(proc_env, [("b.json", [b'{"a":1}\n'], lm)],
+                                    append_blob=True, initial_checkpoints=old)
+        assert calls == []
+        assert next(iter(saved.values()))["next_byte"] == len(b'{"a":1}\n')
+
+    def test_partial_multibyte_json_and_concatenated_envelopes(self):
+        first = '{"records":[{"message":"é"}]}'.encode()
+        tail = '{"message":"界"}'.encode()
+        body = first + tail[:-2]
+        _, rows, consumed, _ = _read_append_records(_FakeBlobClient([], body), 0, len(body))
+        assert rows == [{"message": "é"}]
+        assert consumed == len(first)
+        body = first + tail
+        _, rows, consumed, _ = _read_append_records(_FakeBlobClient([], body), len(first), len(tail))
+        assert rows == [{"message": "界"}]
+        assert consumed == len(tail)
+
+    def test_malformed_terminated_record_is_skipped_not_blocking(self, proc_env):
+        lm = datetime(2026, 10, 14, tzinfo=timezone.utc)
+        calls, saved = _patched_run(proc_env, [("b.json", [b'{"a":1}\n', b'{bad json}\n',
+                                                          b'{"a":2}\n'], lm)], append_blob=True)
+        assert calls[0].args[1] == [{"a": 1}, {"a": 2}]
+        assert next(iter(saved.values()))["next_byte"] == len(b'{"a":1}\n{bad json}\n{"a":2}\n')
+
+    def test_invalid_utf8_keeps_exact_byte_offsets(self):
+        body = b'{"m":"\xff"}\n{"a":2}\n'
+        _, rows, consumed, skipped = _read_append_records(_FakeBlobClient([], body), 0, len(body))
+        assert rows[1] == {"a": 2}
+        assert consumed == len(body)
+        assert skipped == 0
+
+    def test_unchanged_legacy_checkpoint_skips_every_chunk(self, proc_env, monkeypatch):
+        import BlobLogProcessor
+        monkeypatch.setattr(BlobLogProcessor, "MAX_READ_BYTES", 10)
+        lm = datetime(2026, 10, 14, tzinfo=timezone.utc)
+        rows = [b'{"a":1}\n', b'{"a":2}\n', b'{"a":3}\n']
+        old = {"s247diagtest/insights-logs-test/b.json":
+               {"next_block": -1, "last_modified": lm.isoformat()}}
+        calls, saved = _patched_run(proc_env, [("b.json", rows, lm)],
+                                    append_blob=True, initial_checkpoints=old)
+        assert calls == []
+        assert next(iter(saved.values()))["next_byte"] == len(b"".join(rows))
+        calls, _ = _patched_run(proc_env, [("b.json", rows + [b'{"a":4}\n'],
+                                            lm + timedelta(minutes=1))],
+                                append_blob=True, initial_checkpoints=saved)
+        assert [c.args[1] for c in calls] == [[{"a": 4}]]
+
+    def test_merge_never_regresses_append_offset(self):
+        remote = {"b": {"next_block": -1, "next_byte": 200, "append_created": "2024"}}
+        local = {"b": {"next_block": -1, "next_byte": 100, "append_created": "2024"}}
+        assert _merge_checkpoints(remote, local)["b"]["next_byte"] == 200
+
+    def test_recreated_blob_uses_new_generation_checkpoint(self):
+        remote = {"b": {"next_block": -1, "next_byte": 200, "append_created": "2024"}}
+        local = {"b": {"next_block": -1, "next_byte": 20, "append_created": "2025"}}
+        assert _merge_checkpoints(remote, local)["b"]["next_byte"] == 20
 
 
 class TestTenantStorageAccountPolled:

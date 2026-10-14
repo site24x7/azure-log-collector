@@ -7,6 +7,25 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.0.1-beta5] — 2026-10-14
+
+### Fixed
+- Read Azure Append Blobs incrementally using acknowledged byte offsets instead
+  of resending the entire hourly file whenever it grows. Preserve incomplete
+  JSON/UTF-8 tails for the next poll, bound read sizes, and retain checkpoints
+  when uploads fail. Merge offsets without regression and reset for recreated
+  blobs. Unchanged legacy full-read checkpoints migrate without redelivery;
+  a legacy blob changed before migration may be replayed once.
+- Resolve configured date-field aliases from parsed fields before falling back
+  to raw JSON, so Azure `time` mapped to `Time` supplies the event timestamp.
+- Skip and count a malformed append-blob record that is already newline
+  terminated instead of stalling every later record in that blob; invalid UTF-8
+  no longer shifts byte offsets.
+- Walk every chunk when migrating an unchanged legacy checkpoint, so blobs larger
+  than one read are not resent past the first chunk.
+- Parse Azure ISO-8601 times with 0-7 fraction digits and UTC offsets, and omit
+  `_zl_timestamp` rather than sending epoch 0 when the time cannot be parsed.
+
 ## [1.0.1-beta4] — 2026-10-14
 
 ### Fixed

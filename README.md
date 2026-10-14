@@ -54,9 +54,11 @@ the full suffix and region into at most 24 characters. This requires the
 matching updated collector code—do not combine a new long suffix with an older
 collector package that still truncates regional names.
 
-The template uses ZipDeploy with remote build for Linux Consumption. GitHub
-release URLs redirect and cannot be used directly in `WEBSITE_RUN_FROM_PACKAGE`
-when creating this plan. A successful ARM validation is not proof of code
+The template runs the collector from a package URL (`WEBSITE_RUN_FROM_PACKAGE`).
+Azure refuses to create a Linux Consumption app with a redirecting package URL,
+and GitHub release download links always redirect, so each release also commits
+the identical zip to the `packages` branch and the template uses its
+`raw.githubusercontent.com` link, which is served directly. A successful ARM validation is not proof of code
 startup; verify `/api/health` and actual ingestion after deployment.
 
 ## Quick Start

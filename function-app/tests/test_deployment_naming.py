@@ -74,19 +74,22 @@ def test_preflight_checks_availability_and_ownership(scenario):
     assert all('create' not in cmd and 'delete' not in cmd for cmd in calls)
 
 
-def test_template_uses_remote_build_for_redirecting_package():
+def test_template_runs_from_direct_package_url():
+    # Linux Consumption refuses to be created with a redirecting package URL
+    # (GitHub release assets 302), so the template uses the raw.githubusercontent
+    # copy on the packages branch, which is served directly.
     template = json.loads((ROOT / 'setup/azuredeploy.json').read_text())
     assert template['parameters']['deploymentSuffix']['defaultValue'] == ''
+    assert template['variables']['functionZipUrl'].startswith(
+        'https://raw.githubusercontent.com/site24x7/azure-log-collector/packages/v')
     nested = template['resources'][1]['properties']['template']['resources']
     site = next(r for r in nested if r['type'] == 'Microsoft.Web/sites')
     settings = {s['name']: s['value'] for s in site['properties']['siteConfig']['appSettings']}
-    assert 'WEBSITE_RUN_FROM_PACKAGE' not in settings
-    assert settings['SCM_DO_BUILD_DURING_DEPLOYMENT'] == 'true'
-    assert settings['ENABLE_ORYX_BUILD'] == 'true'
+    assert settings['WEBSITE_RUN_FROM_PACKAGE'] == "[parameters('functionZipUrl')]"
+    assert 'SCM_DO_BUILD_DURING_DEPLOYMENT' not in settings
+    assert 'ENABLE_ORYX_BUILD' not in settings
     assert settings['DIAG_SEED_REGION'] == "[parameters('location')]"
-    deployment = next(r for r in nested if r['type'] == 'Microsoft.Web/sites/extensions')
-    assert deployment['name'].endswith("'/ZipDeploy')]")
-    assert deployment['properties']['packageUri'] == "[parameters('functionZipUrl')]"
+    assert not any(r['type'] == 'Microsoft.Web/sites/extensions' for r in nested)
 
 
 @pytest.mark.parametrize('failure', ['global_collision', 'outage', 'ownership_denied'])
