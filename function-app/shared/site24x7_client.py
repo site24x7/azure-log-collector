@@ -17,6 +17,7 @@ import logging
 import calendar
 import datetime
 import traceback
+import urllib.error
 import urllib.parse
 import urllib.request
 from base64 import b64decode
@@ -218,6 +219,9 @@ class Site24x7Client:
         )
         self.circuit_breaker = CircuitBreaker()
         self.rate_limiter = RateLimiter()
+        # Why the last Site24x7 API call failed (None after a success); the scan
+        # reports it so a rejected Device Key is not shown as "no log types".
+        self.last_error: Optional[Dict] = None
 
     def _make_s247_request(
         self, path: str, params: Optional[Dict] = None, method: str = "GET"
@@ -225,6 +229,8 @@ class Site24x7Client:
         """Make an authenticated request to the Site24x7 AppLog servlet."""
         if not self.device_key:
             logger.error("SITE24X7_API_KEY not configured")
+            self.last_error = {"path": path, "http_status": None,
+                               "message": "Site24x7 Device Key is not configured."}
             return None
 
         url_params = {"deviceKey": self.device_key}
@@ -237,15 +243,23 @@ class Site24x7Client:
             req = urllib.request.Request(url, method=method)
             req.add_header("Accept", "application/json")
             resp = urllib.request.urlopen(req, timeout=120)
-            return json.loads(resp.read().decode("utf-8"))
+            result = json.loads(resp.read().decode("utf-8"))
+            if isinstance(result, dict) and str(result.get("status", "")).upper() in ("ERROR", "FAILURE", "FAILED"):
+                self.last_error = {"path": path, "http_status": getattr(resp, "status", 200),
+                                   "message": "Site24x7 rejected the API request."}
+            else:
+                self.last_error = None
+            return result
         except Exception as e:
-            logger.error("Site24x7 API request failed (%s): %s", path, e)
+            self.last_error = _describe_api_error(path, e, self.s247_base_url, (self.device_key,))
+            logger.error("Site24x7 API request failed (%s): %s", path, self.last_error["message"])
             try:
                 from shared.debug_logger import log_event
                 log_event("error", "Site24x7Client",
-                          f"API request failed: {path}",
+                          f"API request failed: {path} — {self.last_error['message']}",
                           {"url": path, "method": method, "error": str(e),
-                           "error_type": type(e).__name__})
+                           "error_type": type(e).__name__,
+                           "http_status": self.last_error.get("http_status")})
             except Exception:
                 pass
             return None
@@ -525,6 +539,37 @@ class Site24x7Client:
             return [{"category": None, "sourceConfig": None, "_errors": errors}]
         return None
 
+    def register_collector(self, fields: Dict[str, str]) -> bool:
+        """POST this collector's details to Site24x7 (see shared/registration.py).
+
+        Unlike the GET helpers, the Device Key and function key go in the
+        form body so they never appear in URLs or access logs.
+        """
+        if not self.device_key:
+            logger.error("SITE24X7_API_KEY not configured")
+            return False
+        body = urllib.parse.urlencode({"deviceKey": self.device_key, **fields}).encode()
+        req = urllib.request.Request(
+            f"{self._get_api_base_url()}/applog/azure/register_collector",
+            data=body, method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded",
+                     "Accept": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+            if str(result.get("status", "")).lower() == "success":
+                return True
+            logger.error("Site24x7 collector registration rejected: %s",
+                         str(result.get("message", ""))[:200])
+            return False
+        except urllib.error.HTTPError as e:
+            logger.error("Site24x7 collector registration failed: HTTP %s", e.code)
+            return False
+        except Exception as e:
+            logger.error("Site24x7 collector registration failed: %s", type(e).__name__)
+            return False
+
     def preflight_check(self) -> Dict:
         """Quick connectivity check — call before a scan to validate the
         full relay/API chain. Uses the supported-types endpoint because it
@@ -645,11 +690,62 @@ class Site24x7Client:
 # ─── Log Parsing Functions (extracted from log_sender.py) ────────────────
 
 
-def _get_timestamp(datetime_string: str, format_string: str) -> int:
+_ISO_TIMESTAMP = re.compile(
+    r"^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:?\d{2})?$"
+)
+
+
+def _describe_api_error(path: str, error: Exception, base_url: str, secrets=()) -> Dict:
+    """Actionable, secret-free description of a failed Site24x7 API call."""
+    from shared.redaction import redact_text
+
+    status, body = None, ""
+    if isinstance(error, urllib.error.HTTPError):
+        status = error.code
+        try:
+            body = error.read(300).decode("utf-8", "replace").strip()
+        except Exception:
+            body = ""
+    if "INVALID_DEVICE_KEY" in body.upper():
+        message = (f"Site24x7 rejected the Device Key (INVALID_DEVICE_KEY). Use a Device Key "
+                   f"from the Site24x7 data centre this collector points to ({base_url}).")
+    elif status is not None:
+        message = f"Site24x7 returned HTTP {status} for {path}" + (f": {body[:120]}" if body else "")
+    else:
+        message = f"Site24x7 API call to {path} failed: {type(error).__name__}"
+    for secret in secrets:
+        if secret:
+            message = message.replace(secret, "***")
+    return {"path": path, "http_status": status, "message": redact_text(message)}
+
+
+def _parse_iso_timestamp(datetime_string) -> Optional[datetime.datetime]:
+    """Azure emits ISO-8601 with 0-7 fraction digits; strptime %f needs 1-6."""
+    match = _ISO_TIMESTAMP.match(str(datetime_string).strip())
+    if not match:
+        return None
+    day, clock, fraction, zone = match.groups()
+    zone = "+00:00" if zone in (None, "Z") else zone
+    if ":" not in zone:
+        zone = zone[:3] + ":" + zone[3:]
+    fraction = ((fraction or "") + "000000")[:6]
     try:
-        datetime_data = datetime.datetime.strptime(
-            datetime_string[:26], format_string
-        )
+        return datetime.datetime.fromisoformat(f"{day}T{clock}.{fraction}{zone}")
+    except ValueError:
+        return None
+
+
+def _get_timestamp(datetime_string: str, format_string: str) -> int:
+    """Epoch millis, or 0 when the value cannot be parsed (caller must not send 0)."""
+    try:
+        try:
+            datetime_data = datetime.datetime.strptime(
+                datetime_string[:26], format_string
+            )
+        except (TypeError, ValueError):
+            datetime_data = _parse_iso_timestamp(datetime_string)
+            if datetime_data is None:
+                return 0
         timestamp = (
             calendar.timegm(datetime_data.utctimetuple()) * 1000
             + int(datetime_data.microsecond / 1000)
@@ -660,10 +756,18 @@ def _get_timestamp(datetime_string: str, format_string: str) -> int:
 
 
 def _get_json_value(obj, key, datatype=None):
-    if key in obj or key.lower() in obj:
+    """Resolve literal or dotted diagnostic fields without depending on key casing."""
+    if not isinstance(obj, dict):
+        return None
+    resolved_key = key if key in obj else next(
+        (candidate for candidate in obj
+         if isinstance(candidate, str) and candidate.lower() == key.lower()),
+        None,
+    )
+    if resolved_key is not None:
         if datatype and datatype == "json-object":
             arr_json = []
-            child_obj = obj[key]
+            child_obj = obj[resolved_key]
             if isinstance(child_obj, str):
                 try:
                     child_obj = json.loads(child_obj, strict=False)
@@ -675,14 +779,13 @@ def _get_json_value(obj, key, datatype=None):
                 arr_json.append({"key": child_key, "value": str(child_obj[child_key])})
             return arr_json
         else:
-            return obj[key] if key in obj else obj[key.lower()]
+            return obj[resolved_key]
     elif "." in key:
         parent_key = key[: key.index(".")]
         child_key = key[key.index(".") + 1 :]
-        parent_val = parent_key if parent_key in obj else parent_key.capitalize()
-        if parent_val not in obj:
+        child_obj = _get_json_value(obj, parent_key)
+        if child_obj is None:
             return None
-        child_obj = obj[parent_val]
         if isinstance(child_obj, str):
             try:
                 child_obj = json.loads(child_obj, strict=False)
@@ -690,7 +793,7 @@ def _get_json_value(obj, key, datatype=None):
                 child_obj = json.loads(
                     child_obj.replace("\\", "\\\\"), strict=False
                 )
-        return _get_json_value(child_obj, child_key)
+        return _get_json_value(child_obj, child_key, datatype)
     return None
 
 
@@ -823,10 +926,13 @@ def _json_log_parser(
             log_size += json_log_size
 
             # Add timestamp
-            if date_field in event_obj:
-                formatted_line["_zl_timestamp"] = _get_timestamp(
-                    event_obj[date_field], date_format
-                )
+            event_time = _get_json_value(formatted_line, date_field)
+            if event_time is None:
+                event_time = _get_json_value(event_obj, date_field)
+            if event_time is not None:
+                event_ms = _get_timestamp(event_time, date_format)
+                if event_ms > 0:  # epoch 0 would file the record under 1970
+                    formatted_line["_zl_timestamp"] = event_ms
 
             # Extract resource group as agent uid
             if "resourceId" in event_obj:

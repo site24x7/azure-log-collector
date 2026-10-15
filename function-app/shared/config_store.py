@@ -37,6 +37,17 @@ _cache = {
     "configured_resources": None,
 }
 
+# A worker process serves many invocations, and HTTP functions (dashboard,
+# status, configured resources) never call clear_cache(), so without an expiry
+# each worker kept whatever it read first and the dashboard showed stale data.
+CACHE_TTL_SECONDS = 30
+_cache_started = time.monotonic()
+
+
+def _expire_cache() -> None:
+    if time.monotonic() - _cache_started > CACHE_TTL_SECONDS:
+        clear_cache()
+
 
 def _get_service_client() -> Optional[BlobServiceClient]:
     conn_str = os.environ.get("AzureWebJobsStorage", "")
@@ -232,6 +243,7 @@ def _delete_blob(blob_path: str) -> bool:
 
 def get_supported_log_types(force_refresh: bool = False) -> Dict:
     """Read the catalog; force a blob read for requests served by other workers."""
+    _expire_cache()
     if not force_refresh and _cache["supported_types"] is not None:
         return _cache["supported_types"]
 
@@ -275,6 +287,7 @@ def _normalize_category(category: str) -> str:
 
 def get_logtype_config(category: str, force_refresh: bool = False, strict: bool = False) -> Optional[Dict]:
     """Get sourceConfig; strict mode requires a reliable snapshot for mutations."""
+    _expire_cache()
     config_key = f"S247_{_normalize_category(category)}"
 
     if not (force_refresh or strict) and config_key in _cache["logtype_configs"]:
@@ -344,6 +357,7 @@ def get_all_logtype_configs() -> Dict[str, Dict]:
 
 def get_disabled_log_types() -> List[str]:
     """Get list of disabled log type categories."""
+    _expire_cache()
     if _cache["disabled_types"] is not None:
         return list(_cache["disabled_types"])
 
@@ -443,6 +457,7 @@ def get_configured_resources() -> Dict:
 
     Structure: { resource_id: { "categories": [...], "storage_account": "...", "configured_at": "..." } }
     """
+    _expire_cache()
     if _cache["configured_resources"] is not None:
         return _cache["configured_resources"]
 
@@ -522,6 +537,8 @@ def unmark_resource_configured(resource_id: str) -> bool:
 
 def clear_cache():
     """Clear all in-memory caches. Call at the start of each function invocation."""
+    global _cache_started
+    _cache_started = time.monotonic()
     _cache["supported_types"] = None
     _cache["disabled_types"] = None
     _cache["logtype_configs"] = {}

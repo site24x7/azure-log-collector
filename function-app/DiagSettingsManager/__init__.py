@@ -144,7 +144,9 @@ def run_scan():
     # ── Phase 1: Get supported log types ──
     _update_phase(1)
     phase_start = _time.monotonic()
+    s247_client.last_error = None
     supported_types = _refresh_supported_types(s247_client)
+    catalog_error = s247_client.last_error  # e.g. a rejected Device Key
     logging.info("DiagSettingsManager: Phase 1 (supported types) done in %.1fs [total=%.1fs]",
                  _time.monotonic() - phase_start, _elapsed())
     phase_timings["phase1_supported_types"] = round(_time.monotonic() - phase_start, 1)
@@ -245,7 +247,9 @@ def run_scan():
         prev_config = configured_resources.get(resource_id, {})
         if prev_config and prev_config.get("categories"):
             sa_name = provisioned_regions.get(location, "")
-            if sa_name:
+            # A changed regional account (e.g. a leftover one was chosen before)
+            # must not fast-path: rediscover and re-point the setting.
+            if sa_name and prev_config.get("storage_account", sa_name) == sa_name:
                 resource_category_map[resource_id] = {
                     "categories": prev_config["categories"],
                     "effective_categories": prev_config["categories"],
@@ -443,6 +447,13 @@ def run_scan():
     # instead of wasting time on per-category calls that will all fail.
     s247_reachable = True
     s247_errors = []  # structured error list for dashboard
+    if catalog_error:
+        # Without the catalog nothing can be configured; say why instead of
+        # reporting "connected" with zero log types.
+        s247_reachable = False
+        s247_errors.append({"phase": "catalog", "message": catalog_error["message"],
+                            "http_status": catalog_error.get("http_status")})
+        _log_event("error", "DiagSettingsManager", f"Phase 1: {catalog_error['message']}")
 
     if categories_to_create:
         preflight = s247_client.preflight_check()
@@ -671,7 +682,8 @@ def run_scan():
     # Resources already fast-pathed above (already_configured) should be skipped
     fast_pathed_ids = {rid for rid, info in resource_category_map.items()
                        if rid in configured_resources
-                       and set(info.get("effective_categories", [])) == set(configured_resources[rid].get("categories", []))}
+                       and set(info.get("effective_categories", [])) == set(configured_resources[rid].get("categories", []))
+                       and configured_resources[rid].get("storage_account", info.get("sa_name")) == info.get("sa_name")}
 
     # Use ThreadPoolExecutor for parallel diagnostic settings creation
     from shared.azure_manager import _extract_subscription_id
@@ -699,7 +711,8 @@ def run_scan():
                 return "skipped", None, None
 
             if resource_id in configured_resources:
-                if new_categories == prev_categories:
+                same_storage = prev_config.get("storage_account", info["sa_name"]) == info["sa_name"]
+                if new_categories == prev_categories and same_storage:
                     return "already_configured", None, None
                 success = azure_mgr.create_diagnostic_setting(
                     resource_id=resource_id,
@@ -888,11 +901,10 @@ def run_scan():
         "entra_target_subscription_name": entra_target_sub_name,
         "in_progress": False,
     }
+    # The scan state blob is the record of the last scan. Never write an app
+    # setting here: every app-setting change restarts the Function App, and
+    # runOnStartup then starts another scan (a restart loop every few minutes).
     save_scan_state(scan_state)
-    try:
-        azure_mgr.update_app_setting("LAST_SCAN_TIME", scan_time)
-    except Exception as e:
-        logging.warning("DiagSettingsManager: Failed to update LAST_SCAN_TIME app setting: %s", str(e))
 
     summary = {
         "scan_time": scan_time,
@@ -949,12 +961,37 @@ def run_scan():
     return summary
 
 
+def _completed_scan_age_minutes():
+    """Minutes since the last completed scan, or None if there is none."""
+    try:
+        from shared.config_store import get_scan_state
+        state = get_scan_state() or {}
+        if state.get("in_progress") or not state.get("last_scan_time"):
+            return None
+        last = datetime.fromisoformat(state["last_scan_time"].replace("Z", "+00:00"))
+        return (datetime.now(timezone.utc) - last).total_seconds() / 60
+    except Exception:
+        return None
+
+
 def main(timer: func.TimerRequest) -> None:
     if timer.past_due:
         logging.warning("DiagSettingsManager: Timer is past due")
     auto_scan = os.environ.get("AUTO_SCAN_ENABLED", "true").lower() == "true"
     if not auto_scan:
         logging.info("DiagSettingsManager: Auto-scan is DISABLED — skipping scheduled scan")
+        return
+
+    # runOnStartup fires on every host start (deploy, restart, scale-out,
+    # settings change). Keep the first scan after a fresh deploy, but skip a
+    # start-up run when a scan finished recently.
+    min_gap = float(os.environ.get("MIN_SCAN_INTERVAL_MINUTES", "30") or 30)
+    age = _completed_scan_age_minutes()
+    if age is not None and age < min_gap:
+        logging.info(
+            "DiagSettingsManager: Last scan finished %.0f min ago (< %.0f) — skipping",
+            age, min_gap,
+        )
         return
 
     # Concurrency guard: skip if another scan is already in progress.
@@ -981,4 +1018,10 @@ def main(timer: func.TimerRequest) -> None:
             guard_err,
         )
 
-    run_scan()
+    try:
+        run_scan()
+    finally:
+        # Keep Site24x7's copy of this collector (status, version, function
+        # key) current after every scan, including the first one after deploy.
+        from shared.registration import register_with_site24x7
+        register_with_site24x7()

@@ -7,9 +7,93 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
-## [Unreleased]
+## [1.0.1-beta8] — 2026-10-15
+
+### Added
+- `COLLECTOR_RESOURCE_ID` app setting (set by the template) so registration uses
+  the collector's own subscription even when it monitors others; the value is
+  normalised to canonical ARM casing before it is sent.
+- Dashboard banner when it is opened with the Dashboard-only function key (its
+  data calls get 401), naming the host key to use instead.
 
 ### Fixed
+- A rejected Device Key or wrong data centre is reported as such (scan status,
+  Degraded system status, debug log, connectivity test) instead of "no log
+  types"; the connectivity test calls the API host the collector really uses.
+- The connectivity check treats any non-error log-type lookup as reachable, so
+  a healthy API is no longer shown as failing.
+- Dashboard and HTTP API state no longer goes stale: cached configuration now
+  expires after 30 seconds in every worker (the Resources tab could miss
+  resources configured after the worker started).
+- Credentials echoed back in error bodies are scrubbed from logs and messages.
+
+## [1.0.1-beta7] — 2026-10-14
+
+### Fixed
+- Stop a restart loop present since v1.0.0: every scan wrote the
+  `LAST_SCAN_TIME` app setting, which restarts the Function App, and
+  `runOnStartup` then started another scan — roughly every 4-5 minutes, with
+  the dashboard showing "Unreachable" during each restart. The last scan time
+  now lives only in the scan state, and a start-up run is skipped when a scan
+  finished within `MIN_SCAN_INTERVAL_MINUTES` (default 30). The first scan
+  after a fresh deploy still runs.
+
+## [1.0.1-beta6] — 2026-10-14
+
+### Added
+- Register the collector with Site24x7 after every discovery scan (scheduled
+  and manual): Function App URL, ARM resource ID, region, version, a read-only
+  status summary and the function key, read fresh from ARM so a rotated key
+  re-syncs on the next scan. Keys travel only in the POST body. Site24x7 stores
+  the key encrypted and lists every collector on the Deploy Diagnostic Logs page.
+- "Download Log File" on the dashboard (`/api/debug?download=log`): a readable
+  log for Site24x7 support with keys, SAS tokens, connection strings and bearer
+  tokens removed. All debug events, audit entries and debug downloads are now
+  redacted.
+
+### Fixed
+- Portal installs: the deployment suffix is lowercased and stripped of `-`,
+  `_`, `.` and spaces, so `-Oct14` no longer produces invalid storage names.
+- A region with storage accounts left over from an earlier failed install now
+  uses this deployment's own account, and diagnostic settings that were pointed
+  at another account are re-pointed on the next scan.
+
+## [1.0.1-beta5] — 2026-10-14
+
+### Fixed
+- Read Azure Append Blobs incrementally using acknowledged byte offsets instead
+  of resending the entire hourly file whenever it grows. Preserve incomplete
+  JSON/UTF-8 tails for the next poll, bound read sizes, and retain checkpoints
+  when uploads fail. Merge offsets without regression and reset for recreated
+  blobs. Unchanged legacy full-read checkpoints migrate without redelivery;
+  a legacy blob changed before migration may be replayed once.
+- Resolve configured date-field aliases from parsed fields before falling back
+  to raw JSON, so Azure `time` mapped to `Time` supplies the event timestamp.
+- Skip and count a malformed append-blob record that is already newline
+  terminated instead of stalling every later record in that blob; invalid UTF-8
+  no longer shifts byte offsets.
+- Walk every chunk when migrating an unchanged legacy checkpoint, so blobs larger
+  than one read are not resent past the first chunk.
+- Parse Azure ISO-8601 times with 0-7 fraction digits and UTC offsets, and omit
+  `_zl_timestamp` rather than sending epoch 0 when the time cannot be parsed.
+
+## [1.0.1-beta4] — 2026-10-14
+
+### Fixed
+- Match Azure JSON field names case-insensitively, including nested properties
+  and JSON-object fields. Preserve APIM `apiId`, `responseCode` and other
+  camel-case values when templates use PascalCase names. Exact keys take priority;
+  genuinely absent fields remain absent. Historical records require replay.
+- Require explicit live-validation approval and an HTTPS evidence report before
+  publishing stable releases; prerequisite CI alone no longer permits publication.
+- Authenticate updater health checks with a function key and require an alive JSON
+  response with healthy dependencies, rather than treating any HTTP 200 as success.
+- Add an optional stable deployment suffix for fresh-install storage-name
+  collisions, preserving legacy names when omitted. Longer suffixes use compact
+  seed/tenant names and hash the full suffix and region for other storage accounts.
+  Setup preflight checks host, seed and tenant names and stops on check failures.
+- Deploy Linux Consumption code through ZipDeploy with remote build instead of
+  setting WEBSITE_RUN_FROM_PACKAGE to a redirecting GitHub release URL.
 - Refresh supported Azure log types on every scan, preserving the cached catalog
   during server outages; status/filter requests read the persisted catalog so
   changes are visible across Function App workers.

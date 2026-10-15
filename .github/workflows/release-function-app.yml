@@ -12,6 +12,15 @@ on:
         description: 'Force a release even if VERSION unchanged'
         required: false
         default: 'false'
+      stable_validation_confirmed:
+        description: 'Confirm matching candidate passed fresh install, repeat deploy, upgrade, rollback and real ingestion'
+        type: boolean
+        required: false
+        default: false
+      validation_report_url:
+        description: 'HTTPS evidence report URL for stable release validation'
+        type: string
+        required: false
 
 permissions:
   contents: write
@@ -51,11 +60,20 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Require production validation approval for stable releases
+        if: steps.check_release.outputs.exists == 'false' || github.event.inputs.force_release == 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_EVENT: ${{ github.event_name }}
+          STABLE_VALIDATION_CONFIRMED: ${{ inputs.stable_validation_confirmed }}
+          VALIDATION_REPORT_URL: ${{ inputs.validation_report_url }}
+        run: python3 setup/check-release-approval.py
+
       - name: Verify ARM template pins to this tag
         if: steps.check_release.outputs.exists == 'false' || github.event.inputs.force_release == 'true'
         run: |
           TAG="${{ steps.version.outputs.tag }}"
-          EXPECTED="releases/download/${TAG}/s247-function-app.zip"
+          EXPECTED="https://raw.githubusercontent.com/${{ github.repository }}/packages/${TAG}/s247-function-app.zip"
           if ! grep -q "$EXPECTED" setup/azuredeploy.json; then
             echo "::error::setup/azuredeploy.json functionZipUrl must be pinned to ${EXPECTED}"
             grep functionZipUrl setup/azuredeploy.json
@@ -115,11 +133,66 @@ jobs:
           EOF
           cat version.json
 
+      # Azure refuses to create a Linux Consumption app whose WEBSITE_RUN_FROM_PACKAGE
+      # URL redirects, and release asset URLs always 302. The template therefore
+      # points at this byte-identical copy on the packages branch, which
+      # raw.githubusercontent.com serves directly. Published before the release so
+      # a released template never points at a missing package.
+      - name: Publish direct-download package copy
+        if: steps.check_release.outputs.exists == 'false' || github.event.inputs.force_release == 'true'
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          REPO="${{ github.repository }}"
+          PKG_DIR="$RUNNER_TEMP/packages"
+          REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
+          if git ls-remote --exit-code --heads "$REMOTE" packages >/dev/null; then
+            git clone --depth 1 --branch packages "$REMOTE" "$PKG_DIR"
+          else
+            git init -b packages "$PKG_DIR"
+            git -C "$PKG_DIR" remote add origin "$REMOTE"
+          fi
+          mkdir -p "$PKG_DIR/$TAG"
+          cp s247-function-app.zip "$PKG_DIR/$TAG/s247-function-app.zip"
+          cd "$PKG_DIR"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add "$TAG/s247-function-app.zip"
+          git diff --cached --quiet || git commit -m "Package for $TAG"
+          git push origin packages
+
+          # Prove the URL the template uses answers 200 directly (no redirect)
+          # and serves the exact zip. raw.githubusercontent can lag a push briefly.
+          URL="https://raw.githubusercontent.com/${REPO}/packages/${TAG}/s247-function-app.zip"
+          WANT="$(sha256sum "$GITHUB_WORKSPACE/s247-function-app.zip" | cut -d' ' -f1)"
+          for attempt in $(seq 1 20); do
+            CODE="$(curl -s -o "$RUNNER_TEMP/raw.zip" -w '%{http_code}' "$URL" || true)"
+            if [ "$CODE" = "200" ] && [ "$(sha256sum "$RUNNER_TEMP/raw.zip" | cut -d' ' -f1)" = "$WANT" ]; then
+              echo "Direct package URL OK: $URL"
+              exit 0
+            fi
+            echo "Attempt $attempt: HTTP $CODE or digest mismatch; retrying"
+            sleep 15
+          done
+          echo "::error::$URL did not serve the release zip directly"
+          exit 1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Create GitHub Release
         if: steps.check_release.outputs.exists == 'false' || github.event.inputs.force_release == 'true'
         run: |
           TAG="${{ steps.version.outputs.tag }}"
           VERSION="${{ steps.version.outputs.version }}"
+
+          NOTES="Auto-release of Site24x7 Diagnostic Logs Function App version $VERSION"
+          if [[ "$VERSION" != *-* ]]; then
+            NOTES="$NOTES. Production validation evidence: $VALIDATION_REPORT_URL"
+          fi
+
+          RELEASE_FLAGS=()
+          if [[ "$VERSION" == *-* ]]; then
+            RELEASE_FLAGS+=(--prerelease)
+          fi
 
           # Delete existing release if force
           if [ "${{ github.event.inputs.force_release }}" = "true" ]; then
@@ -129,14 +202,15 @@ jobs:
 
           gh release create "$TAG" \
             --title "Function App $VERSION" \
-            --notes "Auto-release of Site24x7 Diagnostic Logs Function App version $VERSION" \
+            --notes "$NOTES" \
             --target "${{ github.sha }}" \
-            $(echo "$VERSION" | grep -qE 'alpha|beta|rc' && echo --prerelease) \
+            "${RELEASE_FLAGS[@]}" \
             s247-function-app.zip \
             version.json \
             setup/azuredeploy.json
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VALIDATION_REPORT_URL: ${{ inputs.validation_report_url }}
 
       - name: Summary
         run: |

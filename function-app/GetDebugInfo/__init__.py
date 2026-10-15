@@ -2,6 +2,10 @@
 
 GET /api/debug              — Returns debug summary (recent events, config issues, stats)
 GET /api/debug?download=1   — Downloads full debug bundle as JSON file
+GET /api/debug?download=log — Downloads the same data as a readable .log file
+
+Every response is passed through shared.redaction so the files can be sent
+to Site24x7 support without exposing keys, SAS tokens or connection strings.
 GET /api/debug?test_s247=1  — Includes live Site24x7 connectivity test
 GET /api/debug?clear=1      — Clears the debug event log
 """
@@ -119,9 +123,23 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         except Exception:
             pass
 
+        from shared.redaction import redact
+        debug_info = redact(debug_info)
+        stamp = datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')
+
+        if req.params.get("download") == "log":
+            return func.HttpResponse(
+                _as_log_file(debug_info),
+                mimetype="text/plain",
+                headers={
+                    "Content-Disposition": f'attachment; filename="s247-collector-{stamp}.log"',
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                },
+            )
+
         # ── Download as file ──
         if req.params.get("download") == "1":
-            filename = f"s247-debug-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json"
+            filename = f"s247-debug-{stamp}.json"
             return func.HttpResponse(
                 json.dumps(debug_info, indent=2),
                 mimetype="application/json",
@@ -144,3 +162,27 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             mimetype="application/json",
             status_code=500,
         )
+
+
+def _as_log_file(info: dict) -> str:
+    """Plain-text rendering of an already-redacted debug bundle, oldest event first."""
+    lines = [f"# Site24x7 Azure log collector debug log — {info.get('generated_at', '')}",
+             f"# function_app={info.get('function_app', '')} region={info.get('region', '')}",
+             f"# errors={info.get('error_count', 0)} warnings={info.get('warning_count', 0)}",
+             ""]
+    for issue in info.get("config_issues") or []:
+        lines.append(f"CONFIG {json.dumps(issue, default=str)}")
+    for event in reversed(info.get("recent_events") or []):
+        details = event.get("details")
+        lines.append(
+            f"{event.get('timestamp', '')} {str(event.get('level', '')).upper():7} "
+            f"[{event.get('component', '')}] {event.get('message', '')}"
+            + (f" | {json.dumps(details, default=str)}" if details else "")
+        )
+    lines.append("")
+    for section in ("scan_state", "processing_runs", "logtype_summary", "environment",
+                    "circuit_breaker", "s247_connectivity"):
+        if section in info:
+            lines.append(f"## {section}")
+            lines.append(json.dumps(info[section], indent=2, default=str))
+    return "\n".join(lines) + "\n"

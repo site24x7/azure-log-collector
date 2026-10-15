@@ -25,6 +25,7 @@ implementation (block-list + skip-last-block).
 """
 
 import os
+import codecs
 import json
 import logging
 import time
@@ -202,11 +203,16 @@ def _process_all_regions():
                     next_block = int(cp_entry.get("next_block", 0))
 
                     blob_client = container_client.get_blob_client(blob.name)
+                    blob_type = getattr(blob, "blob_type", "")
+                    is_append = getattr(blob_type, "value", blob_type) == "AppendBlob"
 
                     try:
-                        block_list = blob_client.get_block_list(block_list_type="committed")
-                        committed = list(block_list[0]) if isinstance(block_list, tuple) else \
-                                    list(getattr(block_list, "committed_blocks", []))
+                        if is_append:
+                            committed = None
+                        else:
+                            block_list = blob_client.get_block_list(block_list_type="committed")
+                            committed = list(block_list[0]) if isinstance(block_list, tuple) else \
+                                        list(getattr(block_list, "committed_blocks", []))
                     except Exception as e:
                         logger.warning(
                             "BlobLogProcessor: get_block_list failed for %s/%s: %s — "
@@ -216,6 +222,60 @@ def _process_all_regions():
                         committed = None
 
                     try:
+                        if is_append:
+                            created = getattr(blob, "creation_time", None)
+                            generation = created.isoformat() if isinstance(created, datetime) else ""
+                            offset = int(cp_entry.get("next_byte", 0))
+                            if (generation and cp_entry.get("append_created")
+                                    and generation != cp_entry["append_created"]):
+                                offset = 0
+                            size = int(blob.size)
+                            if offset > size:
+                                offset = 0
+                            cur_lm = blob.last_modified.isoformat() if blob.last_modified else ""
+                            # Upgrade unchanged legacy full-read checkpoints without redelivery.
+                            legacy_done = ("next_byte" not in cp_entry
+                                           and cp_entry.get("next_block") == -1
+                                           and cp_entry.get("last_modified") == cur_lm)
+                            if legacy_done:
+                                # The old full read already delivered the whole blob, so
+                                # walk every chunk to a record boundary without sending.
+                                consumed = 0
+                                records = []
+                                while offset + consumed < size:
+                                    data, _, step, _ = _read_append_records(
+                                        blob_client, offset + consumed,
+                                        min(size - offset - consumed, MAX_READ_BYTES))
+                                    total_stats["bytes_read"] += len(data)
+                                    if not step:
+                                        break
+                                    consumed += step
+                            else:
+                                data, records, consumed, skipped = _read_append_records(
+                                    blob_client, offset, min(size - offset, MAX_READ_BYTES))
+                                total_stats["bytes_read"] += len(data)
+                                if skipped:
+                                    total_stats["dropped"] += skipped
+                                    total_stats["error_blobs"].append({
+                                        "account": acct_name, "container": cname,
+                                        "blob": blob.name,
+                                        "error": f"Skipped {skipped} malformed record(s)",
+                                    })
+                            if records:
+                                total_stats["processed"] += len(records)
+                                if not _upload_records(client, source_config_b64, records,
+                                                       using_general, total_stats,
+                                                       acct_name, cname, blob.name):
+                                    continue
+                            checkpoints[cp_key] = {
+                                "next_block": -1, "next_byte": offset + consumed,
+                                "append_created": generation, "last_seen": _now_iso(),
+                                "last_modified": cur_lm,
+                            }
+                            if consumed:
+                                total_stats["blobs_advanced"] += 1
+                            continue
+
                         if committed is None:
                             # Block-list API not usable (e.g., a put-blob single-shot upload).
                             # Fallback: full read once per ``last_modified``. Sentinel
@@ -451,6 +511,57 @@ def _full_read_records(blob_client):
     return data, _parse_records(data)
 
 
+def _read_append_records(blob_client, offset, length):
+    """Read complete JSON records only; leave an incomplete tail for the next poll.
+
+    Returns ``(data, records, consumed_bytes, skipped_lines)``. Azure writes
+    newline-delimited JSON, so an unparseable record that is already terminated
+    by a newline is malformed, not incomplete: it is skipped and counted rather
+    than blocking every record after it. Invalid UTF-8 bytes are carried as
+    surrogate escapes so byte offsets stay exact.
+    """
+    if length <= 0:
+        return b"", [], 0, 0
+    data = blob_client.download_blob(offset=offset, length=length).readall()
+    text = codecs.getincrementaldecoder("utf-8")("surrogateescape").decode(data, final=False)
+    decoder = json.JSONDecoder()
+    records = []
+    skipped = 0
+    cursor = 0
+    while cursor < len(text):
+        while cursor < len(text) and (text[cursor].isspace() or text[cursor] == ","):
+            cursor += 1
+        if cursor == len(text):
+            break
+        try:
+            payload, end = decoder.raw_decode(text, cursor)
+        except json.JSONDecodeError as error:
+            newline = text.find("\n", cursor)
+            if (newline == -1 or error.pos > newline
+                    or error.msg.startswith("Unterminated string")):
+                # A formatted envelope may contain newlines before the read
+                # limit cuts it. Only discard a malformed first complete line;
+                # do not consume a valid multiline prefix as corrupt data.
+                break
+            logger.warning("BlobLogProcessor: Skipping malformed append record at byte %d",
+                           offset + _utf8_len(text[:cursor]))
+            skipped += 1
+            cursor = newline + 1
+            continue
+        if isinstance(payload, dict):
+            batch = payload.get("records", [payload])
+            if isinstance(batch, list):
+                records.extend(batch)
+        elif isinstance(payload, list):
+            records.extend(payload)
+        cursor = end
+    return data, records, _utf8_len(text[:cursor]), skipped
+
+
+def _utf8_len(text: str) -> int:
+    return len(text.encode("utf-8", "surrogateescape"))
+
+
 def _upload_records(client, source_config_b64, records, using_general,
                      stats, acct_name, container, blob_name) -> bool:
     """Upload ``records`` in batches; mutate stats accordingly. Returns True iff
@@ -608,6 +719,21 @@ def _merge_checkpoints(remote, local) -> dict:
                 merged[k] = dict(v)
                 continue
             out = dict(prev)
+            if "next_byte" in v or "next_byte" in prev:
+                old_generation = prev.get("append_created", "")
+                new_generation = v.get("append_created", "")
+                if old_generation and new_generation and old_generation != new_generation:
+                    winner = v if new_generation > old_generation else prev
+                elif "next_byte" not in prev:
+                    winner = v
+                elif "next_byte" not in v:
+                    winner = prev
+                else:
+                    winner = v if int(v["next_byte"]) >= int(prev["next_byte"]) else prev
+                out.update(winner)
+                out["last_seen"] = max(prev.get("last_seen", ""), v.get("last_seen", ""))
+                merged[k] = out
+                continue
             try:
                 out["next_block"] = max(int(prev.get("next_block", 0)),
                                           int(v.get("next_block", 0)))

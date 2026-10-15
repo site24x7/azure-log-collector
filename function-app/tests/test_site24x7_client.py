@@ -110,11 +110,44 @@ class TestGetTimestamp:
         ts = _get_timestamp("2024-01-15 10:30:45", "%Y-%m-%d %H:%M:%S")
         assert ts > 0
 
+    @pytest.mark.parametrize("value, expected", [
+        ("2024-01-01T00:00:00.1234567Z", 1704067200123),
+        ("2024-01-01T00:00:00.12Z", 1704067200120),
+        ("2024-01-01T00:00:00Z", 1704067200000),
+        ("2024-01-01T05:30:00+05:30", 1704067200000),
+        ("2024-01-01T00:00:00.5-0100", 1704070800500),
+    ])
+    def test_azure_iso_fraction_and_zone_variants(self, value, expected):
+        assert _get_timestamp(value, "%Y-%m-%dT%H:%M:%S.%f") == expected
+
+    def test_non_string_value_is_unparsed(self):
+        assert _get_timestamp(12345, "%Y-%m-%dT%H:%M:%S.%f") == 0
+
 
 # ─── _get_json_value ─────────────────────────────────────────────────────────
 
 
 class TestGetJsonValue:
+    def test_apim_camelcase_fields_survive_template_lookup(self):
+        obj = {"properties": {"apiId": "dimtest", "operationId": "status",
+                              "responseCode": 500, "backendResponseCode": 500}}
+        for field, expected in [("ApiId", "dimtest"), ("OperationId", "status"),
+                                ("ResponseCode", 500), ("BackendResponseCode", 500)]:
+            assert _get_json_value(obj, "properties." + field) == expected
+
+    def test_exact_spelling_wins_when_keys_differ_only_by_case(self):
+        assert _get_json_value({"apiId": "first", "ApiId": "exact"}, "ApiId") == "exact"
+
+    def test_mixed_case_parent_and_json_object(self):
+        obj = {"PROPERTIES": '{"requestHeaders": {"accept": "application/json"}}'}
+        assert _get_json_value(obj, "properties.RequestHeaders", "json-object") == [
+            {"key": "accept", "value": "application/json"}]
+
+    def test_optional_backend_fields_remain_missing(self):
+        assert _get_json_value({"properties": {"responseCode": 401}},
+                               "properties.BackendResponseCode") is None
+        assert _get_json_value({"properties": None}, "properties.ApiId") is None
+
     def test_simple_key(self):
         assert _get_json_value({"name": "test"}, "name") == "test"
 
@@ -242,6 +275,35 @@ class TestApplyDerivedFields:
 
 
 class TestJsonLogParser:
+    @pytest.mark.parametrize("date_field", ["Time", "EventTime", "time"])
+    def test_azure_event_time_survives_date_field_alias(self, date_field):
+        event = {"time": "2024-01-01T00:00:00.000000"}
+        config = {"dateField": date_field, "dateFormat": "%Y-%m-%dT%H:%M:%S.%f",
+                  "jsonPath": [{"name": date_field, "key": "time"}]}
+        lines, _ = _json_log_parser([event], config, None, None, None)
+        assert lines[0]["_zl_timestamp"] == 1704067200000
+
+    def test_unparseable_event_time_does_not_send_epoch_zero(self):
+        config = {"dateField": "Time", "jsonPath": [{"name": "Time", "key": "time"}]}
+        lines, _ = _json_log_parser([{"time": "yesterday"}], config, None, None, None)
+        assert "_zl_timestamp" not in lines[0]
+
+    def test_gateway_fields_are_preserved_from_azure_camelcase_payload(self):
+        event = {"time": "2024-01-01T00:00:00.000000", "properties": {
+            "apiId": "dimtest", "operationId": "status", "responseCode": 500,
+            "backendResponseCode": 500, "totalTime": 0, "isRequestSuccess": False}}
+        config = {"jsonPath": [
+            {"name": name, "key": "properties." + name}
+            for name in ["ApiId", "OperationId", "ResponseCode", "BackendResponseCode",
+                         "TotalTime", "IsRequestSuccess"]]}
+        lines, _ = _json_log_parser([event], config, None, None, None)
+        assert lines[0]["ApiId"] == "dimtest"
+        assert lines[0]["OperationId"] == "status"
+        assert lines[0]["ResponseCode"] == 500
+        assert lines[0]["BackendResponseCode"] == 500
+        assert lines[0]["TotalTime"] == 0
+        assert lines[0]["IsRequestSuccess"] is False
+
     def test_basic_parsing(self):
         events = [
             {"time": "2024-01-01T00:00:00.000000", "level": "Error", "message": "fail"}

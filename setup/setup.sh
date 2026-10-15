@@ -68,7 +68,11 @@ preflight_checks() {
     # Auto-generate unique suffix from subscription ID if names are defaults
     local unique_suffix
     unique_suffix=$(echo "${SUBSCRIPTION_IDS}" | md5sum 2>/dev/null || md5 -q -s "${SUBSCRIPTION_IDS}" 2>/dev/null || echo "$$")
-    unique_suffix="${unique_suffix:0:6}"
+    unique_suffix="${DEPLOYMENT_SUFFIX:-${unique_suffix:0:6}}"
+    if [[ ! "$unique_suffix" =~ ^[a-z0-9]{1,13}$ ]]; then
+        log_error "DEPLOYMENT_SUFFIX must contain 1–13 lowercase letters or digits"
+        exit 1
+    fi
 
     RG="${RESOURCE_GROUP_NAME:-s247-diag-logs-rg}"
     FUNC_APP="${FUNCTION_APP_NAME:-s247-diag-func-${unique_suffix}}"
@@ -134,19 +138,43 @@ preflight_checks() {
         exit 1
     fi
 
-    # Check storage account name availability (skip if it already belongs to our RG)
-    local sa_available
-    sa_available=$(az storage account check-name --name "$STORAGE" --query "nameAvailable" -o tsv 2>/dev/null || echo "true")
-    if [[ "$sa_available" == "false" ]]; then
-        if ! az storage account show --name "$STORAGE" --resource-group "$RG" &>/dev/null; then
-            log_error "Storage account name '${STORAGE}' is already taken globally."
-            log_error "Change STORAGE_ACCOUNT_NAME in config.env to something unique."
-            log_error "Tip: Try '${STORAGE}$(openssl rand -hex 2 2>/dev/null || echo $$)'"
+    # Keep the prior suffix inference for custom Function App names on upgrades.
+    DIAG_SUFFIX="${DEPLOYMENT_SUFFIX:-$(echo "$FUNC_APP" | grep -oE '[a-z0-9]{6}$' || echo '000000')}"
+    local sanitized_region
+    sanitized_region=$(echo "$REGION" | tr -dc 'a-z0-9')
+    if (( ${#DIAG_SUFFIX} > 6 )); then
+        SEED_STORAGE="s247dr${DIAG_SUFFIX}"
+        TENANT_STORAGE="s247dt${DIAG_SUFFIX}"
+    else
+        SEED_STORAGE="s247diag${sanitized_region}${DIAG_SUFFIX}"
+        SEED_STORAGE="${SEED_STORAGE:0:24}"
+        TENANT_STORAGE="s247diagtenant${DIAG_SUFFIX}"
+    fi
+    check_storage_name "$STORAGE"
+    check_storage_name "$SEED_STORAGE"
+    check_storage_name "$TENANT_STORAGE"
+    log_ok "Resource names look good"
+}
+
+# Check global availability, allowing reuse only within this resource group.
+check_storage_name() {
+    local name="$1" available
+    if ! available=$(az storage account check-name --name "$name" --query nameAvailable -o tsv); then
+        log_error "Unable to check storage name '$name'; no infrastructure was provisioned."
+        exit 1
+    fi
+    if [[ "$available" == "false" ]]; then
+        if ! az storage account show --name "$name" --resource-group "$RG" -o none &>/dev/null; then
+            log_error "Storage name '$name' is unavailable globally, even if not visible in your subscription."
+            log_error "For a fresh install, set DEPLOYMENT_SUFFIX to a new 12–13 character lowercase alphanumeric value."
+            log_error "For an existing deployment, keep its suffix and investigate ownership; do not rename it during an upgrade."
             exit 1
         fi
-        log_skip "Storage account ${STORAGE} already exists in our RG"
+        log_skip "Storage account $name already exists in our RG"
+    elif [[ "$available" != "true" ]]; then
+        log_error "Unexpected name-availability response for '$name'; stopping before provisioning."
+        exit 1
     fi
-    log_ok "Resource names look good"
 }
 
 # ============================================================
@@ -289,9 +317,8 @@ provision_infrastructure() {
     local sanitized_region
     sanitized_region=$(echo "$REGION" | tr -dc 'a-z0-9')
     local diag_suffix
-    diag_suffix=$(echo "$FUNC_APP" | grep -oP '[a-z0-9]{6}$' || echo "000000")
-    local sa_name="s247diag${sanitized_region}${diag_suffix}"
-    sa_name="${sa_name:0:24}"
+    diag_suffix="$DIAG_SUFFIX"
+    local sa_name="$SEED_STORAGE"
 
     log_info "Creating per-region storage account ${sa_name} in ${REGION} ..."
     if az storage account show --name "$sa_name" --resource-group "$RG" &>/dev/null; then
@@ -342,6 +369,7 @@ provision_infrastructure() {
             "PROCESSING_ENABLED=true" \
             "FUNCTIONS_WORKER_RUNTIME=python" \
             "DIAG_STORAGE_SUFFIX=${diag_suffix}" \
+            "DIAG_SEED_REGION=${REGION}" \
             "UPDATE_CHECK_URL=${UPDATE_CHECK_URL:-}" \
             "ENABLE_ORYX_BUILD=true" \
             "SCM_DO_BUILD_DURING_DEPLOYMENT=true" \

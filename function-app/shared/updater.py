@@ -423,12 +423,36 @@ def _post_deploy_health_check(func_app_name: str, checks: int = 3,
     # Warm-up: newly-deployed Functions need time to cold-start + load deps
     time.sleep(20)
 
+    # /api/health is function-key protected. Send the key only in a header;
+    # never include it in returned evidence URLs or diagnostic messages.
+    try:
+        from azure.identity import DefaultAzureCredential
+        from azure.mgmt.web import WebSiteManagementClient
+        subscription = os.environ.get("SUBSCRIPTION_IDS", "").split(",")[0].strip()
+        resource_group = os.environ.get("RESOURCE_GROUP_NAME", os.environ.get("RESOURCE_GROUP", "s247-diag-logs-rg"))
+        client = WebSiteManagementClient(DefaultAzureCredential(), subscription)
+        keys = client.web_apps.list_host_keys(resource_group, func_app_name)
+        key = (keys.function_keys or {}).get("default")
+        if not key:
+            raise ValueError("Default function key unavailable")
+    except Exception as error:
+        return {"healthy": False, "checks": [{"error": f"Health-check authentication unavailable: {type(error).__name__}"}], "url": url}
+
     results = []
     for i in range(checks):
         try:
-            resp = requests.get(url, timeout=15)
-            results.append({"status": resp.status_code, "ok": resp.ok})
+            resp = requests.get(url, headers={"x-functions-key": key}, timeout=15)
+            healthy = False
             if resp.ok:
+                try:
+                    payload = resp.json()
+                    healthy = (isinstance(payload, dict)
+                               and payload.get("status") == "alive"
+                               and payload.get("deps_ok") is True)
+                except ValueError:
+                    pass
+            results.append({"status": resp.status_code, "ok": healthy})
+            if healthy:
                 return {"healthy": True, "checks": results, "url": url}
         except Exception as e:
             results.append({"error": str(e)[:200]})

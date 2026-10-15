@@ -6,13 +6,16 @@ gets an ``insights-logs`` container for blob-based log collection.
 """
 
 import logging
+import os
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 
 from azure.identity import DefaultAzureCredential
 from azure.mgmt.storage import StorageManagementClient
 from azure.mgmt.resource import ResourceManagementClient
+from azure.core.exceptions import ResourceNotFoundError
+from shared.storage_names import regional_storage_name, tenant_storage_name
 
 # ManagementLockClient may not be available in all azure-mgmt-resource versions
 try:
@@ -69,8 +72,7 @@ def _storage_account_name(region: str, suffix: str) -> str:
     Azure storage account names: 3-24 chars, lowercase alphanumeric only.
     Format: s247diag{region}{suffix}  (e.g., s247diageastus<suffix>)
     """
-    name = f"{STORAGE_PREFIX}{_sanitize_region(region)}{suffix}"
-    return name[:24]
+    return regional_storage_name(region, suffix, os.environ.get("DIAG_SEED_REGION", ""))
 
 
 def _tenant_storage_name(suffix: str) -> str:
@@ -78,8 +80,26 @@ def _tenant_storage_name(suffix: str) -> str:
 
     Format: s247diagtenant{suffix}  (<= 24 chars). One per deployment.
     """
-    name = f"{STORAGE_PREFIX}tenant{_sanitize_region(suffix)}"
-    return name[:24]
+    return tenant_storage_name(_sanitize_region(suffix))
+
+
+def _check_storage_name(client, resource_group: str, name: str, region: str) -> None:
+    """Fail before creation on unavailable names or unreadable ownership."""
+    availability = client.storage_accounts.check_name_availability(
+        {"name": name, "type": "Microsoft.Storage/storageAccounts"}
+    )
+    if availability.name_available is False:
+        try:
+            existing = client.storage_accounts.get_properties(resource_group, name)
+        except ResourceNotFoundError as error:
+            raise RuntimeError(
+                f"Storage name '{name}' is unavailable globally. For a fresh install, "
+                "choose another deploymentSuffix/DEPLOYMENT_SUFFIX; do not change a live collector's suffix."
+            ) from error
+        if (existing.tags or {}).get("managed-by") != "s247-diag-logs":
+            raise RuntimeError(f"Storage account '{name}' is not owned by this collector")
+        if _sanitize_region(existing.primary_location or "") != _sanitize_region(region):
+            raise RuntimeError(f"Storage account '{name}' already exists in a different region")
 
 
 class RegionManager:
@@ -108,12 +128,21 @@ class RegionManager:
         logger.info(f"Active regions: {regions}")
         return regions
 
-    def get_provisioned_regions(self, resource_group: str) -> Dict[str, str]:
+    def get_provisioned_regions(self, resource_group: str,
+                                suffix: Optional[str] = None) -> Dict[str, str]:
         """List per-region storage accounts in the RG.
 
         Returns a dict mapping region → storage account name.
         Identifies our accounts by the ``managed-by: s247-diag-logs`` tag.
+
+        A failed earlier install can leave tagged accounts with another suffix
+        in the same RG. When a region has several, this deployment's own name
+        (from ``suffix``, default ``DIAG_STORAGE_SUFFIX``) wins; otherwise the
+        choice is the lowest name so it never depends on listing order.
         """
+        if suffix is None:
+            suffix = os.environ.get("DIAG_STORAGE_SUFFIX", "")
+        candidates: Dict[str, List[str]] = {}
         region_map: Dict[str, str] = {}
         try:
             client = StorageManagementClient(
@@ -123,7 +152,19 @@ class RegionManager:
                 tags = acct.tags or {}
                 if tags.get("managed-by") == "s247-diag-logs" and tags.get("purpose") == "diag-logs-regional":
                     if acct.primary_location:
-                        region_map[acct.primary_location.lower()] = acct.name
+                        candidates.setdefault(acct.primary_location.lower(), []).append(acct.name)
+            for region, names in candidates.items():
+                try:
+                    own = _storage_account_name(region, suffix) if suffix else ""
+                except ValueError:
+                    own = ""
+                region_map[region] = own if own in names else sorted(names)[0]
+                if len(names) > 1:
+                    logger.warning(
+                        "Region %s has %d tagged diag storage accounts %s — using %s; "
+                        "the others are likely left over from an earlier deployment",
+                        region, len(names), sorted(names), region_map[region],
+                    )
             logger.info(
                 f"Provisioned diag storage accounts in '{resource_group}': {region_map}"
             )
@@ -199,6 +240,7 @@ class RegionManager:
         storage_client = StorageManagementClient(self.credential, self.subscription_id)
 
         try:
+            _check_storage_name(storage_client, resource_group, sa_name, region)
             poller = storage_client.storage_accounts.begin_create(
                 resource_group_name=resource_group,
                 account_name=sa_name,
@@ -287,6 +329,7 @@ class RegionManager:
 
         # 1. Create storage account
         try:
+            _check_storage_name(storage_client, resource_group, sa_name, region)
             poller = storage_client.storage_accounts.begin_create(
                 resource_group_name=resource_group,
                 account_name=sa_name,

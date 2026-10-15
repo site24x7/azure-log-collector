@@ -19,6 +19,54 @@ Azure Resources ──► Storage Accounts (per region) ──► Function App �
 
 ---
 
+### Storage-name availability and repeat deployments
+
+Azure storage names are globally unique. An account can be unavailable even
+when it is absent from your subscription. Repeating the same deployment or
+changing its deployment name does not change the default subscription-derived
+suffix.
+
+For existing deployments, leave `deploymentSuffix` empty to preserve legacy
+names, or keep the exact suffix previously chosen. For a **fresh installation**,
+set `deploymentSuffix` in the Azure template parameters to a new 12–13 character
+lowercase alphanumeric value. The resolved suffix is included in deployment
+Outputs; save it and reuse it for updates. Shell setup uses `DEPLOYMENT_SUFFIX`
+in `config.env` for the same purpose. Do not change a live collector's suffix,
+location, or deployment method as an upgrade. One collector per resource group
+is supported; a suffix override is not a multi-instance migration.
+
+Check an explicit ARM suffix before deployment (Azure CLI login required):
+
+```bash
+python3 setup/check-storage-names.py --suffix <chosen-suffix> --region centralindia \
+  --subscription <subscription-id>
+```
+
+The check is read-only: it checks host, seed and optional tenant storage names,
+allows reuse of tagged collector accounts in the same resource group/location,
+and fails if availability or ownership cannot be verified. Availability can
+change after the check; Azure's deployment validation remains authoritative.
+Shell setup performs these checks before provisioning infrastructure.
+
+Suffixes of six characters or fewer retain legacy names. Longer suffixes keep
+the entire suffix in compact host/seed/tenant names; other regional names hash
+the full suffix and region into at most 24 characters. This requires the
+matching updated collector code—do not combine a new long suffix with an older
+collector package that still truncates regional names.
+
+The template runs the collector from a package URL (`WEBSITE_RUN_FROM_PACKAGE`).
+Azure refuses to create a Linux Consumption app with a redirecting package URL,
+and GitHub release download links always redirect, so each release also commits
+the identical zip to the `packages` branch and the template uses its
+`raw.githubusercontent.com` link, which is served directly. A successful ARM validation is not proof of code
+startup; verify `/api/health` and actual ingestion after deployment.
+
+**Which key opens the dashboard.** Use the deployment's `dashboardUrl` output, or
+the Function App's **host** key named `default` (App keys > Host keys > default).
+The Dashboard function's own key (Functions > Dashboard > Function keys), also
+named `default`, opens only the page: every data request it makes returns 401.
+Avoid `_master`, which also grants key management.
+
 ## Quick Start
 
 ### Option A — Deploy to Azure (portal)
@@ -210,3 +258,7 @@ See [docs/developer-guide.md](docs/developer-guide.md) for detailed development 
 ## License
 
 Internal — Site24x7 / Zoho Corporation
+
+Stable publication requires manual approval with live-validation evidence.
+See [Stable release validation](docs/release-validation.md) for fresh-install,
+repeat-deployment, upgrade, rollback, ingestion and client-workflow requirements.
