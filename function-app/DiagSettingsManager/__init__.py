@@ -144,7 +144,9 @@ def run_scan():
     # ── Phase 1: Get supported log types ──
     _update_phase(1)
     phase_start = _time.monotonic()
+    s247_client.last_error = None
     supported_types = _refresh_supported_types(s247_client)
+    catalog_error = s247_client.last_error  # e.g. a rejected Device Key
     logging.info("DiagSettingsManager: Phase 1 (supported types) done in %.1fs [total=%.1fs]",
                  _time.monotonic() - phase_start, _elapsed())
     phase_timings["phase1_supported_types"] = round(_time.monotonic() - phase_start, 1)
@@ -445,6 +447,13 @@ def run_scan():
     # instead of wasting time on per-category calls that will all fail.
     s247_reachable = True
     s247_errors = []  # structured error list for dashboard
+    if catalog_error:
+        # Without the catalog nothing can be configured; say why instead of
+        # reporting "connected" with zero log types.
+        s247_reachable = False
+        s247_errors.append({"phase": "catalog", "message": catalog_error["message"],
+                            "http_status": catalog_error.get("http_status")})
+        _log_event("error", "DiagSettingsManager", f"Phase 1: {catalog_error['message']}")
 
     if categories_to_create:
         preflight = s247_client.preflight_check()

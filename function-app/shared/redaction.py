@@ -24,6 +24,9 @@ _SAFE_KEY = re.compile(r"^(cp_key|config_key|blob_key|partition_?key|row_?key|so
 _PRESENCE_MARKERS = ("***set***", "NOT SET", MASK)
 
 _PATTERNS = [
+    # Old debug messages can contain serialized JSON rather than dictionaries.
+    (re.compile(r'(?i)("(?:devicekey|functionkey|accountkey|sharedaccesskey|access_?token|client_?secret|password|apikey|api_key)"\s*:\s*")((?:\\.|[^"\\])*)(")'),
+     r"\1" + MASK + r"\3"),
     # key=value pairs in URLs, query strings and connection strings
     (re.compile(r"(?i)\b(devicekey|functionkey|accountkey|sharedaccesskey|sharedaccesssignature|"
                 r"access_?token|client_?secret|password|apikey|api_key)=([^&;\s\"'<>]+)"),

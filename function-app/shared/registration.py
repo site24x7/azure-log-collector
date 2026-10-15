@@ -10,6 +10,8 @@ scan. Keys travel only in the POST body and are never logged.
 import json
 import logging
 import os
+import re
+import uuid
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
@@ -23,6 +25,12 @@ _PROCESSING_RUNS_FOR_STATUS = 12
 
 
 def _site_resource_id() -> str:
+    # The deployment subscription is independent of monitored subscriptions.
+    explicit = os.environ.get("COLLECTOR_RESOURCE_ID", "").strip()
+    if explicit and re.fullmatch(
+            r"/subscriptions/[0-9a-fA-F-]{36}/resourceGroups/[-\w._()]{1,90}"
+            r"/providers/Microsoft\.Web/sites/[-\w]{1,60}", explicit, re.IGNORECASE):
+        return explicit
     sub_id = os.environ.get("SUBSCRIPTION_IDS", "").split(",")[0].strip()
     resource_group = os.environ.get(
         "RESOURCE_GROUP_NAME", os.environ.get("RESOURCE_GROUP", "s247-diag-logs-rg")
@@ -54,13 +62,13 @@ def get_function_key(resource_id: str) -> Optional[str]:
 
 def build_status_summary() -> Dict:
     """Read-only status shown to every Site24x7 user; contains no secrets."""
-    from shared.config_store import get_scan_state
+    from shared.config_store import get_scan_state, get_configured_resources
     from shared.debug_logger import get_processing_stats
 
     scan = get_scan_state() or {}
     runs = get_processing_stats(limit=_PROCESSING_RUNS_FOR_STATUS) or []
     errors = scan.get("errors", 0)
-    return {
+    summary = {
         "last_scan_time": scan.get("last_scan_time", ""),
         "scan_in_progress": bool(scan.get("in_progress", False)),
         "total_resources": scan.get("total_resources", 0),
@@ -75,6 +83,25 @@ def build_status_summary() -> Dict:
         "recent_dropped": sum(int(r.get("dropped", 0) or 0) for r in runs),
         "reported_at": datetime.now(timezone.utc).isoformat(),
     }
+    subscriptions = []
+    for raw in os.environ.get("SUBSCRIPTION_IDS", "").split(","):
+        try:
+            subscription = str(uuid.UUID(raw.strip()))
+        except (ValueError, AttributeError):
+            continue
+        if subscription not in subscriptions:
+            subscriptions.append(subscription)
+    summary["subscription_ids"] = subscriptions[:50]
+    summary["subscriptions_truncated"] = len(subscriptions) > 50
+    if "regions_count" in scan:
+        summary["regions_count"] = scan["regions_count"]
+    try:
+        configured = get_configured_resources()
+        if isinstance(configured, dict):
+            summary["configured_resources"] = len(configured)
+    except Exception:
+        pass  # absence of this count must not block registration
+    return summary
 
 
 def build_registration() -> Optional[Dict[str, str]]:

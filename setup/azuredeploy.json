@@ -317,6 +317,10 @@
                       "value": "[parameters('rgName')]"
                     },
                     {
+                      "name": "COLLECTOR_RESOURCE_ID",
+                      "value": "[resourceId('Microsoft.Web/sites', parameters('functionAppName'))]"
+                    },
+                    {
                       "name": "PROCESSING_ENABLED",
                       "value": "true"
                     },

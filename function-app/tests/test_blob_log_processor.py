@@ -476,3 +476,23 @@ class TestBlockListProcessing:
         # Failure → checkpoint must NOT be saved for this blob
         key = "s247diagtest/insights-logs-test/PT1H.json"
         assert key not in saved
+
+
+
+def test_multiline_append_envelope_cut_at_read_limit_is_retained():
+    from BlobLogProcessor import _read_append_records
+    from unittest.mock import MagicMock
+    prefix = b'{\n "records": [{\n "message": "unfinished'
+    blob = MagicMock()
+    blob.download_blob.return_value.readall.return_value = prefix
+    data, records, consumed, skipped = _read_append_records(blob, 0, len(prefix))
+    assert data == prefix
+    assert records == []
+    assert consumed == 0
+    assert skipped == 0
+    complete = prefix + b'"}]}\n'
+    blob.download_blob.return_value.readall.return_value = complete
+    _, records, consumed, skipped = _read_append_records(blob, 0, len(complete))
+    assert records == [{"message": "unfinished"}]
+    assert consumed == len(complete)
+    assert skipped == 0

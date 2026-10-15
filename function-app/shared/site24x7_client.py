@@ -219,6 +219,9 @@ class Site24x7Client:
         )
         self.circuit_breaker = CircuitBreaker()
         self.rate_limiter = RateLimiter()
+        # Why the last Site24x7 API call failed (None after a success); the scan
+        # reports it so a rejected Device Key is not shown as "no log types".
+        self.last_error: Optional[Dict] = None
 
     def _make_s247_request(
         self, path: str, params: Optional[Dict] = None, method: str = "GET"
@@ -226,6 +229,8 @@ class Site24x7Client:
         """Make an authenticated request to the Site24x7 AppLog servlet."""
         if not self.device_key:
             logger.error("SITE24X7_API_KEY not configured")
+            self.last_error = {"path": path, "http_status": None,
+                               "message": "Site24x7 Device Key is not configured."}
             return None
 
         url_params = {"deviceKey": self.device_key}
@@ -238,15 +243,23 @@ class Site24x7Client:
             req = urllib.request.Request(url, method=method)
             req.add_header("Accept", "application/json")
             resp = urllib.request.urlopen(req, timeout=120)
-            return json.loads(resp.read().decode("utf-8"))
+            result = json.loads(resp.read().decode("utf-8"))
+            if isinstance(result, dict) and str(result.get("status", "")).upper() in ("ERROR", "FAILURE", "FAILED"):
+                self.last_error = {"path": path, "http_status": getattr(resp, "status", 200),
+                                   "message": "Site24x7 rejected the API request."}
+            else:
+                self.last_error = None
+            return result
         except Exception as e:
-            logger.error("Site24x7 API request failed (%s): %s", path, e)
+            self.last_error = _describe_api_error(path, e, self.s247_base_url, (self.device_key,))
+            logger.error("Site24x7 API request failed (%s): %s", path, self.last_error["message"])
             try:
                 from shared.debug_logger import log_event
                 log_event("error", "Site24x7Client",
-                          f"API request failed: {path}",
+                          f"API request failed: {path} — {self.last_error['message']}",
                           {"url": path, "method": method, "error": str(e),
-                           "error_type": type(e).__name__})
+                           "error_type": type(e).__name__,
+                           "http_status": self.last_error.get("http_status")})
             except Exception:
                 pass
             return None
@@ -680,6 +693,30 @@ class Site24x7Client:
 _ISO_TIMESTAMP = re.compile(
     r"^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:?\d{2})?$"
 )
+
+
+def _describe_api_error(path: str, error: Exception, base_url: str, secrets=()) -> Dict:
+    """Actionable, secret-free description of a failed Site24x7 API call."""
+    from shared.redaction import redact_text
+
+    status, body = None, ""
+    if isinstance(error, urllib.error.HTTPError):
+        status = error.code
+        try:
+            body = error.read(300).decode("utf-8", "replace").strip()
+        except Exception:
+            body = ""
+    if "INVALID_DEVICE_KEY" in body.upper():
+        message = (f"Site24x7 rejected the Device Key (INVALID_DEVICE_KEY). Use a Device Key "
+                   f"from the Site24x7 data centre this collector points to ({base_url}).")
+    elif status is not None:
+        message = f"Site24x7 returned HTTP {status} for {path}" + (f": {body[:120]}" if body else "")
+    else:
+        message = f"Site24x7 API call to {path} failed: {type(error).__name__}"
+    for secret in secrets:
+        if secret:
+            message = message.replace(secret, "***")
+    return {"path": path, "http_status": status, "message": redact_text(message)}
 
 
 def _parse_iso_timestamp(datetime_string) -> Optional[datetime.datetime]:

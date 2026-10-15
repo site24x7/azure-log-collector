@@ -460,6 +460,7 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
 </div>
 
 <div class="toast" id="toast"></div>
+<div id="authBanner" class="badge-red" role="alert" style="display:none;position:fixed;top:0;left:0;right:0;z-index:101;padding:12px 20px;font-size:13px;line-height:1.5"></div>
 
 <script>
 const BASE = window.location.origin;
@@ -469,10 +470,25 @@ const api = (path, opts = {}) => {
   const sep = path.includes('?') ? '&' : '?';
   const url = FUNC_KEY ? `${BASE}/api/${path}${sep}code=${FUNC_KEY}` : `${BASE}/api/${path}`;
   return fetch(url, opts).then(r => {
+    if (r.status === 401) { showAuthHelp(); }
     if (!r.ok) { throw new Error(`API error: ${r.status}`); }
     return r.json();
   });
 };
+
+// The page opens with any key valid for the Dashboard function, but its API
+// calls need a key valid for every function. The portal's "Get function URL"
+// on Dashboard gives a Dashboard-only key, so explain instead of showing an
+// empty, "Unreachable" dashboard.
+function showAuthHelp() {
+  const b = document.getElementById('authBanner');
+  if (!b || b.style.display === 'block') return;
+  b.textContent = 'This link uses a key that only opens the Dashboard, so its data requests are refused (401). '
+    + 'Open it with the host key named default (not the Dashboard function key, also named default): use the dashboardUrl output of the '
+    + 'deployment, the Open Dashboard link in Site24x7, or Azure portal > Function App > App keys > Host keys > default. '
+    + 'Avoid the _master key: it also grants key management.';
+  b.style.display = 'block';
+}
 
 function showToast(msg, type = 'success') {
   const t = document.getElementById('toast');
@@ -653,6 +669,14 @@ async function loadStatus() {
     document.getElementById('configResCount').textContent = s.configured_resources_count ?? 0;
     document.getElementById('ignoredRes').textContent = s.resources?.ignored ?? '—';
 
+    // "Healthy" from /api/health only means the code and libraries loaded; a
+    // collector that Site24x7 rejects (e.g. wrong Device Key or data centre)
+    // collects nothing, so report it as Degraded with the reason.
+    _s247Problem = s.s247_reachable === false
+      ? 'Site24x7: ' + ((s.s247_errors || [])[0]?.message || 'unreachable during the last scan')
+      : null;
+    if (_s247Problem) { showDegraded(_s247Problem); }
+
     // Site24x7 reachability
     const s247b = document.getElementById('s247Badge');
     if (s.s247_reachable === true) {
@@ -792,6 +816,14 @@ async function loadStatus() {
   }
 }
 
+// Set by loadStatus; loadHealth runs in parallel and must not overwrite it.
+let _s247Problem = null;
+
+function showDegraded(reason) {
+  const hb = document.getElementById('healthBadge');
+  hb.className = 'badge badge-yellow'; hb.textContent = 'Degraded'; hb.title = reason;
+}
+
 async function loadHealth() {
   try {
     const h = await api('health');
@@ -799,7 +831,9 @@ async function loadHealth() {
     const badge = document.getElementById('healthBadge');
     const deps = h.dependencies || {};
     const failed = Object.entries(deps).filter(([,v]) => v !== true && v !== 'ok');
-    if (!failed.length) {
+    if (!failed.length && _s247Problem) {
+      showDegraded(_s247Problem);
+    } else if (!failed.length) {
       badge.className = 'badge badge-green'; badge.textContent = 'Healthy';
       badge.title = 'All ' + Object.keys(deps).length + ' dependencies OK';
     } else {

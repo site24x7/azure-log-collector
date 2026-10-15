@@ -535,10 +535,14 @@ def _read_append_records(blob_client, offset, length):
             break
         try:
             payload, end = decoder.raw_decode(text, cursor)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as error:
             newline = text.find("\n", cursor)
-            if newline == -1:
-                break  # incomplete tail — wait for Azure to finish the append
+            if (newline == -1 or error.pos > newline
+                    or error.msg.startswith("Unterminated string")):
+                # A formatted envelope may contain newlines before the read
+                # limit cuts it. Only discard a malformed first complete line;
+                # do not consume a valid multiline prefix as corrupt data.
+                break
             logger.warning("BlobLogProcessor: Skipping malformed append record at byte %d",
                            offset + _utf8_len(text[:cursor]))
             skipped += 1

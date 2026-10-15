@@ -51,3 +51,17 @@ def test_log_file_is_readable_and_oldest_first():
     assert "ERROR   [B] newer ?code=***" in text
     assert "fnkey-abcdef" not in text
     assert "## environment" in text
+
+
+
+def test_old_serialized_json_messages_are_redacted_on_download():
+    import json
+    from shared.redaction import redact_text
+    message = json.dumps({"deviceKey": "device-secret", "functionKey": "function-secret", "password": 'escaped"secret', "error": "invalid config"})
+    clean = redact_text(message)
+    data = json.loads(clean)
+    assert data["deviceKey"] == MASK
+    assert data["functionKey"] == MASK
+    assert data["password"] == MASK
+    assert data["error"] == "invalid config"
+    assert "device-secret" not in clean and "function-secret" not in clean

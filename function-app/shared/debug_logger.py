@@ -301,58 +301,44 @@ def test_s247_connectivity() -> Dict:
     import urllib.parse
     import time
 
-    base_url = os.environ.get("SITE24X7_BASE_URL", "https://www.site24x7.com")
-    device_key = os.environ.get("SITE24X7_API_KEY", "")
-    results = {}
+    from shared.site24x7_client import Site24x7Client
+
+    # Use the collector's own request path, so the test hits the same API host
+    # (plus.*, not the www.* base URL), sends the same headers, and reports the
+    # same readable reason (e.g. a rejected Device Key) as a real scan.
+    client = Site24x7Client()
+    results = {"api_base_url": client._get_api_base_url()}
 
     # Test 1: logtype_supported endpoint
-    try:
-        url = f"{base_url}/applog/azure/logtype_supported?{urllib.parse.urlencode({'deviceKey': device_key})}"
-        start = time.time()
-        req = urllib.request.Request(url)
-        req.add_header("Accept", "application/json")
-        resp = urllib.request.urlopen(req, timeout=15)
-        elapsed_ms = int((time.time() - start) * 1000)
-        body = json.loads(resp.read().decode("utf-8"))
+    start = time.time()
+    body = client._make_s247_request("/applog/azure/logtype_supported")
+    if body and str(body.get("status", "")).upper() == "SUCCESS":
         results["logtype_supported"] = {
             "status": "ok",
-            "http_status": resp.status,
-            "response_time_ms": elapsed_ms,
+            "response_time_ms": int((time.time() - start) * 1000),
             "type_count": len(body.get("supported_types", [])),
         }
-    except Exception as e:
-        results["logtype_supported"] = {
-            "status": "error",
-            "error": str(e),
-            "error_type": type(e).__name__,
-        }
+    else:
+        err = client.last_error or {"message": f"Unexpected response: {str(body)[:200]}"}
+        results["logtype_supported"] = {"status": "error", "error": err["message"],
+                                        "http_status": err.get("http_status")}
 
     # Test 2: logtype endpoint (check a known type)
-    try:
-        url = f"{base_url}/applog/logtype?{urllib.parse.urlencode({'deviceKey': device_key, 'logType': 'auditlogs'})}"
-        start = time.time()
-        req = urllib.request.Request(url)
-        req.add_header("Accept", "application/json")
-        resp = urllib.request.urlopen(req, timeout=15)
-        elapsed_ms = int((time.time() - start) * 1000)
-        body = json.loads(resp.read().decode("utf-8"))
+    start = time.time()
+    body = client._make_s247_request("/applog/logtype", {"logType": "auditlogs"})
+    if body is not None and str(body.get("status", "")).upper() == "SUCCESS":
         results["logtype_check"] = {
             "status": "ok",
-            "http_status": resp.status,
-            "response_time_ms": elapsed_ms,
+            "response_time_ms": int((time.time() - start) * 1000),
             "api_status": body.get("status"),
             "api_upload": body.get("apiUpload"),
         }
-    except Exception as e:
-        results["logtype_check"] = {
-            "status": "error",
-            "error": str(e),
-            "error_type": type(e).__name__,
-        }
+    else:
+        err = client.last_error or {"message": "no response"}
+        results["logtype_check"] = {"status": "error", "error": err["message"],
+                                    "http_status": err.get("http_status")}
 
     # Test 3: Upload domain reachability (just TCP connect, no actual upload)
-    from shared.site24x7_client import Site24x7Client
-    client = Site24x7Client()
     upload_domain = client._get_upload_domain()
     try:
         import socket
@@ -382,7 +368,6 @@ def test_s247_connectivity() -> Dict:
         }
 
     # Flatten into the format the dashboard expects
-    base_url = os.environ.get("SITE24X7_BASE_URL", "https://www.site24x7.com")
     lt_ok = results.get("logtype_supported", {}).get("status") == "ok"
     # Fall back to logtype_check if logtype_supported fails (relay may not support it)
     if not lt_ok:
@@ -390,7 +375,7 @@ def test_s247_connectivity() -> Dict:
     up_ok = results.get("upload_endpoint", {}).get("status") == "ok"
     upload_domain = results.get("upload_endpoint", {}).get("domain", "?")
 
-    results["base_url"] = base_url
+    results["base_url"] = results["api_base_url"]
     results["upload_domain"] = upload_domain
     results["logtype_supported_ok"] = lt_ok
     results["upload_domain_ok"] = up_ok

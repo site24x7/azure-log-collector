@@ -93,3 +93,35 @@ def test_failure_never_raises_or_logs_the_key(azure_env, no_state, caplog):
          patch("urllib.request.urlopen", side_effect=OSError(f"boom {SECRET}")):
         assert registration.register_with_site24x7() is False
     assert SECRET not in caplog.text
+
+
+
+def test_registration_uses_deployment_identity_when_monitored_subscriptions_differ(azure_env, no_state, monkeypatch):
+    app_id = "/subscriptions/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/resourceGroups/collector-rg/providers/Microsoft.Web/sites/s247-diag-func-oct14"
+    monkeypatch.setenv("COLLECTOR_RESOURCE_ID", app_id)
+    monkeypatch.setenv("SUBSCRIPTION_IDS", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+    with patch.object(registration, "get_function_key", return_value=SECRET) as read_key, \
+         patch("shared.config_store.get_configured_resources", return_value={}):
+        fields = registration.build_registration()
+    read_key.assert_called_once_with(app_id)
+    assert fields["subscriptionId"] == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    assert fields["resourceGroup"] == "collector-rg"
+    assert json.loads(fields["status"])["subscription_ids"] == ["bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"]
+
+
+def test_dashboard_summary_excludes_invalid_subscription_ids_and_preserves_counts(azure_env, no_state, monkeypatch):
+    valid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    monkeypatch.setenv("SUBSCRIPTION_IDS", f"{valid},invalid-secret,{valid.upper()}")
+    with patch("shared.config_store.get_configured_resources", return_value={"resource-1": {}, "resource-2": {}}):
+        summary = registration.build_status_summary()
+    assert summary["subscription_ids"] == [valid]
+    assert summary["configured_resources"] == 2
+    assert summary["subscriptions_truncated"] is False
+    assert "invalid-secret" not in json.dumps(summary)
+
+
+def test_unknown_configured_count_does_not_prevent_registration(azure_env, no_state):
+    with patch("shared.config_store.get_configured_resources", side_effect=OSError("storage unavailable")):
+        summary = registration.build_status_summary()
+    assert "configured_resources" not in summary
+    assert summary["active_resources"] == 152
