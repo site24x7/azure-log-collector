@@ -24,12 +24,26 @@ _ARM_API_VERSION = "2022-03-01"
 _PROCESSING_RUNS_FOR_STATUS = 12
 
 
+# ARM IDs are case-insensitive, but Site24x7 validates the canonical spelling
+# (resourceGroups, Microsoft.Web/sites) case-sensitively, so normalise it here.
+_SITE_ID = re.compile(
+    r"/subscriptions/([0-9a-fA-F-]{36})/resourcegroups/([-\w._()]{1,90})"
+    r"/providers/microsoft\.web/sites/([-\w]{1,60})", re.IGNORECASE | re.ASCII)
+
+
+def _canonical_site_id(resource_id: str) -> str:
+    match = _SITE_ID.fullmatch(resource_id)
+    if not match:
+        return ""
+    subscription, resource_group, site = match.groups()
+    return (f"/subscriptions/{subscription}/resourceGroups/{resource_group}"
+            f"/providers/Microsoft.Web/sites/{site}")
+
+
 def _site_resource_id() -> str:
     # The deployment subscription is independent of monitored subscriptions.
-    explicit = os.environ.get("COLLECTOR_RESOURCE_ID", "").strip()
-    if explicit and re.fullmatch(
-            r"/subscriptions/[0-9a-fA-F-]{36}/resourceGroups/[-\w._()]{1,90}"
-            r"/providers/Microsoft\.Web/sites/[-\w]{1,60}", explicit, re.IGNORECASE):
+    explicit = _canonical_site_id(os.environ.get("COLLECTOR_RESOURCE_ID", "").strip())
+    if explicit:
         return explicit
     sub_id = os.environ.get("SUBSCRIPTION_IDS", "").split(",")[0].strip()
     resource_group = os.environ.get(

@@ -326,7 +326,12 @@ def test_s247_connectivity() -> Dict:
     # Test 2: logtype endpoint (check a known type)
     start = time.time()
     body = client._make_s247_request("/applog/logtype", {"logType": "auditlogs"})
-    if body is not None and str(body.get("status", "")).upper() == "SUCCESS":
+    # A configured log type comes back as a JSON object without a `status`
+    # field, and an account without this type answers with its own status;
+    # either way the API is reachable. Only an explicit error status (or a
+    # transport/HTTP failure, reported via last_error) means it is not.
+    api_status = str(body.get("status", "")).upper() if isinstance(body, dict) else ""
+    if isinstance(body, dict) and api_status not in ("ERROR", "FAILURE", "FAILED"):
         results["logtype_check"] = {
             "status": "ok",
             "response_time_ms": int((time.time() - start) * 1000),
@@ -334,7 +339,9 @@ def test_s247_connectivity() -> Dict:
             "api_upload": body.get("apiUpload"),
         }
     else:
-        err = client.last_error or {"message": "no response"}
+        err = client.last_error or {
+            "message": (str(body.get("message") or api_status)[:200]
+                        if isinstance(body, dict) else "no response")}
         results["logtype_check"] = {"status": "error", "error": err["message"],
                                     "http_status": err.get("http_status")}
 

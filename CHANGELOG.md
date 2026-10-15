@@ -7,6 +7,26 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.0.1-beta8] — 2026-10-15
+
+### Added
+- `COLLECTOR_RESOURCE_ID` app setting (set by the template) so registration uses
+  the collector's own subscription even when it monitors others; the value is
+  normalised to canonical ARM casing before it is sent.
+- Dashboard banner when it is opened with the Dashboard-only function key (its
+  data calls get 401), naming the host key to use instead.
+
+### Fixed
+- A rejected Device Key or wrong data centre is reported as such (scan status,
+  Degraded system status, debug log, connectivity test) instead of "no log
+  types"; the connectivity test calls the API host the collector really uses.
+- The connectivity check treats any non-error log-type lookup as reachable, so
+  a healthy API is no longer shown as failing.
+- Dashboard and HTTP API state no longer goes stale: cached configuration now
+  expires after 30 seconds in every worker (the Resources tab could miss
+  resources configured after the worker started).
+- Credentials echoed back in error bodies are scrubbed from logs and messages.
+
 ## [1.0.1-beta7] — 2026-10-14
 
 ### Fixed

@@ -125,3 +125,28 @@ def test_unknown_configured_count_does_not_prevent_registration(azure_env, no_st
         summary = registration.build_status_summary()
     assert "configured_resources" not in summary
     assert summary["active_resources"] == 152
+
+
+@pytest.mark.parametrize("given", [
+    "/subscriptions/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/resourcegroups/collector-rg/providers/microsoft.web/sites/s247-diag-func-oct14",
+    "/SUBSCRIPTIONS/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/RESOURCEGROUPS/collector-rg/PROVIDERS/MICROSOFT.WEB/SITES/s247-diag-func-oct14",
+])
+def test_collector_resource_id_is_sent_in_canonical_case(azure_env, no_state, monkeypatch, given):
+    # Site24x7 validates resourceGroups / Microsoft.Web/sites case-sensitively.
+    monkeypatch.setenv("COLLECTOR_RESOURCE_ID", given)
+    with patch.object(registration, "get_function_key", return_value=SECRET) as read_key, \
+         patch("shared.config_store.get_configured_resources", return_value={}):
+        fields = registration.build_registration()
+    canonical = ("/subscriptions/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/resourceGroups/collector-rg"
+                 "/providers/Microsoft.Web/sites/s247-diag-func-oct14")
+    read_key.assert_called_once_with(canonical)
+    assert fields["resourceId"] == canonical
+    assert fields["resourceGroup"] == "collector-rg"
+
+
+def test_invalid_collector_resource_id_falls_back_to_app_environment(azure_env, no_state, monkeypatch):
+    monkeypatch.setenv("COLLECTOR_RESOURCE_ID", "/subscriptions/not-a-guid/resourceGroups/x/providers/Microsoft.Web/sites/y")
+    with patch.object(registration, "get_function_key", return_value=SECRET), \
+         patch("shared.config_store.get_configured_resources", return_value={}):
+        fields = registration.build_registration()
+    assert fields["resourceId"] == SITE_ID

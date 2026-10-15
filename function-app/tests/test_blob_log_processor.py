@@ -339,6 +339,21 @@ class TestAppendPolling:
                                 append_blob=True, initial_checkpoints=saved)
         assert [c.args[1] for c in calls] == [[{"a": 4}]]
 
+    @pytest.mark.parametrize("body, rows, consumed_all, skipped", [
+        # A corrupt record with an unclosed quote fails as "Invalid control character" at
+        # its newline (strict JSON), so it is skipped and later records still arrive.
+        (b'{"a":"abc\n{"b":1}\n{"c":2}\n', [{"b": 1}, {"c": 2}], True, 1),
+        # A genuinely unfinished tail ("Unterminated string", no newline) is kept.
+        (b'{"b":1}\n{"a":"abc', [{"b": 1}], False, 0),
+        # A pretty-printed envelope cut mid-way is kept whole, not treated as corrupt.
+        (b'{"records":[\n {"x":1},\n {"y":"ab', [], False, 0),
+    ])
+    def test_unclosed_quote_corrupt_line_vs_unfinished_tail(self, body, rows, consumed_all, skipped):
+        _, got, consumed, got_skipped = _read_append_records(_FakeBlobClient([], body), 0, len(body))
+        assert got == rows
+        assert (consumed == len(body)) is consumed_all
+        assert got_skipped == skipped
+
     def test_merge_never_regresses_append_offset(self):
         remote = {"b": {"next_block": -1, "next_byte": 200, "append_created": "2024"}}
         local = {"b": {"next_block": -1, "next_byte": 100, "append_created": "2024"}}

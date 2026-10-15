@@ -97,3 +97,20 @@ def test_connectivity_rejects_http_200_application_error(monkeypatch):
     assert result["logtype_supported"]["status"] == "error"
     assert result["logtype_check"]["status"] == "error"
     assert result["logtype_supported_ok"] is False
+
+
+def test_logtype_lookup_without_status_counts_as_reachable(monkeypatch):
+    # /applog/logtype returns the type definition with no `status` field (and an
+    # account without the probed type answers with its own status): the API is
+    # reachable, so the dashboard must not show "Logtype API: failed".
+    monkeypatch.setenv("SITE24X7_API_KEY", DEVICE_KEY)
+    from shared.debug_logger import test_s247_connectivity as run_connectivity
+    supported = MagicMock()
+    supported.read.return_value = b'{"status":"SUCCESS","supported_types":[{"logtype":"x"}]}'
+    lookup = MagicMock()
+    lookup.read.return_value = b'{"logType":"auditlogs","apiUpload":true,"dateField":"time"}'
+    with patch("urllib.request.urlopen", side_effect=[supported, lookup]), patch("socket.create_connection"):
+        result = run_connectivity()
+    assert result["logtype_check"]["status"] == "ok"
+    assert result["logtype_check"]["api_status"] is None
+    assert "error" not in result
