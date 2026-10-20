@@ -95,6 +95,8 @@ def build_status_summary() -> Dict:
         "last_processing_time": runs[0].get("timestamp", "") if runs else "",
         "recent_uploaded": sum(int(r.get("uploaded", 0) or 0) for r in runs),
         "recent_dropped": sum(int(r.get("dropped", 0) or 0) for r in runs),
+        # The recent counts cover these runs; the oldest one's time says since when.
+        "recent_since": runs[-1].get("timestamp", "") if runs else "",
         "reported_at": datetime.now(timezone.utc).isoformat(),
     }
     subscriptions = []
@@ -107,6 +109,7 @@ def build_status_summary() -> Dict:
             subscriptions.append(subscription)
     summary["subscription_ids"] = subscriptions[:50]
     summary["subscriptions_truncated"] = len(subscriptions) > 50
+    _add_subscription_names(summary, _subscription_names(summary["subscription_ids"]))
     if "regions_count" in scan:
         summary["regions_count"] = scan["regions_count"]
     try:
@@ -116,6 +119,54 @@ def build_status_summary() -> Dict:
     except Exception:
         pass  # absence of this count must not block registration
     return summary
+
+
+_NAME_MAX = 64
+# Site24x7 stores the status in a 4000-character column and rejects longer ones.
+_STATUS_BUDGET = 3800
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _subscription_names(subscription_ids) -> Dict[str, str]:
+    """Display names of the monitored subscriptions, as the Azure portal shows them.
+
+    One ARM list call (the managed identity has Reader on each monitored
+    subscription). Best effort: on any failure the page falls back to the IDs.
+    """
+    # Only with a managed identity (i.e. on Azure); elsewhere the credential
+    # chain would spend a long time failing.
+    if not subscription_ids or not (os.environ.get("IDENTITY_ENDPOINT") or os.environ.get("MSI_ENDPOINT")):
+        return {}
+    try:
+        from azure.identity import DefaultAzureCredential
+        from azure.mgmt.resource import SubscriptionClient
+
+        wanted = set(subscription_ids)
+        names = {}
+        for sub in SubscriptionClient(DefaultAzureCredential()).subscriptions.list():
+            sub_id = (getattr(sub, "subscription_id", "") or "").lower()
+            name = _CONTROL_CHARS.sub("", getattr(sub, "display_name", "") or "").strip()[:_NAME_MAX]
+            if sub_id in wanted and name:
+                names[sub_id] = name
+        return names
+    except Exception as e:
+        logger.warning("Registration: could not read subscription names (%s)", type(e).__name__)
+        return {}
+
+
+def _add_subscription_names(summary: Dict, names: Dict[str, str]) -> None:
+    """Add names in subscription order while the status stays within Site24x7's limit."""
+    kept: Dict[str, str] = {}
+    for sub_id in summary.get("subscription_ids", []):
+        if sub_id not in names:
+            continue
+        kept[sub_id] = names[sub_id]
+        trial = dict(summary, subscription_names=kept)
+        if len(json.dumps(trial, separators=(",", ":"))) > _STATUS_BUDGET:
+            del kept[sub_id]
+            break
+    if kept:
+        summary["subscription_names"] = kept
 
 
 def build_registration() -> Optional[Dict[str, str]]:

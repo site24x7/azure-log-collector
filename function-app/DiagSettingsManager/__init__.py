@@ -980,6 +980,10 @@ def main(timer: func.TimerRequest) -> None:
     auto_scan = os.environ.get("AUTO_SCAN_ENABLED", "true").lower() == "true"
     if not auto_scan:
         logging.info("DiagSettingsManager: Auto-scan is DISABLED — skipping scheduled scan")
+        # Still report to Site24x7 on schedule, so the collector does not look
+        # stale there and a rotated function key keeps syncing.
+        from shared.registration import register_with_site24x7
+        register_with_site24x7()
         return
 
     # runOnStartup fires on every host start (deploy, restart, scale-out,

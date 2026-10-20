@@ -34,3 +34,13 @@ def test_scan_never_writes_app_settings():
     # Any app-setting write restarts the app; with runOnStartup that loops.
     source = Path(DiagSettingsManager.__file__).read_text()
     assert "update_app_setting(" not in source
+
+
+def test_automatic_scan_off_still_reports_to_site24x7(monkeypatch):
+    # Without this the collector looks stale in Site24x7 and a rotated key never re-syncs.
+    monkeypatch.setenv("AUTO_SCAN_ENABLED", "false")
+    with patch.object(DiagSettingsManager, "run_scan") as run_scan, \
+         patch("shared.registration.register_with_site24x7") as register:
+        DiagSettingsManager.main(MagicMock(past_due=False))
+    assert not run_scan.called
+    assert register.called

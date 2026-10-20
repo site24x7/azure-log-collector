@@ -150,3 +150,50 @@ def test_invalid_collector_resource_id_falls_back_to_app_environment(azure_env, 
          patch("shared.config_store.get_configured_resources", return_value={}):
         fields = registration.build_registration()
     assert fields["resourceId"] == SITE_ID
+
+
+SUB_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+SUB_B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+
+def test_summary_carries_subscription_names_and_the_recent_window(azure_env, no_state, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTION_IDS", f"{SUB_A},{SUB_B}")
+    with patch.object(registration, "_subscription_names", return_value={SUB_A: "Production"}), \
+         patch("shared.config_store.get_configured_resources", return_value={}):
+        summary = registration.build_status_summary()
+    assert summary["subscription_names"] == {SUB_A: "Production"}
+    # The recent counts cover the stored runs; the oldest run says since when.
+    assert summary["recent_since"] == "2026-10-14T11:30:00+00:00"
+    assert summary["recent_uploaded"] == 10
+
+
+def test_subscription_names_stop_before_the_status_limit(azure_env, no_state, monkeypatch):
+    ids = [f"{i:08x}-aaaa-aaaa-aaaa-aaaaaaaaaaaa" for i in range(50)]
+    monkeypatch.setenv("SUBSCRIPTION_IDS", ",".join(ids))
+    with patch.object(registration, "_subscription_names", return_value={i: "n" * 64 for i in ids}), \
+         patch("shared.config_store.get_configured_resources", return_value={}):
+        summary = registration.build_status_summary()
+    assert 0 < len(summary["subscription_names"]) < 50
+    assert len(json.dumps(summary, separators=(",", ":"))) <= registration._STATUS_BUDGET
+
+
+def test_subscription_names_need_a_managed_identity(monkeypatch):
+    monkeypatch.delenv("IDENTITY_ENDPOINT", raising=False)
+    monkeypatch.delenv("MSI_ENDPOINT", raising=False)
+    assert registration._subscription_names([SUB_A]) == {}
+
+
+def test_subscription_names_keep_only_monitored_ones_as_plain_text(monkeypatch):
+    monkeypatch.setenv("IDENTITY_ENDPOINT", "http://localhost/identity")
+    listed = [MagicMock(subscription_id=SUB_A.upper(), display_name=" Prod\x07uction "),
+              MagicMock(subscription_id=SUB_B, display_name="Not monitored")]
+    client = MagicMock()
+    client.return_value.subscriptions.list.return_value = listed
+    with patch("azure.identity.DefaultAzureCredential"), patch("azure.mgmt.resource.SubscriptionClient", client):
+        assert registration._subscription_names([SUB_A]) == {SUB_A: "Production"}
+
+
+def test_subscription_name_failure_falls_back_to_ids(monkeypatch):
+    monkeypatch.setenv("IDENTITY_ENDPOINT", "http://localhost/identity")
+    with patch("azure.identity.DefaultAzureCredential", side_effect=RuntimeError("no identity")):
+        assert registration._subscription_names([SUB_A]) == {}
