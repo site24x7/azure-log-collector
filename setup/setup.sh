@@ -74,7 +74,10 @@ preflight_checks() {
         exit 1
     fi
 
-    RG="${RESOURCE_GROUP_NAME:-s247-diag-logs-rg}"
+    # Same rule as the ARM template: one resource group per suffix, the legacy group without one.
+    default_rg="s247-diag-logs-rg"
+    [[ -n "${DEPLOYMENT_SUFFIX:-}" ]] && default_rg="s247-diag-logs-${unique_suffix}-rg"
+    RG="${RESOURCE_GROUP_NAME:-$default_rg}"
     FUNC_APP="${FUNCTION_APP_NAME:-s247-diag-func-${unique_suffix}}"
     STORAGE="${STORAGE_ACCOUNT_NAME:-s247diag${unique_suffix}}"
     REGION="${FUNCTION_APP_REGION:-eastus}"

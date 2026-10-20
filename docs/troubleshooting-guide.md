@@ -6,7 +6,7 @@ This guide helps Site24x7 support engineers diagnose and resolve issues with the
 
 You need:
 - **Azure CLI** (`az`) with access to the customer's subscription
-- **Resource Group name**: Always `s247-diag-logs-rg`
+- **Resource Group name**: `s247-diag-logs-<suffix>-rg` when a deployment suffix was set, `s247-diag-logs-rg` for installs without one (shown in the deployment Outputs as `resourceGroupName`). The commands below use `s247-diag-logs-rg`; substitute yours.
 - **Function App name**: `s247-diag-func-XXXXXX` (unique per customer, find via Portal or CLI)
 - **App Insights name**: `s247-diag-func-XXXXXX-ai` (same suffix as function app)
 

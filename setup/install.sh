@@ -214,7 +214,8 @@ configure() {
 SUBSCRIPTION_IDS="${SELECTED_SUB_IDS}"
 SITE24X7_API_TOKEN="${s247_token}"
 SITE24X7_DOMAIN="${s247_domain}"
-RESOURCE_GROUP_NAME="s247-diag-logs-rg"
+# Empty: s247-diag-logs-<DEPLOYMENT_SUFFIX>-rg, or s247-diag-logs-rg without a suffix (as the ARM template)
+RESOURCE_GROUP_NAME=""
 FUNCTION_APP_NAME=""
 STORAGE_ACCOUNT_NAME=""
 FUNCTION_APP_REGION="${region}"

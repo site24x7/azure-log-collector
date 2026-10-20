@@ -69,7 +69,7 @@ The ARM template grants the Function App's Managed Identity **exactly three** ro
 |---|---|---|
 | `Reader` (`acdd72a7-3385-48ef-bd42-f606fba81ae7`) | Subscription | List resources so we know what to enable diagnostics on |
 | `Monitoring Contributor` (`749f88d5-cbae-40b8-bcfc-e573ddc772fa`) | Subscription | Create/update `Microsoft.Insights/diagnosticSettings` on resources |
-| `Contributor` (`b24988ac-6180-42a0-ab88-20f7382dd24c`) | **Resource group only** (`s247-diag-logs-rg`) | Manage the app's own storage accounts + self-update (`zipdeploy`) |
+| `Contributor` (`b24988ac-6180-42a0-ab88-20f7382dd24c`) | **Resource group only** (the collector's own group, `s247-diag-logs-<suffix>-rg` or `s247-diag-logs-rg`) | Manage the app's own storage accounts + self-update (`zipdeploy`) |
 
 **What this explicitly does NOT grant:**
 - No Owner, no `Microsoft.Authorization/*` (cannot change RBAC)
@@ -166,7 +166,7 @@ The Function App exposes a small HTTP API for the dashboard (dashboard config, i
 Run `setup/teardown.sh` or:
 
 ```bash
-az group delete --name s247-diag-logs-rg --yes
+az group delete --name <collector-resource-group> --yes
 az role assignment delete --assignee <function-mi-principal-id>
 ```
 

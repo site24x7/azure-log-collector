@@ -55,7 +55,10 @@ load_config() {
     source "$config_file"
     log_ok "Loaded config.env"
 
-    RG="${RESOURCE_GROUP_NAME:-s247-diag-logs-rg}"
+    # Same rule as the ARM template: one resource group per suffix, the legacy group without one.
+    default_rg="s247-diag-logs-rg"
+    [[ -n "${DEPLOYMENT_SUFFIX:-}" ]] && default_rg="s247-diag-logs-${DEPLOYMENT_SUFFIX}-rg"
+    RG="${RESOURCE_GROUP_NAME:-$default_rg}"
 
     if [[ -z "${SUBSCRIPTION_IDS:-}" ]]; then
         log_error "SUBSCRIPTION_IDS is not set in config.env"

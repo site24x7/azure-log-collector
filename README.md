@@ -32,8 +32,10 @@ set `deploymentSuffix` in the Azure template parameters to a new 12–13 charact
 lowercase alphanumeric value. The resolved suffix is included in deployment
 Outputs; save it and reuse it for updates. Shell setup uses `DEPLOYMENT_SUFFIX`
 in `config.env` for the same purpose. Do not change a live collector's suffix,
-location, or deployment method as an upgrade. One collector per resource group
-is supported; a suffix override is not a multi-instance migration.
+location, or deployment method as an upgrade. Each suffix gets its own resource
+group, `s247-diag-logs-<suffix>-rg`; installs without a suffix keep
+`s247-diag-logs-rg`. To redeploy an existing collector in place, set the
+`resourceGroupName` parameter to the group it already uses.
 
 Check an explicit ARM suffix before deployment (Azure CLI login required):
 

@@ -43,9 +43,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--suffix", required=True)
     parser.add_argument("--region", required=True)
-    parser.add_argument("--resource-group", default="s247-diag-logs-rg")
+    parser.add_argument("--resource-group", help="default: s247-diag-logs-<suffix>-rg, as the ARM template")
     parser.add_argument("--subscription")
     args = parser.parse_args()
+    if not args.resource_group:
+        args.resource_group = f"s247-diag-logs-{args.suffix}-rg"
     try:
         check_names(args.suffix, args.region, args.resource_group, args.subscription)
     except (ValueError, RuntimeError, subprocess.CalledProcessError, FileNotFoundError) as error:

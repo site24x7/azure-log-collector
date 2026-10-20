@@ -121,3 +121,26 @@ def test_regional_preflight_failure_never_creates_account(failure):
         result = RegionManager('demo-sub').provision_storage_account('rg', 'eastus', 'qt4xn2')
         assert not result['storage_account_id']
         operations.begin_create.assert_not_called()
+
+
+def _rg_name(resource_group_name, suffix):
+    """Evaluate the template's rgName expression for the given parameters."""
+    variables = json.loads((ROOT / 'setup/azuredeploy.json').read_text())['variables']
+    expr = variables['rgName']
+    assert expr == ("[if(not(empty(trim(parameters('resourceGroupName')))), trim(parameters('resourceGroupName')), "
+                    "if(empty(variables('cleanSuffix')), 's247-diag-logs-rg', concat('s247-diag-logs-', variables('cleanSuffix'), '-rg')))]")
+    clean = suffix.strip().lower().replace('-', '').replace('_', '').replace('.', '').replace(' ', '')
+    if resource_group_name.strip():
+        return resource_group_name.strip()
+    return 's247-diag-logs-rg' if not clean else f's247-diag-logs-{clean}-rg'
+
+
+@pytest.mark.parametrize('resource_group_name, suffix, expected', [
+    ('', '-Oct14', 's247-diag-logs-oct14-rg'),        # each suffix gets its own group
+    ('', '', 's247-diag-logs-rg'),                   # legacy installs keep their group
+    ('s247-diag-logs-rg', 'oct14', 's247-diag-logs-rg'),  # redeploy an existing collector in place
+])
+def test_resource_group_is_per_suffix_with_an_override(resource_group_name, suffix, expected):
+    assert _rg_name(resource_group_name, suffix) == expected
+    template = json.loads((ROOT / 'setup/azuredeploy.json').read_text())
+    assert template['parameters']['resourceGroupName']['defaultValue'] == ''
