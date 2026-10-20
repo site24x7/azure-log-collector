@@ -853,6 +853,9 @@ async function loadVersion() {
     const vb = document.getElementById('versionBadge');
     vb.textContent = 'v' + (r.local_version || '?');
     vb.style.display = 'inline-block';
+    // Reset first, so an installed update clears the "available" badge.
+    vb.style.background = ''; vb.style.color = ''; vb.style.cursor = '';
+    vb.title = ''; vb.onclick = null;
     if (r.update_available) {
       vb.textContent += '  ➜  v' + r.remote_version + ' available';
       vb.style.background = 'rgba(234,179,8,.15)';
@@ -861,7 +864,18 @@ async function loadVersion() {
       vb.title = (r.release_notes || 'Click Check Update to upgrade');
       vb.onclick = checkUpdate;
     }
-  } catch (e) { /* version check is optional */ }
+    return r;
+  } catch (e) { return null; /* version check is optional */ }
+}
+
+// After an update the app restarts; keep checking until the new version answers.
+function refreshVersionAfterUpdate(expected, attempt = 0) {
+  setTimeout(async () => {
+    const r = await loadVersion();
+    if ((!r || r.local_version !== expected) && attempt < 20) {
+      refreshVersionAfterUpdate(expected, attempt + 1);
+    }
+  }, 15000);
 }
 
 // ─── Controls ────────────────────────────────────────────────────────────
@@ -984,23 +998,28 @@ async function triggerScan() {
   }
 }
 
+// One update check/apply at a time: repeated clicks used to start parallel updates.
+let updateInFlight = false;
+
 async function checkUpdate() {
+  if (updateInFlight) return;
+  updateInFlight = true;
   setLoading('updateBtn', true);
   try {
     const r = await api('check-update');
     if (r.update_available) {
       const notes = r.release_notes ? '\\n\\nRelease notes:\\n' + r.release_notes : '';
       if (confirm('Update available: v' + r.local_version + ' \\u27a1 v' + r.remote_version + notes + '\\n\\nApply update now? The function app will restart.')) {
-        setLoading('updateBtn', true);
         showToast('Applying update — this may take a few minutes...');
         try {
           const apply = await api('check-update?apply=1', { method: 'POST' });
           if (apply.action === 'deployed') {
             showToast(`Updated to v${apply.remote_version}! App will restart shortly.`);
-            setTimeout(loadVersion, 30000);
+            refreshVersionAfterUpdate(apply.remote_version);
           } else {
-            const err = apply.deploy_result?.error || apply.error || 'unknown error';
-            showToast('Update failed: ' + err, 'error');
+            // Refusals (too new, pinned, disabled, pre-release) explain themselves in message.
+            const err = apply.deploy_result?.error || apply.error || apply.message || ('not applied: ' + (apply.action || 'unknown'));
+            showToast('Update not applied: ' + err, 'error');
           }
         } catch (e) { showToast('Update apply failed', 'error'); }
       }
@@ -1009,6 +1028,7 @@ async function checkUpdate() {
     }
   } catch (e) { showToast('Update check failed', 'error'); }
   setLoading('updateBtn', false);
+  updateInFlight = false;
 }
 
 async function removeDiagSettings() {
