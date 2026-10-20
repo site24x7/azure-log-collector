@@ -174,7 +174,7 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
       <button class="btn btn-primary" id="updateBtn" onclick="checkUpdate()">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M8 2v8m0 0l-3-3m3 3l3-3M3 13h10"/></svg>Check Update <i class="info-tip">i<span class="tip-text">Check if a newer version is available in the GitHub repository. If found, shows release notes and asks for confirmation before deploying.</span></i>
       </button>
-      <button class="btn btn-danger" id="removeBtn" onclick="removeDiagSettings()">&#10005; Remove All <i class="info-tip">i<span class="tip-text">Remove all s247-diag-logs diagnostic settings from every monitored resource. Does NOT delete storage accounts or log type configs. This action cannot be undone.</span></i></button>
+      <button class="btn btn-danger" id="removeBtn" onclick="removeDiagSettings()">&#10005; Remove All <i class="info-tip">i<span class="tip-text">Remove this collector&#39;s diagnostic settings from every monitored resource (other collectors&#39; settings are kept). Does NOT delete storage accounts or log type configs. This action cannot be undone.</span></i></button>
     </div>
   </div>
 </div>

@@ -33,7 +33,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             )
 
         azure_mgr = AzureManager()
-        result = azure_mgr.remove_all_diagnostic_settings(subscription_ids)
+        from shared.config_store import get_configured_resources
+        result = azure_mgr.remove_all_diagnostic_settings(subscription_ids, get_configured_resources())
 
         logging.info(
             "RemoveDiagSettings: Complete — removed=%d, skipped=%d, errors=%d",

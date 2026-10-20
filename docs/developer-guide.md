@@ -308,9 +308,13 @@ Manages Azure resource discovery, diagnostic categories, and diagnostic settings
 | `supports_diagnostic_logs` | `(resource_id: str, resource_type: str)` | `bool` | Check if resource type supports diagnostic logs (cached) |
 | `get_all_resources` | `(subscription_ids: List[str])` | `List[Dict]` | List resources supporting diagnostic logs across subscriptions |
 | `get_diagnostic_categories` | `(resource_id: str)` | `List[str]` | Get supported log categories for a resource |
-| `get_diagnostic_setting` | `(resource_id: str, setting_name: str = "s247-diag-logs")` | `Optional[Dict]` | Check/retrieve diagnostic setting details |
-| `create_diagnostic_setting` | `(resource_id: str, storage_account_id: str, categories: Optional[List[str]] = None, setting_name: str = "s247-diag-logs")` | `bool` | Create or update diagnostic setting |
-| `delete_diagnostic_setting` | `(resource_id: str, setting_name: str = "s247-diag-logs")` | `bool` | Delete diagnostic setting |
+| `get_diagnostic_setting` | `(resource_id: str, setting_name: Optional[str] = None)` | `Optional[Dict]` | Check/retrieve diagnostic setting details |
+| `create_diagnostic_setting` | `(resource_id: str, storage_account_id: str, categories: Optional[List[str]] = None, setting_name: Optional[str] = None)` | `bool` | Create or update diagnostic setting |
+| `delete_diagnostic_setting` | `(resource_id: str, setting_name: Optional[str] = None)` | `bool` | Delete diagnostic setting |
+| `remove_legacy_setting_if_own` | `(resource_id: str, own_storage_name: str)` | `bool` | Delete the old shared-name `s247-diag-logs` setting only if it sends to this collector's storage |
+| `delete_own_settings` | `(resource_id: str, record: Optional[Dict] = None)` | `bool` | Delete this collector's setting (and its own legacy-named one) |
+
+Setting names are per collector: `s247-diag-logs-<DIAG_STORAGE_SUFFIX>` (`collector_setting_name()`), or `s247-diag-logs` without a suffix. Two collectors watching one resource each keep their own setting.
 | `list_resource_groups` | `(subscription_id: str)` | `List[str]` | List all resource groups in subscription |
 | `list_locations` | `(subscription_id: str)` | `List[str]` | List all locations with resources |
 | `update_app_setting` | `(key: str, value: str)` | `bool` | Update Function App setting via `WebSiteManagementClient` |

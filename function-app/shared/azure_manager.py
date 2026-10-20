@@ -5,6 +5,7 @@ All operations use real Azure SDK calls with DefaultAzureCredential
 """
 
 import logging
+import os
 from typing import Optional, Dict, List, Any
 
 from azure.identity import DefaultAzureCredential
@@ -13,7 +14,24 @@ from azure.mgmt.monitor import MonitorManagementClient
 
 logger = logging.getLogger(__name__)
 
-DIAGNOSTIC_SETTING_NAME = "s247-diag-logs"
+# Name used before settings were per collector; still the name without a suffix.
+LEGACY_SETTING_NAME = "s247-diag-logs"
+DIAGNOSTIC_SETTING_NAME = LEGACY_SETTING_NAME
+
+
+def collector_setting_name() -> str:
+    """This collector's diagnostic-setting name: s247-diag-logs-<suffix>.
+
+    Each collector owns its own setting, so two collectors watching the same
+    resource each receive the logs instead of overwriting or deleting each
+    other's setting. Without a suffix the legacy name is kept.
+    """
+    suffix = os.environ.get("DIAG_STORAGE_SUFFIX", "").strip().lower()
+    return f"{LEGACY_SETTING_NAME}-{suffix}" if suffix else LEGACY_SETTING_NAME
+
+
+def _storage_name(storage_account_id: str) -> str:
+    return (storage_account_id or "").rstrip("/").rsplit("/", 1)[-1].lower()
 
 
 class AzureManager:
@@ -134,13 +152,14 @@ class AzureManager:
     # ------------------------------------------------------------------
 
     def get_diagnostic_setting(
-        self, resource_id: str, setting_name: str = DIAGNOSTIC_SETTING_NAME
+        self, resource_id: str, setting_name: Optional[str] = None
     ) -> Optional[Dict]:
         """Check if a diagnostic setting exists on a resource.
 
         Returns a dict with the setting details including enabled categories,
         or ``None`` if not found.
         """
+        setting_name = setting_name or collector_setting_name()
         sub_id = _extract_subscription_id(resource_id)
         if not sub_id:
             return None
@@ -180,7 +199,7 @@ class AzureManager:
         resource_id: str,
         storage_account_id: str,
         categories: Optional[List[str]] = None,
-        setting_name: str = DIAGNOSTIC_SETTING_NAME,
+        setting_name: Optional[str] = None,
     ) -> bool:
         """Create or update a diagnostic setting on a resource.
 
@@ -188,6 +207,7 @@ class AzureManager:
         categories.  If ``None``, falls back to the ``allLogs`` category
         group for backward compatibility.
         """
+        setting_name = setting_name or collector_setting_name()
         sub_id = _extract_subscription_id(resource_id)
         if not sub_id:
             return False
@@ -225,9 +245,10 @@ class AzureManager:
     def delete_diagnostic_setting(
         self,
         resource_id: str,
-        setting_name: str = DIAGNOSTIC_SETTING_NAME,
+        setting_name: Optional[str] = None,
     ) -> bool:
-        """Delete the s247-diag-logs diagnostic setting from a resource."""
+        """Delete this collector's diagnostic setting (or ``setting_name``) from a resource."""
+        setting_name = setting_name or collector_setting_name()
         sub_id = _extract_subscription_id(resource_id)
         if not sub_id:
             return False
@@ -244,6 +265,40 @@ class AzureManager:
                 f"Failed to delete diagnostic setting on {resource_id}: {e}"
             )
             return False
+
+    def remove_legacy_setting_if_own(self, resource_id: str, own_storage_name: str) -> Optional[bool]:
+        """Delete the old shared-name setting when it sends to this collector's storage.
+
+        Needed before this collector writes its own setting: Azure refuses a
+        second setting on the same resource that sends the same category to the
+        same storage account. A legacy setting pointing elsewhere belongs to
+        another collector and is left alone.
+
+        Returns None when there is nothing of ours to remove, True when it was
+        removed and False when the delete failed (the caller must not assume
+        it is gone).
+        """
+        if collector_setting_name() == LEGACY_SETTING_NAME or not own_storage_name:
+            return None
+        legacy = self.get_diagnostic_setting(resource_id, LEGACY_SETTING_NAME)
+        if not legacy or _storage_name(legacy.get("storage_account_id", "")) != own_storage_name.lower():
+            return None
+        return self.delete_diagnostic_setting(resource_id, LEGACY_SETTING_NAME)
+
+    def delete_own_settings(self, resource_id: str, record: Optional[Dict] = None) -> bool:
+        """Delete this collector's setting, and the legacy-named one it created earlier.
+
+        ``record`` is the collector's configured-resources entry; an entry
+        without ``setting_name`` was written under the legacy name. Returns
+        True only when every setting of ours is gone, so callers keep the
+        record (and retry) when a delete failed.
+        """
+        ok = self.delete_diagnostic_setting(resource_id)
+        if record is not None and \
+                record.get("setting_name", LEGACY_SETTING_NAME) == LEGACY_SETTING_NAME:
+            legacy = self.remove_legacy_setting_if_own(resource_id, record.get("storage_account") or "")
+            ok = ok and legacy is not False
+        return ok
 
     # ------------------------------------------------------------------
     # Resource group & location helpers
@@ -323,29 +378,52 @@ class AzureManager:
     # ------------------------------------------------------------------
 
     def remove_all_diagnostic_settings(
-        self, subscription_ids: List[str]
+        self, subscription_ids: List[str], records: Optional[Dict[str, Dict]] = None
     ) -> Dict[str, Any]:
-        """Remove s247-diag-logs diagnostic settings from ALL resources.
+        """Remove this collector's diagnostic settings from ALL resources.
 
-        Returns a summary dict with counts and errors.
+        Only this collector's own setting is removed, plus a legacy-named one
+        that sends to this collector's regional storage; settings of other
+        collectors are left in place. ``records`` (the configured-resources
+        map) gives the storage a resource was actually configured with; without
+        a record the regional name this collector would use is assumed.
+        Returns a summary dict with counts.
         """
+        from shared.storage_names import regional_storage_name
+
         summary: Dict[str, Any] = {"removed": 0, "skipped": 0, "errors": 0, "details": []}
+        suffix = os.environ.get("DIAG_STORAGE_SUFFIX", "").strip().lower()
+        seed = os.environ.get("DIAG_SEED_REGION", "")
         all_resources = self.get_all_resources(subscription_ids)
 
         for resource in all_resources:
             resource_id = resource.get("id", "")
-            existing = self.get_diagnostic_setting(resource_id)
-            if not existing:
-                summary["skipped"] += 1
-                continue
             try:
-                success = self.delete_diagnostic_setting(resource_id)
-                if success:
+                removed = False
+                if self.get_diagnostic_setting(resource_id):
+                    removed = self.delete_diagnostic_setting(resource_id)
+                    if not removed:
+                        summary["errors"] += 1
+                        summary["details"].append({"id": resource_id, "status": "error"})
+                        continue
+                record = (records or {}).get(resource_id) or {}
+                own = record.get("storage_account", "")
+                if suffix and not own and resource.get("location"):
+                    try:
+                        own = regional_storage_name(resource["location"], suffix, seed)
+                    except ValueError:
+                        own = ""
+                legacy = self.remove_legacy_setting_if_own(resource_id, own)
+                if legacy is False:
+                    summary["errors"] += 1
+                    summary["details"].append({"id": resource_id, "status": "error"})
+                    continue
+                removed = removed or bool(legacy)
+                if removed:
                     summary["removed"] += 1
                     summary["details"].append({"id": resource_id, "status": "removed"})
                 else:
-                    summary["errors"] += 1
-                    summary["details"].append({"id": resource_id, "status": "error"})
+                    summary["skipped"] += 1
             except Exception as e:
                 summary["errors"] += 1
                 summary["details"].append({"id": resource_id, "status": "error", "message": str(e)})

@@ -496,14 +496,16 @@ def save_category_resource_types(mapping: Dict) -> bool:
 
 
 def mark_resource_configured(
-    resource_id: str, categories: List[str], storage_account: str
+    resource_id: str, categories: List[str], storage_account: str, setting_name: str = ""
 ) -> bool:
     """Mark a resource as configured (concurrency-safe RMW)."""
     from datetime import datetime, timezone
+    from shared.azure_manager import collector_setting_name
 
     entry = {
         "categories": categories,
         "storage_account": storage_account,
+        "setting_name": setting_name or collector_setting_name(),
         "configured_at": datetime.now(timezone.utc).isoformat(),
     }
 

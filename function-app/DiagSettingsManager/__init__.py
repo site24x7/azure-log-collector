@@ -78,7 +78,7 @@ def _refresh_supported_types(client):
 
 
 def run_scan():
-    from shared.azure_manager import AzureManager
+    from shared.azure_manager import AzureManager, LEGACY_SETTING_NAME, collector_setting_name
     from shared.region_manager import RegionManager
     from shared.ignore_list import load_ignore_list, is_ignored
     from shared.site24x7_client import Site24x7Client
@@ -138,6 +138,7 @@ def run_scan():
         return {"error": "No SUBSCRIPTION_IDS configured"}
 
     azure_mgr = AzureManager()
+    setting_name = collector_setting_name()
     region_mgr = RegionManager(subscription_ids[0])
     s247_client = Site24x7Client()
 
@@ -249,7 +250,9 @@ def run_scan():
             sa_name = provisioned_regions.get(location, "")
             # A changed regional account (e.g. a leftover one was chosen before)
             # must not fast-path: rediscover and re-point the setting.
-            if sa_name and prev_config.get("storage_account", sa_name) == sa_name:
+            # A legacy-named setting must not fast-path either: it is renamed below.
+            if sa_name and prev_config.get("storage_account", sa_name) == sa_name and \
+                    prev_config.get("setting_name", LEGACY_SETTING_NAME) == setting_name:
                 resource_category_map[resource_id] = {
                     "categories": prev_config["categories"],
                     "effective_categories": prev_config["categories"],
@@ -683,10 +686,17 @@ def run_scan():
     fast_pathed_ids = {rid for rid, info in resource_category_map.items()
                        if rid in configured_resources
                        and set(info.get("effective_categories", [])) == set(configured_resources[rid].get("categories", []))
-                       and configured_resources[rid].get("storage_account", info.get("sa_name")) == info.get("sa_name")}
+                       and configured_resources[rid].get("storage_account", info.get("sa_name")) == info.get("sa_name")
+                       and configured_resources[rid].get("setting_name", LEGACY_SETTING_NAME) == setting_name}
 
     # Use ThreadPoolExecutor for parallel diagnostic settings creation
     from shared.azure_manager import _extract_subscription_id
+
+    def _restore_legacy(resource_id, storage_account_id, categories):
+        """The rename failed after the old setting was removed: put it back so logs keep flowing."""
+        if not azure_mgr.create_diagnostic_setting(resource_id=resource_id, storage_account_id=storage_account_id,
+                                                   categories=categories, setting_name=LEGACY_SETTING_NAME):
+            logging.error("DiagSettingsManager: could not restore the old setting on %s", resource_id)
 
     def _configure_one_resource(resource_id, info):
         """Configure diagnostic setting for a single resource.
@@ -706,28 +716,42 @@ def run_scan():
 
             if not effective:
                 if resource_id in configured_resources:
-                    azure_mgr.delete_diagnostic_setting(resource_id)
+                    if not azure_mgr.delete_own_settings(resource_id, prev_config):
+                        return "error", "could not remove the diagnostic setting", None
                     return "removed", None, ("unmark", resource_id)
                 return "skipped", None, None
 
+            # Azure refuses two settings sending the same category to the same
+            # storage, so our own old shared-name setting goes before ours is written.
             if resource_id in configured_resources:
                 same_storage = prev_config.get("storage_account", info["sa_name"]) == info["sa_name"]
-                if new_categories == prev_categories and same_storage:
+                same_name = prev_config.get("setting_name", LEGACY_SETTING_NAME) == setting_name
+                if new_categories == prev_categories and same_storage and same_name:
                     return "already_configured", None, None
+                legacy = azure_mgr.remove_legacy_setting_if_own(resource_id, info["sa_name"])
+                if legacy is False:
+                    return "error", "could not remove the old s247-diag-logs setting", None
                 success = azure_mgr.create_diagnostic_setting(
                     resource_id=resource_id,
                     storage_account_id=storage_account_id,
                     categories=effective,
                 )
+                if not success and legacy:
+                    _restore_legacy(resource_id, storage_account_id, list(prev_categories) or effective)
                 if success:
                     return "updated", None, ("mark", resource_id, effective, info["sa_name"])
                 return "error", "create_diagnostic_setting returned False", None
             else:
+                legacy = azure_mgr.remove_legacy_setting_if_own(resource_id, info["sa_name"])
+                if legacy is False:
+                    return "error", "could not remove the old s247-diag-logs setting", None
                 success = azure_mgr.create_diagnostic_setting(
                     resource_id=resource_id,
                     storage_account_id=storage_account_id,
                     categories=effective,
                 )
+                if not success and legacy:
+                    _restore_legacy(resource_id, storage_account_id, effective)
                 if success:
                     return "configured", None, ("mark", resource_id, effective, info["sa_name"])
                 return "error", "create_diagnostic_setting returned False", None
@@ -763,6 +787,7 @@ def run_scan():
                 batch_configured[res_id] = {
                     "categories": cats,
                     "storage_account": sa_name,
+                    "setting_name": setting_name,
                     "configured_at": now_iso,
                 }
             elif mark[0] == "unmark":
@@ -851,7 +876,9 @@ def run_scan():
         for res_id in list(configured_resources.keys()):
             if res_id not in active_resource_ids:
                 try:
-                    azure_mgr.delete_diagnostic_setting(res_id)
+                    if not azure_mgr.delete_own_settings(res_id, configured_resources.get(res_id)):
+                        # Keep the record: the setting still exports, retry next scan.
+                        continue
                     logging.info(
                         "DiagSettingsManager: Cleaned up diagnostic setting for "
                         "ignored/deleted resource %s", res_id,
@@ -861,6 +888,7 @@ def run_scan():
                         "DiagSettingsManager: Failed to clean up diagnostic setting for %s: %s",
                         res_id, str(e),
                     )
+                    continue  # keep the record and retry on the next scan
                 stale_resource_ids.append(res_id)
                 cleanup_count += 1
 

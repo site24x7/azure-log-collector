@@ -53,7 +53,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 }
                 if is_ignored(resource_info, updated):
                     try:
-                        azure_mgr.delete_diagnostic_setting(resource_id)
+                        if not azure_mgr.delete_own_settings(resource_id, configured.get(resource_id)):
+                            continue  # keep the record so the setting is not forgotten
                         resources_to_remove.append(resource_id)
                         diag_removed += 1
                     except Exception as e:
