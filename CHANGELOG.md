@@ -34,6 +34,10 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 - Dashboard update flow: refusals show the updater's reason instead of
   "unknown error"; one update at a time; the version badge clears after an
   update; the Check Update button no longer stays on "Working...".
+- Pausing/resuming log processing, the general log type and other settings
+  report a failure when Azure did not save the app setting (they returned
+  success before); after pause/resume the collector reports its new state to
+  Site24x7 straight away.
 
 ## [1.0.1-beta8] — 2026-10-15
 

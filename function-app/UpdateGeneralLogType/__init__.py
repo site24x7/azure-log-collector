@@ -43,7 +43,12 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         azure_mgr = AzureManager()
 
         new_value = "true" if enabled else "false"
-        azure_mgr.update_app_setting("GENERAL_LOGTYPE_ENABLED", new_value)
+        if not azure_mgr.update_app_setting("GENERAL_LOGTYPE_ENABLED", new_value):
+            return func.HttpResponse(
+                json.dumps({"error": "Failed to update general log type"}),
+                mimetype="application/json",
+                status_code=500,
+            )
 
         # Also update in-process env so subsequent reads reflect the change
         os.environ["GENERAL_LOGTYPE_ENABLED"] = new_value

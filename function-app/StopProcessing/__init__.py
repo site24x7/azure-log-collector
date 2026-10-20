@@ -38,10 +38,20 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     try:
         azure_mgr = AzureManager()
         new_value = "true" if enabled else "false"
-        azure_mgr.update_app_setting("PROCESSING_ENABLED", new_value)
+        if not azure_mgr.update_app_setting("PROCESSING_ENABLED", new_value):
+            # The setting was not saved: say so, or Site24x7 would report success.
+            logging.error("StopProcessing: could not save PROCESSING_ENABLED=%s", new_value)
+            return func.HttpResponse(
+                json.dumps({"error": "Failed to update processing state"}),
+                mimetype="application/json",
+                status_code=500,
+            )
 
         # Update in-process env so subsequent reads reflect the change
         os.environ["PROCESSING_ENABLED"] = new_value
+        # Tell Site24x7 now, so its page shows the new state before the next scan.
+        from shared.registration import register_with_site24x7
+        register_with_site24x7()
 
         action = "enabled" if enabled else "stopped"
         logging.info("StopProcessing: Processing %s", action)

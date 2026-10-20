@@ -104,7 +104,12 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     try:
         azure_mgr = AzureManager()
         str_value = str(value).lower() if meta["type"] == "bool" else str(value)
-        azure_mgr.update_app_setting(key, str_value)
+        if not azure_mgr.update_app_setting(key, str_value):
+            return func.HttpResponse(
+                json.dumps({"error": f"Failed to update setting '{key}'"}),
+                mimetype="application/json",
+                status_code=500,
+            )
         os.environ[key] = str_value
 
         logging.info("UpdateSettings: Set %s = %s", key, str_value)
