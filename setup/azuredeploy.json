@@ -64,7 +64,7 @@
     "seedStorageName": "[if(greater(length(variables('uniqueSuffix')), 6), concat('s247dr', variables('uniqueSuffix')), take(concat('s247diag', replace(replace(deployment().location, ' ', ''), '-', ''), variables('uniqueSuffix')), 24))]",
     "hostingPlanName": "[concat('s247-diag-func-', variables('uniqueSuffix'), '-plan')]",
     "appInsightsName": "[concat('s247-diag-func-', variables('uniqueSuffix'), '-ai')]",
-    "functionZipUrl": "https://raw.githubusercontent.com/site24x7/azure-log-collector/packages/v1.0.1-beta8/s247-function-app.zip",
+    "functionZipUrl": "https://raw.githubusercontent.com/site24x7/azure-log-collector/packages/v1.0.1-beta9/s247-function-app.zip",
     "readerRoleId": "acdd72a7-3385-48ef-bd42-f606fba81ae7",
     "monitoringContributorRoleId": "749f88d5-cbae-40b8-bcfc-e573ddc772fa"
   },

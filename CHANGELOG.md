@@ -7,6 +7,34 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.0.1-beta9] — 2026-10-20
+
+### Added
+- Registration sends the monitored subscriptions' display names (one ARM list
+  call with the managed identity; kept within Site24x7's 4000-character status
+  limit) and `recent_since`, the start of the runs the recent counts cover.
+- Each deployment suffix gets its own resource group,
+  `s247-diag-logs-<suffix>-rg`; installs without a suffix keep
+  `s247-diag-logs-rg`. The new `resourceGroupName` template parameter redeploys
+  a collector in its existing group.
+
+### Changed
+- Logs are sent with the Function App name as their source (`s247agentuid`)
+  instead of the resource group, so one collector's logs can be queried on
+  their own. Outside Azure the resource group is still used.
+- Diagnostic settings are per collector: `s247-diag-logs-<suffix>` (installs
+  without a suffix keep `s247-diag-logs`). A collector removes its own old
+  shared-name setting before writing the new one and restores it if that
+  fails; it never re-points or deletes another collector's setting, and keeps
+  its record when a delete fails.
+
+### Fixed
+- With automatic scans turned off the collector still reports to Site24x7 on
+  its schedule, so it no longer looks stale there and key changes keep syncing.
+- Dashboard update flow: refusals show the updater's reason instead of
+  "unknown error"; one update at a time; the version badge clears after an
+  update; the Check Update button no longer stays on "Working...".
+
 ## [1.0.1-beta8] — 2026-10-15
 
 ### Added
