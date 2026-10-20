@@ -906,6 +906,9 @@ def _json_log_parser(
     parsed_lines = []
     date_format = config.get("dateFormat", "%Y-%m-%dT%H:%M:%S.%f")
     date_field = config.get("dateField", "time")
+    # The log source in AppLogs is this collector's Function App, so the logs
+    # one collector pushed can be queried on their own (s247agentuid="<app>").
+    source = os.environ.get("WEBSITE_SITE_NAME", "").strip()
 
     for event_obj in log_events:
         try:
@@ -934,10 +937,13 @@ def _json_log_parser(
                 if event_ms > 0:  # epoch 0 would file the record under 1970
                     formatted_line["_zl_timestamp"] = event_ms
 
-            # Extract resource group as agent uid
+            # Source = the Function App; outside Azure (no WEBSITE_SITE_NAME)
+            # fall back to the record's resource group.
+            if source:
+                formatted_line["s247agentuid"] = source
             if "resourceId" in event_obj:
                 parts = event_obj["resourceId"].split("/")
-                if len(parts) > 4:
+                if not source and len(parts) > 4:
                     formatted_line["s247agentuid"] = parts[4]
                 event_obj["resourceId"] = event_obj["resourceId"].lower()
 

@@ -339,7 +339,26 @@ class TestJsonLogParser:
         assert len(lines) == 1
         assert lines[0]["level"] == "Error"
 
-    def test_resourceid_extracts_agent_uid(self):
+    def test_source_is_function_app_name(self, monkeypatch):
+        monkeypatch.setenv("WEBSITE_SITE_NAME", "s247-diag-func")
+        events = [
+            {
+                "time": "2024-01-01T00:00:00.000000",
+                "resourceId": "/subscriptions/s/resourceGroups/my-rg/providers/M/T/R",
+            },
+            {"time": "2024-01-01T00:00:00.000000"},
+        ]
+        config = {
+            "dateFormat": "%Y-%m-%dT%H:%M:%S.%f",
+            "dateField": "time",
+            "jsonPath": [],
+        }
+        lines, _ = _json_log_parser(events, config, None, None, None)
+        assert len(lines) == 2
+        assert [line["s247agentuid"] for line in lines] == ["s247-diag-func", "s247-diag-func"]
+
+    def test_source_falls_back_to_resource_group_outside_azure(self, monkeypatch):
+        monkeypatch.delenv("WEBSITE_SITE_NAME", raising=False)
         events = [
             {
                 "time": "2024-01-01T00:00:00.000000",
