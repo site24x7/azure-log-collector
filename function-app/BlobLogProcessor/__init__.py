@@ -119,7 +119,9 @@ def _process_all_regions():
 
     client = Site24x7Client()
     total_stats = {
-        "processed": 0, "uploaded": 0, "general": 0, "dropped": 0,
+        # dropped = records that will never be sent (malformed, too big to read);
+        # retrying = records whose upload failed this run and are re-read next run.
+        "processed": 0, "uploaded": 0, "general": 0, "dropped": 0, "retrying": 0,
         "blobs_advanced": 0, "blobs_with_unread": 0, "blobs_seen": 0,
         "batches_sent": 0, "bytes_read": 0,
         "time_budget_exhausted": False, "error_blobs": [],
@@ -376,11 +378,11 @@ def _process_all_regions():
                         # If not ok, leave checkpoint unchanged → retry next cycle.
 
                     except Exception as e:
+                        # Checkpoint not advanced, so the blob is read again next run.
                         logger.error(
                             "BlobLogProcessor: Error processing blob %s/%s: %s",
                             cname, blob.name, str(e),
                         )
-                        total_stats["dropped"] += 1
                         total_stats["error_blobs"].append({
                             "account": acct_name, "container": cname,
                             "blob": blob.name, "error": str(e)[:200],
@@ -407,12 +409,13 @@ def _process_all_regions():
 
     logger.info(
         "BlobLogProcessor: Summary — processed=%d, uploaded=%d, general=%d, "
-        "dropped=%d, blobs_advanced=%d, blobs_seen=%d, blobs_with_unread=%d, "
+        "dropped=%d, retrying=%d, blobs_advanced=%d, blobs_seen=%d, blobs_with_unread=%d, "
         "batches=%d, bytes=%d, duration=%.1fs%s",
         total_stats["processed"],
         total_stats["uploaded"],
         total_stats["general"],
         total_stats["dropped"],
+        total_stats["retrying"],
         total_stats["blobs_advanced"],
         total_stats["blobs_seen"],
         total_stats["blobs_with_unread"],
@@ -425,7 +428,7 @@ def _process_all_regions():
     try:
         from shared.debug_logger import save_processing_stats, log_event
         save_processing_stats(dict(total_stats))
-        if total_stats["uploaded"] > 0 and total_stats["dropped"] == 0:
+        if total_stats["uploaded"] > 0 and total_stats["dropped"] == 0 and total_stats["retrying"] == 0:
             log_event("info", "BlobLogProcessor",
                       f"Processed {total_stats['uploaded']} records in "
                       f"{total_stats['batches_sent']} batches "
@@ -434,6 +437,11 @@ def _process_all_regions():
         if total_stats["dropped"] > 0:
             log_event("warning", "BlobLogProcessor",
                       f"Dropped {total_stats['dropped']} records",
+                      {"stats": dict(total_stats)})
+        if total_stats["retrying"] > 0:
+            log_event("warning", "BlobLogProcessor",
+                      f"{total_stats['retrying']} records not sent this run; "
+                      "they are sent again on the next run",
                       {"stats": dict(total_stats)})
         if total_stats["blobs_with_unread"] > BACKLOG_WARN_THRESHOLD:
             log_event("warning", "BlobLogProcessor",
@@ -576,7 +584,8 @@ def _upload_records(client, source_config_b64, records, using_general,
             if using_general:
                 stats["general"] += len(batch)
         else:
-            stats["dropped"] += len(batch)
+            # The caller leaves the checkpoint where it was, so these are re-sent next run.
+            stats["retrying"] += len(batch)
             stats["error_blobs"].append({
                 "account": acct_name, "container": container,
                 "blob": blob_name, "error": "post_logs failed",

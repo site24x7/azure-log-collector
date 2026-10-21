@@ -652,7 +652,10 @@ async function loadStatus() {
     // Single guarded timer (cleared+reset each call) so it never multiplies,
     // and it stops on its own once the scan finishes.
     if (_statusPollTimer) { clearTimeout(_statusPollTimer); _statusPollTimer = null; }
+    // Otherwise keep checking every 15 s while the tab is visible, so a scan started
+    // elsewhere (Site24x7, the timer) shows up here too.
     if (inProgress) { _statusPollTimer = setTimeout(loadStatus, 4000); }
+    else if (!document.hidden) { _statusPollTimer = setTimeout(loadStatus, 15000); }
 
     // Reflect scan-in-progress state on the trigger button
     const scanBtn = document.getElementById('scanBtn');
@@ -1445,7 +1448,7 @@ function renderDebugRuns() {
   }
   el.innerHTML = runs.map(r => {
     const t = r.timestamp ? fmtTime(r.timestamp) : '?';
-    const hasErr = (r.dropped || r.errors || 0) > 0;
+    const hasErr = (r.dropped || r.retrying || r.errors || 0) > 0;
     const errBlobs = (r.error_blobs || []);
     const errDetail = errBlobs.length
       ? `<div style="font-size:10px;color:var(--red);margin-top:3px">${errBlobs.map(b =>
@@ -1454,7 +1457,7 @@ function renderDebugRuns() {
     return `<div class="debug-run ${hasErr ? 'run-error' : ''}">
       <div><strong>${esc(t)}</strong></div>
       <div style="color:var(--muted);font-size:11px;margin-top:2px">
-        Blobs: ${r.blobs_found||r.blobs_processed||0} | Records: ${r.processed||r.total_records||0} | Uploaded: ${r.uploaded||0} | Errors: ${r.dropped||r.errors||0}
+        Blobs: ${r.blobs_found||r.blobs_processed||0} | Records: ${r.processed||r.total_records||0} | Uploaded: ${r.uploaded||0} | Retrying: ${r.retrying||0} | Dropped: ${r.dropped||r.errors||0}
         ${r.duration_s ? ' | ' + r.duration_s.toFixed(1) + 's' : ''}
       </div>
       ${errDetail}
@@ -1537,6 +1540,8 @@ function loadAll() {
 
 loadAll();
 setInterval(loadAll, 60000);
+// Catch up at once when the tab becomes visible again (status checks pause while hidden).
+document.addEventListener('visibilitychange', () => { if (!document.hidden) loadStatus(); });
 </script>
 </body>
 </html>"""

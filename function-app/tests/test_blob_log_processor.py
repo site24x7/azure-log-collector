@@ -13,6 +13,7 @@ from BlobLogProcessor import (
     _process_all_regions,
     _read_append_records,
     _upload_records,
+    MAX_RECORDS_PER_BATCH,
 )
 
 
@@ -511,3 +512,27 @@ def test_multiline_append_envelope_cut_at_read_limit_is_retained():
     assert records == [{"message": "unfinished"}]
     assert consumed == len(complete)
     assert skipped == 0
+
+
+class TestUploadFailureIsRetryNotDrop:
+    """A failed upload is re-read next run (checkpoint kept), so it counts as retrying."""
+
+    def _stats(self):
+        return {"uploaded": 0, "general": 0, "dropped": 0, "retrying": 0,
+                "batches_sent": 0, "error_blobs": []}
+
+    def test_failed_batch_counts_as_retrying(self):
+        client = MagicMock()
+        client.post_logs.side_effect = [True, False]
+        stats = self._stats()
+        records = [{"n": i} for i in range(MAX_RECORDS_PER_BATCH + 3)]
+        ok = _upload_records(client, "cfg", records, False, stats, "acct", "c", "b.json")
+        assert ok is False
+        assert (stats["uploaded"], stats["retrying"], stats["dropped"]) == (MAX_RECORDS_PER_BATCH, 3, 0)
+
+    def test_successful_upload_has_nothing_retrying(self):
+        client = MagicMock()
+        client.post_logs.return_value = True
+        stats = self._stats()
+        assert _upload_records(client, "cfg", [{"n": 1}], False, stats, "acct", "c", "b.json")
+        assert (stats["uploaded"], stats["retrying"], stats["dropped"]) == (1, 0, 0)

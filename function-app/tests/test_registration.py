@@ -31,8 +31,8 @@ def no_state():
             "last_scan_time": "2026-10-14T11:32:59+00:00", "total_resources": 155,
             "active_resources": 152, "ignored_resources": 3, "errors": []}), \
          patch("shared.debug_logger.get_processing_stats", return_value=[
-            {"timestamp": "2026-10-14T11:40:00+00:00", "uploaded": 7, "dropped": 1},
-            {"timestamp": "2026-10-14T11:30:00+00:00", "uploaded": 3, "dropped": 0}]):
+            {"timestamp": "2026-10-14T11:40:00+00:00", "uploaded": 7, "dropped": 1, "retrying": 4},
+            {"timestamp": "2026-10-14T11:30:00+00:00", "uploaded": 3, "dropped": 0, "retrying": 900}]):
         yield
 
 
@@ -48,6 +48,8 @@ def test_registration_fields_come_from_the_app_environment(azure_env, no_state):
     status = json.loads(fields["status"])
     assert status["total_resources"] == 155
     assert (status["recent_uploaded"], status["recent_dropped"]) == (10, 1)
+    # Only the latest run's failed uploads are pending; older ones were re-sent since.
+    assert status["pending_records"] == 4
     assert status["last_processing_time"] == "2026-10-14T11:40:00+00:00"
     assert SECRET not in fields["status"]
 

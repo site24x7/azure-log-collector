@@ -95,6 +95,9 @@ def build_status_summary() -> Dict:
         "last_processing_time": runs[0].get("timestamp", "") if runs else "",
         "recent_uploaded": sum(int(r.get("uploaded", 0) or 0) for r in runs),
         "recent_dropped": sum(int(r.get("dropped", 0) or 0) for r in runs),
+        # Records the latest run could not send; they are re-sent on the next run,
+        # so this goes back to 0 as soon as uploads work again.
+        "pending_records": int(runs[0].get("retrying", 0) or 0) if runs else 0,
         # The recent counts cover these runs; the oldest one's time says since when.
         "recent_since": runs[-1].get("timestamp", "") if runs else "",
         "reported_at": datetime.now(timezone.utc).isoformat(),
