@@ -267,7 +267,7 @@ See **[docs/security-overview.md](docs/security-overview.md)** for a customer-fa
 ```bash
 cd function-app
 pip install -r requirements-dev.txt
-python3 -m pytest tests/ -v     # 260 tests, ~4s
+python3 -m pytest tests/ -q     # ~600 tests, under 10 s
 ```
 
 See [docs/developer-guide.md](docs/developer-guide.md) for detailed development setup.

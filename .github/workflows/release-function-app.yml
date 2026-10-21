@@ -105,8 +105,8 @@ jobs:
             --only-binary=:all: \
             --target=".python_packages/lib/site-packages" \
             --no-compile \
-            --upgrade \
-            -r requirements.txt
+            --require-hashes \
+            -r requirements.lock
           zip -r ../s247-function-app.zip . \
             -x "*.pyc" \
             -x "__pycache__/*" \
@@ -114,7 +114,8 @@ jobs:
             -x ".pytest_cache/*" \
             -x "tests/*" \
             -x "local.settings.json" \
-            -x "requirements-dev.txt"
+            -x "requirements-dev.txt" \
+            -x "requirements.lock"
           cd ..
           echo "Zip size: $(du -h s247-function-app.zip | cut -f1)"
           echo "Contents:"

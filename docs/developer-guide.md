@@ -155,7 +155,6 @@ function-app/
 |----------|---------|---------|
 | **DiagSettingsManager** | Timer (`%TIMER_SCHEDULE%`) | Scan Azure resources, create/reconcile diagnostic settings |
 | **BlobLogProcessor** | Timer (every 2 min) | Process diagnostic log blobs, upload to Site24x7 |
-| **EventHubProcessor** | Event Hub | Process logs streamed via Event Hub |
 | **GetDebugInfo** | HTTP GET `/api/debug` | Return diagnostic/debug bundle |
 | **GetStatus** | HTTP GET | Return function app status |
 | **GetConfiguredResources** | HTTP GET | Return list of configured resources |
@@ -181,7 +180,6 @@ graph TD
     subgraph "Function Endpoints"
         DSM[DiagSettingsManager<br/><i>Timer</i>]
         BLP[BlobLogProcessor<br/><i>Timer</i>]
-        EHP[EventHubProcessor<br/><i>Event Hub</i>]
         GDI[GetDebugInfo<br/><i>HTTP GET</i>]
         DASH[Dashboard<br/><i>HTTP GET</i>]
         AU[AutoUpdater<br/><i>Timer</i>]
@@ -382,7 +380,7 @@ Site24x7 API client with circuit breaker and rate limiter resilience patterns. H
 #### Class: `CircuitBreaker`
 
 ```python
-CircuitBreaker(failure_threshold: int = 5, recovery_timeout: int = 900)
+CircuitBreaker(failure_threshold: int = 8, recovery_timeout: int = 300)
 # Persistent (blob-backed) — state survives across function invocations
 # Blob: s247-config/config/circuit-breaker-state.json
 ```
@@ -393,7 +391,7 @@ CircuitBreaker(failure_threshold: int = 5, recovery_timeout: int = 900)
 | `record_failure` | `()` | `None` | Increment counter, open if threshold exceeded |
 | `can_execute` | `()` | `bool` | Check if operation allowed (handles half-open state) |
 
-**States:** `closed` (normal) → `open` (after 5 failures) → `half_open` (after 300s recovery timeout)
+**States:** `closed` (normal) → `open` (after 8 failures, counted across runs) → `half_open` (after the 300 s recovery timeout)
 
 #### Class: `RateLimiter`
 
@@ -652,7 +650,7 @@ run_scan()
 ├── 11. Cleanup: Remove settings for ignored/deleted resources
 │
 ├── 12. config_store.save_scan_state(scan_state)
-│       azure_manager.update_app_setting("LAST_SCAN_TIME", ...)
+│       save_scan_state(...)   (blob only: an app-setting write would restart the app)
 │
 └── 13. debug_logger.log_event() → persist scan summary
 ```
@@ -688,7 +686,7 @@ _process_all_regions()
 │          ├── Extract category from container name
 │          ├── Normalize category → config key
 │          ├── config_store.get_logtype_config() or use general config
-│          ├── If no config: _cleanup_stale_blobs() (STALE_BLOB_MAX_AGE_DAYS)
+│          ├── If no config: blobs stay until the lifecycle rule (BLOB_RETENTION_DAYS) deletes them
 │          └── For each JSON blob:
 │              ├── Skip if already processed (checkpoint check)
 │              ├── Parse JSON → records
@@ -1152,7 +1150,7 @@ python3 test_e2e.py
 **Persistent** (blob-backed) circuit breaker that prevents cascading failures when Site24x7 is down. State survives across function invocations — unlike an in-memory breaker, this doesn't reset every 2-minute cycle.
 
 ```
-     ┌─────────┐    5 failures     ┌──────┐
+     ┌─────────┐    8 failures     ┌──────┐
      │ CLOSED  │──────────────────▶│ OPEN │──── state saved to blob
      │ (normal)│                   │(fail)│
      └────▲────┘                   └──┬───┘
@@ -1167,9 +1165,9 @@ python3 test_e2e.py
 
 - **Closed:** Normal operation. All requests pass through.
 - **Open:** Circuit tripped after 5 consecutive failures. State persisted to `s247-config/config/circuit-breaker-state.json`. All requests immediately return `False` for **15 minutes** — no API calls made. A "Circuit OPEN" error event is logged to the Debug tab.
-- **Half-Open:** After 900 seconds (15 min), allows one test request. If it succeeds → closed (logged as "S247 recovered"). If it fails → open again for another 15 min.
+- **Half-Open:** After 300 seconds (5 min), allows one test request. If it succeeds → closed (logged as "S247 recovered"). If it fails → open again for another 15 min.
 
-**Why 15 minutes?** The function runs every 2 min. An in-memory breaker resets each run, so S247 gets hammered with 5 failures per run (150/hour). The persistent breaker skips ~7 runs during cooldown.
+**Why persisted?** The function runs every 2 min; failures are saved between runs so a breaker that never reaches the threshold in one run still trips across runs.
 
 Used by `post_logs()` — when the circuit is open, log uploads are silently skipped and blobs remain in storage (safe for up to 7 days).
 
@@ -1337,7 +1335,7 @@ When running locally with `func start`:
 3. **Watch logs:** The terminal running `func start` shows real-time Python logging output
 4. **Trigger a scan manually:**
    ```bash
-   curl -X POST http://localhost:7071/api/trigger-scan
+   curl -X POST http://localhost:7071/api/scan
    ```
 
 ---
@@ -1559,8 +1557,8 @@ refactor: extract log parsing into shared/log_parser.py
 | Max records per upload batch | 5,000 (`MAX_RECORDS_PER_BATCH`) |
 | Time budget reserve | 60s before timeout, stops taking new blobs |
 | Backlog warning threshold | 500 pending blobs (`BACKLOG_WARN_THRESHOLD`) |
-| Stale blob auto-delete | 7 days (`STALE_BLOB_MAX_AGE_DAYS`) |
-| Circuit breaker | Opens after 5 failures, recovers after 5 min |
+| Blob retention (lifecycle rule, sent or not) | 7 days (`BLOB_RETENTION_DAYS`) |
+| Circuit breaker | Opens after 8 failures, recovers after 5 min |
 | Rate limiter | 100 tokens/sec (token bucket) |
 | S247 API timeout | 30s; upload timeout 60s |
 
@@ -1581,7 +1579,7 @@ When inflow exceeds processing capacity:
 3. **Backlog alert** — When pending blobs > 500, a warning event is logged to the Debug API
 4. **Batch splitting** — Blobs with >5,000 records are split into multiple upload batches
 5. **Stale cleanup** — Blobs older than 7 days with no config are auto-deleted (data loss — by design, warns in logs)
-6. **Circuit breaker** — If S247 is down, stops retrying after 5 failures (prevents wasted time), recovers after 5 min
+6. **Circuit breaker** — If S247 is down, stops retrying after 8 failures (prevents wasted time), recovers after 5 min
 
 ### What Is NOT Handled (Future Work)
 
@@ -1643,4 +1641,4 @@ curl http://localhost:7071/api/debug
 | `SITE24X7_UPLOAD_DOMAIN` | No | Override upload endpoint (for testing with mock server) |
 | `SITE24X7_PROXY_URL` | No | Route API calls through proxy (testing only) |
 | `SAFE_DELETE_MAX_AGE_DAYS` | No | Days to keep unprocessed blobs before cleanup (default: 7) |
-| `STALE_BLOB_MAX_AGE_DAYS` | No | Days after which unconfigured blobs are cleaned up |
+| `BLOB_RETENTION_DAYS` | No | Days after which the storage lifecycle rule deletes log blobs, sent or not (default 7) |

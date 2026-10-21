@@ -66,3 +66,19 @@ def test_health_key_failure_returns_unhealthy_without_leaking_secrets():
         assert result['healthy'] is False
         assert 'secret should not leak' not in str(result)
         get.assert_not_called()
+
+
+def test_release_installs_exact_hashed_dependencies():
+    """Every dependency the release ships is pinned to an exact version and SHA-256."""
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    lock = (root / "requirements.lock").read_text()
+    entries = re.findall(r"^([a-z0-9-]+)==(\S+) \\\n((?:\s+--hash=sha256:[0-9a-f]{64}(?: \\)?\n)+)", lock, re.M)
+    pinned = {name for name, _, _ in entries}
+    wanted = {re.split(r"[<>=!~ ]", line, 1)[0].strip().lower().replace("_", "-")
+              for line in (root / "requirements.txt").read_text().splitlines()
+              if line.strip() and not line.startswith("#")}
+    assert wanted <= pinned, wanted - pinned
+    workflow = (root.parent / ".github/workflows/release-function-app.yml").read_text()
+    assert "--require-hashes" in workflow and "-r requirements.lock" in workflow

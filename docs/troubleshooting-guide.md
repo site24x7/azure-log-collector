@@ -175,7 +175,7 @@ If `"state": "Error"` with a message about missing connection strings (e.g., `EV
 ```bash
 # Disable the problematic function
 az functionapp config appsettings set -g s247-diag-logs-rg -n <func-app-name> \
-  --settings "AzureWebJobs.EventHubProcessor.Disabled=true"
+  --settings "AzureWebJobs.BlobLogProcessor.Disabled=true"
 az functionapp restart -g s247-diag-logs-rg -n <func-app-name>
 ```
 
