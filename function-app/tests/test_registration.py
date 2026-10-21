@@ -206,3 +206,55 @@ def test_registration_passes_its_timeout_to_site24x7(azure_env, no_state):
          patch("shared.site24x7_client.Site24x7Client.register_collector", return_value=True) as call:
         assert registration.register_with_site24x7(timeout=10) is True
     assert call.call_args.kwargs["timeout"] == 10
+
+
+class TestSyncRegistration:
+    """Register after a restart and when the function key changes, without slowing every run."""
+
+    @pytest.fixture(autouse=True)
+    def fresh_worker(self, monkeypatch):
+        monkeypatch.setattr(registration, "_registered_key_hash", None)
+        monkeypatch.setattr(registration, "_last_key_check", 0.0)
+        self.now = [1000.0]
+        monkeypatch.setattr(registration.time, "monotonic", lambda: self.now[0])
+
+    def _register_ok(self, key):
+        def register(timeout=60):
+            registration._registered_key_hash = registration._key_hash(key)
+            return True
+        return register
+
+    def test_first_run_of_a_worker_registers(self):
+        with patch.object(registration, "register_with_site24x7", side_effect=self._register_ok("k1")) as reg:
+            assert registration.sync_registration() is True
+        reg.assert_called_once()
+
+    def test_unchanged_key_is_not_registered_again(self):
+        with patch.object(registration, "register_with_site24x7", side_effect=self._register_ok("k1")) as reg, \
+             patch.object(registration, "_site_resource_id", return_value=SITE_ID), \
+             patch.object(registration, "get_function_key", return_value="k1") as key:
+            registration.sync_registration()
+            self.now[0] += 60
+            assert registration.sync_registration() is False      # within the interval: no ARM read
+            assert key.call_count == 0
+            self.now[0] += registration.KEY_CHECK_INTERVAL_SEC
+            assert registration.sync_registration() is False      # key read, same key
+        assert reg.call_count == 1 and key.call_count == 1
+
+    def test_rotated_key_is_registered(self):
+        with patch.object(registration, "register_with_site24x7", side_effect=self._register_ok("k1")) as reg, \
+             patch.object(registration, "_site_resource_id", return_value=SITE_ID), \
+             patch.object(registration, "get_function_key", return_value="k2"):
+            registration.sync_registration()
+            self.now[0] += registration.KEY_CHECK_INTERVAL_SEC
+            registration.sync_registration()
+        assert reg.call_count == 2
+
+    def test_failed_registration_waits_before_retrying(self):
+        with patch.object(registration, "register_with_site24x7", return_value=False) as reg:
+            registration.sync_registration()
+            self.now[0] += 120
+            registration.sync_registration()                      # next processing run: no retry yet
+            self.now[0] += registration.KEY_CHECK_INTERVAL_SEC
+            registration.sync_registration()
+        assert reg.call_count == 2

@@ -3,14 +3,19 @@
 Site24x7 keeps one row per collector (account + Function App URL) so the
 Deploy Diagnostic Logs page can show every collector's read-only status to
 all users, and let admins open this Function App's dashboard. The function
-key is read fresh from ARM on each run, so a rotated key re-syncs on the next
-scan. Keys travel only in the POST body and are never logged.
+key is read fresh from ARM on each run. Besides every scan, the collector
+registers on a worker's first processing run (restart, redeploy, new
+instance) and whenever its function key changes (checked every 15 minutes),
+so a rotated key reaches Site24x7 without waiting for a scan. Keys travel
+only in the POST body and are never logged.
 """
 
+import hashlib
 import json
 import logging
 import os
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, Optional
@@ -22,6 +27,13 @@ logger = logging.getLogger(__name__)
 _ARM = "https://management.azure.com"
 _ARM_API_VERSION = "2022-03-01"
 _PROCESSING_RUNS_FOR_STATUS = 12
+
+# How often a worker re-reads its function key to notice a rotation.
+KEY_CHECK_INTERVAL_SEC = 15 * 60
+# Per worker process: hash of the key Site24x7 last accepted, and when the key
+# was last checked (or a registration last attempted).
+_registered_key_hash: Optional[str] = None
+_last_key_check = 0.0
 
 
 # ARM IDs are case-insensitive, but Site24x7 validates the canonical spelling
@@ -212,6 +224,8 @@ def register_with_site24x7(timeout: float = 60) -> bool:
 
         ok = Site24x7Client().register_collector(fields, timeout=timeout)
         if ok:
+            global _registered_key_hash
+            _registered_key_hash = _key_hash(fields["functionKey"])
             logger.info("Registration: Site24x7 updated")
         else:
             _record("warning", "Site24x7 did not accept the collector registration",
@@ -222,6 +236,35 @@ def register_with_site24x7(timeout: float = 60) -> bool:
         _record("warning", f"Collector registration skipped after {type(e).__name__}",
                 {"stage": "registration", "error_type": type(e).__name__})
         return False
+
+
+def _key_hash(key: str) -> str:
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def sync_registration(timeout: float = 30) -> bool:
+    """Register when this worker has not yet (first run after a restart, a
+    redeploy or a new instance) or when the function key has changed since the
+    last registration. The key is read from ARM at most every
+    KEY_CHECK_INTERVAL_SEC, and a failed attempt waits that long too, so a
+    Site24x7 outage does not slow every processing run. Never raises."""
+    global _last_key_check
+    now = time.monotonic()
+    if _last_key_check and now - _last_key_check < KEY_CHECK_INTERVAL_SEC:
+        return False
+    _last_key_check = now
+    try:
+        if _registered_key_hash is None:
+            return register_with_site24x7(timeout=timeout)
+        resource_id = _site_resource_id()
+        key = get_function_key(resource_id) if resource_id else None
+        if key and _key_hash(key) != _registered_key_hash:
+            logger.info("Registration: function key changed, updating Site24x7")
+            return register_with_site24x7(timeout=timeout)
+    except Exception as e:  # never surface the key: record the type only
+        _record("warning", f"Registration check skipped after {type(e).__name__}",
+                {"stage": "sync_registration", "error_type": type(e).__name__})
+    return False
 
 
 def _record(level: str, message: str, details: Dict) -> None:

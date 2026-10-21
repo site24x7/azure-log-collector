@@ -58,6 +58,15 @@ def main(timer: func.TimerRequest) -> None:
     if timer.past_due:
         logger.warning("BlobLogProcessor: Timer is past due")
 
+    # Report to Site24x7 after a restart and when the function key was rotated
+    # (cheap: at most one ARM key read per worker every 15 minutes). Runs even
+    # while processing is paused, so Site24x7 keeps a working key.
+    try:
+        from shared.registration import sync_registration
+        sync_registration()
+    except Exception as e:
+        logger.warning("BlobLogProcessor: registration check failed: %s", type(e).__name__)
+
     processing_enabled = os.environ.get("PROCESSING_ENABLED", "true").lower() == "true"
     if not processing_enabled:
         logger.warning("BlobLogProcessor: Processing is DISABLED — skipping")

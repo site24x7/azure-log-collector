@@ -23,6 +23,10 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
   visible (it paused while hidden), so a scan started from Site24x7 or by the
   timer shows its progress there too. The run history shows retrying and
   dropped separately.
+- The collector also registers with Site24x7 on a worker's first processing run
+  (restart, redeploy, new instance) and whenever its function key changes; the
+  key is read at most every 15 minutes, also while processing is paused. A
+  rotated key used to reach Site24x7 only with the next scan.
 - Pause / resume waits at most 10 seconds for its report to Site24x7 before
   answering, so the answer reaches Site24x7 within its 30-second limit. The
   setting is saved first; a slow report is sent by the next scan or timer run.
