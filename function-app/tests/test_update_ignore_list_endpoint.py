@@ -21,13 +21,11 @@ def _req(body):
 
 
 def _run(body, previous=EMPTY, saved=True, deleted=True, unmarked=True):
-    stored = dict(EMPTY, **body)
-    if isinstance(stored.get("tags"), list):
-        stored["tags"] = {"include": [], "exclude": stored["tags"]}
     queue = MagicMock()
     mgr = MagicMock()
     mgr.return_value.delete_own_settings.return_value = deleted
-    with patch("shared.ignore_list.load_ignore_list", side_effect=[previous, stored]), \
+    load = MagicMock(side_effect=previous) if isinstance(previous, Exception) else MagicMock(return_value=previous)
+    with patch("shared.ignore_list.load_ignore_list", load), \
          patch("shared.ignore_list.save_ignore_list", return_value=saved), \
          patch("shared.config_store.get_configured_resources", return_value={RES_A: {}, RES_B: {}}), \
          patch("shared.config_store.unmark_resource_configured", return_value=unmarked) as unmark, \
@@ -86,3 +84,33 @@ def test_scan_stops_when_the_ignore_list_cannot_be_read():
         assert load_ignore_list() == EMPTY            # dashboard reads still degrade gracefully
         with pytest.raises(IgnoreListUnavailable):
             load_ignore_list(strict=True)             # scans do not configure excluded resources
+
+
+def test_changing_a_tag_key_case_queues_a_scan():
+    # Tag keys match case-sensitively, so Env=prod -> env=prod changes what is excluded.
+    previous = dict(EMPTY, tags={"include": [], "exclude": ["Env=prod"]})
+    _, _, _, queue = _run({"tags": {"include": [], "exclude": ["env=prod"]}}, previous=previous)
+    queue.set.assert_called_once()
+
+
+def test_reordering_rules_queues_no_scan():
+    previous = dict(EMPTY, locations=["westeurope", "eastus"])
+    _, _, _, queue = _run({"locations": ["EastUS", "westeurope"]}, previous=previous)
+    queue.set.assert_not_called()
+
+
+def test_unreadable_previous_list_queues_a_scan():
+    _, _, _, queue = _run({"resource_groups": ["rg-a"]}, previous=IgnoreListUnavailable("x"))
+    queue.set.assert_called_once()
+
+
+def test_busy_scan_request_is_retried_not_dropped():
+    import ScanWorker
+    msg = MagicMock(dequeue_count=1)
+    msg.get_body.return_value = b"{}"
+    with patch("shared.config_store.try_acquire_scan_lock", return_value=False), \
+         patch("shared.debug_logger.log_event"), \
+         patch("DiagSettingsManager.run_scan") as scan:
+        with pytest.raises(RuntimeError):
+            ScanWorker.main(msg)
+    scan.assert_not_called()

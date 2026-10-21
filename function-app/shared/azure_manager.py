@@ -269,7 +269,8 @@ class AzureManager:
             )
             return False
 
-    def remove_legacy_setting_if_own(self, resource_id: str, own_storage_name: str) -> Optional[bool]:
+    def remove_legacy_setting_if_own(self, resource_id: str, own_storage_name: str,
+                                     raise_errors: bool = False) -> Optional[bool]:
         """Delete the old shared-name setting when it sends to this collector's storage.
 
         Needed before this collector writes its own setting: Azure refuses a
@@ -279,11 +280,12 @@ class AzureManager:
 
         Returns None when there is nothing of ours to remove, True when it was
         removed and False when the delete failed (the caller must not assume
-        it is gone).
+        it is gone). With ``raise_errors`` a failed lookup raises instead of
+        looking like "nothing to remove".
         """
         if collector_setting_name() == LEGACY_SETTING_NAME or not own_storage_name:
             return None
-        legacy = self.get_diagnostic_setting(resource_id, LEGACY_SETTING_NAME)
+        legacy = self.get_diagnostic_setting(resource_id, LEGACY_SETTING_NAME, raise_errors=raise_errors)
         if not legacy or _storage_name(legacy.get("storage_account_id", "")) != own_storage_name.lower():
             return None
         return self.delete_diagnostic_setting(resource_id, LEGACY_SETTING_NAME)
@@ -299,7 +301,11 @@ class AzureManager:
         ok = self.delete_diagnostic_setting(resource_id)
         if record is not None and \
                 record.get("setting_name", LEGACY_SETTING_NAME) == LEGACY_SETTING_NAME:
-            legacy = self.remove_legacy_setting_if_own(resource_id, record.get("storage_account") or "")
+            try:
+                legacy = self.remove_legacy_setting_if_own(
+                    resource_id, record.get("storage_account") or "", raise_errors=True)
+            except Exception:
+                return False  # lookup failed: the legacy setting may still export
             ok = ok and legacy is not False
         return ok
 
@@ -417,7 +423,7 @@ class AzureManager:
                         own = regional_storage_name(resource["location"], suffix, seed)
                     except ValueError:
                         own = ""
-                legacy = self.remove_legacy_setting_if_own(resource_id, own)
+                legacy = self.remove_legacy_setting_if_own(resource_id, own, raise_errors=True)
                 if legacy is False:
                     summary["errors"] += 1
                     summary["details"].append({"id": resource_id, "status": "error"})

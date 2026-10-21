@@ -30,6 +30,18 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 - Remove All refuses while a scan runs, turns automatic scans off before
   removing anything (and stops if that fails), counts failed lookups as errors,
   and clears only the records of settings confirmed gone.
+- Removing settings no longer forgets a record when the legacy-named setting
+  could not be looked up (it may still export). Configuration writes read
+  their blob strictly, so an unreadable blob is never taken for "nothing to
+  change", and the scan lock is only reported as taken when its write was
+  committed.
+- A scan request that finds another scan (or Remove All) running is retried by
+  the queue every 5 minutes instead of being dropped, so an exclusion change
+  that asked for a scan is always applied. Remove All holds the scan lock for
+  the whole removal.
+- Exclusion changes compare tag rules exactly (tag keys are case-sensitive),
+  and the dashboard reports settings that could not be removed and scans
+  started to apply location, type and tag rules.
 - A disabled Entra ID category was still sent through the general log type;
   it is now skipped (and Entra categories wait for the next run when their
   state cannot be read).

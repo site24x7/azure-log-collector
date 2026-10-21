@@ -11,7 +11,7 @@ _DETAIL_RULES = ("locations", "resource_types", "tags")
 
 
 def main(req: func.HttpRequest, scanQueue: func.Out[str]) -> func.HttpResponse:
-    from shared.ignore_list import load_ignore_list, save_ignore_list, is_ignored
+    from shared.ignore_list import IgnoreListUnavailable, load_ignore_list, update_ignore_list, is_ignored
     from shared.config_store import get_configured_resources, unmark_resource_configured
 
     logging.info("UpdateIgnoreList: Updating ignore list")
@@ -36,14 +36,19 @@ def main(req: func.HttpRequest, scanQueue: func.Out[str]) -> func.HttpResponse:
         )
 
     try:
-        previous = load_ignore_list()
-        if not save_ignore_list(body):
+        try:
+            previous = load_ignore_list(strict=True)
+        except IgnoreListUnavailable:
+            previous = None  # unknown: treat every rule as changed, so a scan is queued
+        # update_ignore_list fills missing lists and the tags structure in place;
+        # what it saved is the new state (a re-read could fail and look empty).
+        if not update_ignore_list(body):
             return func.HttpResponse(
                 json.dumps({"error": "Failed to save the ignore list"}),
                 mimetype="application/json",
                 status_code=500,
             )
-        updated = load_ignore_list()
+        updated = body
 
         # Remove settings now only where the ID decides it. Applying every rule
         # here with just the ID made any include-tag rule look unmatched and
@@ -74,7 +79,8 @@ def main(req: func.HttpRequest, scanQueue: func.Out[str]) -> func.HttpResponse:
 
         # Location / type / tag changes are applied by a scan, which has the details.
         scan_queued = False
-        if any(_normalized(previous.get(key)) != _normalized(updated.get(key)) for key in _DETAIL_RULES):
+        if previous is None or any(_normalized(key, previous.get(key)) != _normalized(key, updated.get(key))
+                                   for key in _DETAIL_RULES):
             scanQueue.set(json.dumps({
                 "requested_at": datetime.now(timezone.utc).isoformat(),
                 "source": "ignore-list",
@@ -109,11 +115,15 @@ def main(req: func.HttpRequest, scanQueue: func.Out[str]) -> func.HttpResponse:
         )
 
 
-def _normalized(value):
-    """Compare rule lists regardless of order and case. load_ignore_list has
-    already turned legacy flat tags into include/exclude."""
-    if isinstance(value, dict):
-        return {k: sorted(str(v).lower() for v in (value.get(k) or [])) for k in ("include", "exclude")}
+def _normalized(key, value):
+    """Compare rule lists regardless of order, with the same case rules as the
+    filter: locations and types match case-insensitively, tag rules exactly
+    (a tag key is case-sensitive). Legacy flat tags are exclude rules."""
+    if key == "tags":
+        if isinstance(value, list):
+            value = {"include": [], "exclude": value}
+        value = value if isinstance(value, dict) else {}
+        return {k: sorted(str(v) for v in (value.get(k) or [])) for k in ("include", "exclude")}
     if isinstance(value, list):
         return sorted(str(v).lower() for v in value)
     return []

@@ -4,6 +4,12 @@ import logging
 import azure.functions as func
 
 
+# Attempts before a scan request is dropped. A request that finds another scan
+# running is retried (host.json: queues visibilityTimeout 5 min), so a change
+# that asked for a scan (e.g. an exclusion edit) is applied after that scan.
+MAX_ATTEMPTS = 5
+
+
 def main(msg: func.QueueMessage) -> None:
     """Queue-triggered worker that runs the full resource scan.
     Decoupled from the HTTP trigger to avoid the 230s gateway timeout.
@@ -12,7 +18,7 @@ def main(msg: func.QueueMessage) -> None:
     dequeue_count = msg.dequeue_count
     logging.info("ScanWorker: Picked up scan request (attempt %d): %s", dequeue_count, body)
 
-    if dequeue_count > 2:
+    if dequeue_count > MAX_ATTEMPTS:
         logging.warning("ScanWorker: Message retried %d times — giving up", dequeue_count)
         _clear_in_progress()
         try:
@@ -35,20 +41,21 @@ def main(msg: func.QueueMessage) -> None:
     # TriggerScan + scheduled scan can't overlap.
     try:
         from shared.config_store import try_acquire_scan_lock
-        if not try_acquire_scan_lock():
-            logging.info("ScanWorker: Another scan in progress — skipping")
-            try:
-                from shared.debug_logger import log_event
-                log_event("info", "ScanWorker",
-                          "On-demand scan skipped — concurrent scan in progress")
-            except Exception:
-                pass
-            return
+        acquired = try_acquire_scan_lock()
     except Exception as guard_err:
-        logging.warning(
-            "ScanWorker: scan lock check failed (%s) — proceeding",
-            guard_err,
-        )
+        logging.warning("ScanWorker: scan lock check failed (%s)", guard_err)
+        acquired = False
+    if not acquired:
+        # Another scan (or Remove All) is running, or the lock is unreadable:
+        # let the queue redeliver this request instead of dropping it.
+        logging.info("ScanWorker: Another scan in progress — retrying later")
+        try:
+            from shared.debug_logger import log_event
+            log_event("info", "ScanWorker",
+                      f"On-demand scan waits for a running scan (attempt {dequeue_count})")
+        except Exception:
+            pass
+        raise RuntimeError("Scan lock busy; the queue retries this request")
 
     try:
         from DiagSettingsManager import run_scan

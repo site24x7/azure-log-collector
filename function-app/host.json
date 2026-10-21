@@ -17,5 +17,11 @@
   "extensionBundle": {
     "id": "Microsoft.Azure.Functions.ExtensionBundle",
     "version": "[4.*, 5.0.0)"
+  },
+  "extensions": {
+    "queues": {
+      "visibilityTimeout": "00:05:00",
+      "maxDequeueCount": 6
+    }
   }
 }

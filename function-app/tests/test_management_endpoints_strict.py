@@ -109,12 +109,14 @@ def _remove(scan_running=False, auto_scan_off=True, summary=None):
     mgr.return_value.remove_all_diagnostic_settings.return_value = summary or {
         "removed": 1, "skipped": 0, "errors": 0, "unresolved": 0, "details": [], "resolved_ids": [RES]}
     with patch.dict("os.environ", {"SUBSCRIPTION_IDS": "s1"}), \
-         patch("shared.config_store.get_scan_state", return_value={"in_progress": scan_running}), \
+         patch("shared.config_store.try_acquire_scan_lock", return_value=not scan_running), \
+         patch("shared.config_store.update_scan_state") as release, \
          patch("shared.config_store.get_configured_resources", return_value={RES: {}}), \
          patch("shared.config_store.unmark_resource_configured", return_value=True) as unmark, \
          patch("shared.azure_manager.AzureManager", mgr), \
          patch("shared.debug_logger.log_audit"):
         resp = RemoveDiagSettings.main(_req({}, "POST"))
+    mgr.return_value.release = release
     return resp, mgr.return_value, unmark
 
 
@@ -122,6 +124,18 @@ def test_removal_refused_while_a_scan_runs():
     resp, mgr, _ = _remove(scan_running=True)
     assert resp.status_code == 409
     mgr.remove_all_diagnostic_settings.assert_not_called()
+    mgr.release.assert_not_called()        # not ours: never release another scan's lock
+
+
+def test_scan_lock_is_held_for_the_removal_and_released():
+    resp, mgr, _ = _remove()
+    assert resp.status_code == 200
+    mgr.release.assert_called_once_with({"in_progress": False})
+
+
+def test_lock_released_when_removal_cannot_start():
+    resp, mgr, _ = _remove(auto_scan_off=False)
+    mgr.release.assert_called_once_with({"in_progress": False})
 
 
 def test_auto_scan_is_turned_off_before_anything_is_removed():
@@ -147,3 +161,19 @@ def test_failed_lookup_counts_as_error_not_absent():
     mgr.get_diagnostic_setting = lookup
     summary = mgr.remove_all_diagnostic_settings(["s1"], {RES: {}, RES + "-gone": {}})
     assert (summary["errors"], summary["resolved_ids"], summary["unresolved"]) == (1, [], 1)
+
+
+def test_failed_legacy_lookup_keeps_the_record():
+    mgr = AzureManager.__new__(AzureManager)
+    mgr.get_all_resources = lambda subs: [{"id": RES, "location": "westeurope"}]
+
+    def lookup(rid, name=None, raise_errors=False):
+        if name:  # the legacy-named setting
+            raise RuntimeError("throttled")
+        return None
+    mgr.get_diagnostic_setting = lookup
+    mgr.delete_diagnostic_setting = lambda rid, name=None: True  # our own setting: deleted fine
+    with patch.dict("os.environ", {"DIAG_STORAGE_SUFFIX": "oct14"}):
+        summary = mgr.remove_all_diagnostic_settings(["s1"], {RES: {"storage_account": "s247diagwesteuoct14"}})
+        assert mgr.delete_own_settings(RES, {"storage_account": "s247diagwesteuoct14"}) is False
+    assert (summary["errors"], summary["resolved_ids"]) == (1, [])

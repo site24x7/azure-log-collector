@@ -179,20 +179,30 @@ def _rmw_blob(
     mutate: Callable[[Optional[Dict]], Optional[Dict]],
     max_retries: int = 5,
     default: Optional[Dict] = None,
+    strict: bool = False,
 ) -> Optional[Dict]:
     """Read-modify-write a JSON blob with ETag-based optimistic concurrency.
 
     ``mutate`` receives the current parsed JSON (or ``default`` if the blob is
     absent) and must return the new value to persist. Returning ``None`` aborts
     the write (no-op). Retries on ETag conflict up to ``max_retries``.
-    Returns the persisted value, or ``None`` on failure/abort.
+    Returns the persisted value, or ``None`` on failure/abort. With ``strict``
+    a failed or corrupt read returns ``None`` without calling ``mutate``, so a
+    caller never mistakes an unreadable blob for "nothing to change".
     """
     for attempt in range(max_retries):
-        raw, etag = _read_blob_with_etag(blob_path)
+        try:
+            raw, etag = _read_blob_with_etag(blob_path, strict=strict)
+        except Exception as e:
+            logger.error("RMW could not read %s (%s)", blob_path, type(e).__name__)
+            return None
         if raw is not None:
             try:
                 current = json.loads(raw)
             except json.JSONDecodeError:
+                if strict:
+                    logger.error("Corrupt JSON in %s — not changing it", blob_path)
+                    return None
                 logger.error("Corrupt JSON in %s — treating as empty", blob_path)
                 current = default
         else:
@@ -387,7 +397,7 @@ def disable_log_type(category: str) -> bool:
             return None  # already present — abort write
         return disabled + [category]
 
-    result = _rmw_blob(DISABLED_TYPES_BLOB, mutate, default=[])
+    result = _rmw_blob(DISABLED_TYPES_BLOB, mutate, default=[], strict=True)
     if result is not None:
         _cache["disabled_types"] = result
     # None is either "already disabled" (fine) or a failed write.
@@ -406,7 +416,7 @@ def enable_log_type(category: str) -> bool:
             return None  # not present — abort
         return updated
 
-    result = _rmw_blob(DISABLED_TYPES_BLOB, mutate, default=[])
+    result = _rmw_blob(DISABLED_TYPES_BLOB, mutate, default=[], strict=True)
     if result is not None:
         _cache["disabled_types"] = result
     return result is not None or bool(noop)
@@ -539,7 +549,7 @@ def unmark_resource_configured(resource_id: str) -> bool:
         del configured[resource_id]
         return configured
 
-    result = _rmw_blob(CONFIGURED_RESOURCES_BLOB, mutate, default={})
+    result = _rmw_blob(CONFIGURED_RESOURCES_BLOB, mutate, default={}, strict=True)
     if result is not None:
         _cache["configured_resources"] = result
     return result is not None or bool(noop)
@@ -593,6 +603,8 @@ def try_acquire_scan_lock(ttl_seconds: int = 900) -> bool:
     acquired = {"acquired": False}
 
     def mutate(current):
+        # Reset on every attempt: an ETag retry may find another scan running.
+        acquired["acquired"] = False
         state = dict(current) if isinstance(current, dict) else {}
         if state.get("in_progress"):
             started = state.get("scan_started_at") or state.get("last_scan_time")
@@ -611,8 +623,9 @@ def try_acquire_scan_lock(ttl_seconds: int = 900) -> bool:
         acquired["acquired"] = True
         return state
 
-    _rmw_blob(SCAN_STATE_BLOB, mutate, default={})
-    return acquired["acquired"]
+    # Acquired only when the write that set in_progress was committed.
+    written = _rmw_blob(SCAN_STATE_BLOB, mutate, default={}, strict=True)
+    return written is not None and acquired["acquired"]
 
 
 def get_scan_state() -> Dict:

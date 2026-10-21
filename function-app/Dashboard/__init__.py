@@ -1039,13 +1039,19 @@ async function removeDiagSettings() {
   setLoading('removeBtn', true);
   try {
     const r = await api('remove-diagnostic-settings', { method: 'POST' });
+    const incomplete = (r.errors || 0) > 0 || (r.unresolved || 0) > 0 || r.tracking_cleared === false;
     const msg = `Removed ${r.removed || 0} diagnostic settings` +
       (r.errors ? `, ${r.errors} failed` : '') +
+      (r.unresolved ? `, ${r.unresolved} tracked resources not found (check them in Azure)` : '') +
       (r.skipped ? `, ${r.skipped} had none` : '') +
-      (r.auto_scan_disabled ? '. Auto-scan disabled.' : '');
-    showToast(msg, r.errors ? 'error' : 'info');
+      (r.auto_scan_disabled ? '. Auto-scan disabled.' : '') +
+      (incomplete ? ' Not everything was removed; run it again.' : '');
+    showToast(msg, incomplete ? 'error' : 'info');
     setTimeout(loadStatus, 2000);
-  } catch (e) { showToast('Removal failed', 'error'); }
+  } catch (e) {
+    showToast(String(e.message).includes('409')
+      ? 'A resource scan is running. Try again when it finishes.' : 'Removal failed', 'error');
+  }
   setLoading('removeBtn', false);
 }
 
@@ -1119,8 +1125,14 @@ async function loadIgnoreList() {
 
 async function saveIgnoreList() {
   try {
-    await api('ignore-list', { method: 'PUT', body: JSON.stringify(_ignoreList) });
-    showToast('Ignore list updated');
+    const r = await api('ignore-list', { method: 'PUT', body: JSON.stringify(_ignoreList) });
+    if ((r.diag_settings_not_removed || 0) > 0) {
+      showToast(`Ignore list updated; ${r.diag_settings_not_removed} diagnostic settings could not be removed and will be retried on the next scan`, 'error');
+    } else if (r.scan_queued) {
+      showToast('Ignore list updated; a scan was started to apply location, type and tag rules');
+    } else {
+      showToast('Ignore list updated');
+    }
     loadStatus();
   } catch (e) { showToast('Failed to save ignore list', 'error'); }
 }

@@ -304,7 +304,7 @@ class TestScanLock:
     @patch("shared.config_store._rmw_blob")
     def test_acquire_when_idle(self, mock_rmw):
         # Simulate RMW applying the mutate
-        def fake_rmw(path, mutate, default=None, max_retries=5):
+        def fake_rmw(path, mutate, default=None, max_retries=5, strict=False):
             result = mutate(default if default is not None else {})
             return result
 
@@ -317,7 +317,7 @@ class TestScanLock:
 
         now = datetime.now(timezone.utc).isoformat()
 
-        def fake_rmw(path, mutate, default=None, max_retries=5):
+        def fake_rmw(path, mutate, default=None, max_retries=5, strict=False):
             # Active recent scan
             return mutate({"in_progress": True, "scan_started_at": now})
 
@@ -330,12 +330,37 @@ class TestScanLock:
 
         stale = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
 
-        def fake_rmw(path, mutate, default=None, max_retries=5):
+        def fake_rmw(path, mutate, default=None, max_retries=5, strict=False):
             return mutate({"in_progress": True, "scan_started_at": stale})
 
         mock_rmw.side_effect = fake_rmw
         # Stale > 15 min — should take lock
         assert config_store.try_acquire_scan_lock(ttl_seconds=900) is True
+
+    @patch("shared.config_store._rmw_blob")
+    def test_failed_write_is_not_an_acquired_lock(self, mock_rmw):
+        def fake_rmw(path, mutate, default=None, max_retries=5, strict=False):
+            mutate({})      # wanted to write in_progress...
+            return None     # ...but the write failed
+        mock_rmw.side_effect = fake_rmw
+        assert config_store.try_acquire_scan_lock() is False
+
+    @patch("shared.config_store._rmw_blob")
+    def test_retry_that_finds_another_scan_does_not_acquire(self, mock_rmw):
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+
+        def fake_rmw(path, mutate, default=None, max_retries=5, strict=False):
+            mutate({})                                              # attempt 1: free, ETag conflict
+            return mutate({"in_progress": True, "scan_started_at": now})  # attempt 2: taken
+        mock_rmw.side_effect = fake_rmw
+        assert config_store.try_acquire_scan_lock() is False
+
+    @patch("shared.config_store._read_blob_with_etag", side_effect=RuntimeError("throttled"))
+    def test_unreadable_state_is_never_mutated(self, _read):
+        mutate = MagicMock()
+        assert config_store._rmw_blob("x.json", mutate, default={}, strict=True) is None
+        mutate.assert_not_called()
 
 
 def test_catalog_force_refresh_sees_updates_from_another_worker():
