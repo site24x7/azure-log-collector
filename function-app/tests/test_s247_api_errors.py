@@ -17,7 +17,7 @@ def test_invalid_device_key_is_explained_without_the_key(monkeypatch):
     monkeypatch.setenv("SITE24X7_API_KEY", DEVICE_KEY)
     monkeypatch.setenv("SITE24X7_BASE_URL", "https://www.site24x7.com")
     client = Site24x7Client()
-    with patch("urllib.request.urlopen", side_effect=_http_error(400, b"ERROR : INVALID_DEVICE_KEY")):
+    with patch("shared.site24x7_client._KEYED_OPENER.open", side_effect=_http_error(400, b"ERROR : INVALID_DEVICE_KEY")):
         assert client.get_supported_log_types() is None
     assert client.last_error["http_status"] == 400
     assert "rejected the Device Key" in client.last_error["message"]
@@ -28,7 +28,7 @@ def test_invalid_device_key_is_explained_without_the_key(monkeypatch):
 def test_debug_event_carries_the_reason(monkeypatch):
     monkeypatch.setenv("SITE24X7_API_KEY", DEVICE_KEY)
     client = Site24x7Client()
-    with patch("urllib.request.urlopen", side_effect=_http_error(400, b"ERROR : INVALID_DEVICE_KEY")), \
+    with patch("shared.site24x7_client._KEYED_OPENER.open", side_effect=_http_error(400, b"ERROR : INVALID_DEVICE_KEY")), \
          patch("shared.debug_logger._append_json_array_rmw") as append:
         client.get_supported_log_types()
     event = append.call_args.args[1]
@@ -40,12 +40,12 @@ def test_debug_event_carries_the_reason(monkeypatch):
 def test_other_http_errors_keep_status_and_success_clears_error(monkeypatch):
     monkeypatch.setenv("SITE24X7_API_KEY", DEVICE_KEY)
     client = Site24x7Client()
-    with patch("urllib.request.urlopen", side_effect=_http_error(503, b"busy")):
+    with patch("shared.site24x7_client._KEYED_OPENER.open", side_effect=_http_error(503, b"busy")):
         client.get_supported_log_types()
     assert "HTTP 503" in client.last_error["message"]
     ok = MagicMock()
     ok.read.return_value = b'{"status":"SUCCESS","supported_types":[]}'
-    with patch("urllib.request.urlopen", return_value=ok):
+    with patch("shared.site24x7_client._KEYED_OPENER.open", return_value=ok):
         client.get_supported_log_types()
     assert client.last_error is None
 
@@ -61,7 +61,7 @@ def test_connectivity_test_uses_api_host_and_reason(monkeypatch):
         raise _http_error(400, b"ERROR : INVALID_DEVICE_KEY")
 
     from shared.debug_logger import test_s247_connectivity as run_connectivity
-    with patch("urllib.request.urlopen", side_effect=fake_urlopen), \
+    with patch("shared.site24x7_client._KEYED_OPENER.open", side_effect=fake_urlopen), \
          patch("socket.create_connection"), patch("shared.debug_logger._append_json_array_rmw"):
         result = run_connectivity()
     assert urls and all(u.startswith("https://plus.site24x7.com/applog/") for u in urls)
@@ -80,7 +80,7 @@ def test_http_error_echoing_json_key_never_leaks_configured_key(monkeypatch, cap
     monkeypatch.setenv("SITE24X7_API_KEY", DEVICE_KEY)
     client = Site24x7Client()
     body = ('{"deviceKey":"' + DEVICE_KEY + '","message":"bad request"}').encode()
-    with patch("urllib.request.urlopen", side_effect=_http_error(500, body)), \
+    with patch("shared.site24x7_client._KEYED_OPENER.open", side_effect=_http_error(500, body)), \
          patch("shared.debug_logger.log_event"):
         client.get_supported_log_types()
     assert DEVICE_KEY not in client.last_error["message"]
@@ -92,7 +92,7 @@ def test_connectivity_rejects_http_200_application_error(monkeypatch):
     from shared.debug_logger import test_s247_connectivity as run_connectivity
     response = MagicMock()
     response.read.return_value = b'{"status":"error","message":"rejected"}'
-    with patch("urllib.request.urlopen", return_value=response), patch("socket.create_connection"):
+    with patch("shared.site24x7_client._KEYED_OPENER.open", return_value=response), patch("socket.create_connection"):
         result = run_connectivity()
     assert result["logtype_supported"]["status"] == "error"
     assert result["logtype_check"]["status"] == "error"
@@ -109,7 +109,7 @@ def test_logtype_lookup_without_status_counts_as_reachable(monkeypatch):
     supported.read.return_value = b'{"status":"SUCCESS","supported_types":[{"logtype":"x"}]}'
     lookup = MagicMock()
     lookup.read.return_value = b'{"logType":"auditlogs","apiUpload":true,"dateField":"time"}'
-    with patch("urllib.request.urlopen", side_effect=[supported, lookup]), patch("socket.create_connection"):
+    with patch("shared.site24x7_client._KEYED_OPENER.open", side_effect=[supported, lookup]), patch("socket.create_connection"):
         result = run_connectivity()
     assert result["logtype_check"]["status"] == "ok"
     assert result["logtype_check"]["api_status"] is None

@@ -469,11 +469,28 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
 
 <script>
 const BASE = window.location.origin;
-const FUNC_KEY = new URLSearchParams(window.location.search).get('code') || '';
+// The key arrives in the address (?code=) because the page is opened with it.
+// Keep it only for this tab, take it out of the address bar and history, and
+// send it in a header: never in a request URL, where it would reach logs and
+// the Referer header.
+const FUNC_KEY = (() => {
+  const params = new URLSearchParams(window.location.search);
+  let key = params.get('code') || '';
+  try {
+    if (key) { sessionStorage.setItem('s247-dashboard-key', key); }
+    else { key = sessionStorage.getItem('s247-dashboard-key') || ''; }
+  } catch (e) { /* storage blocked: the key lives in memory only */ }
+  if (params.has('code')) {
+    params.delete('code');
+    const rest = params.toString();
+    history.replaceState(null, '', window.location.pathname + (rest ? '?' + rest : '') + window.location.hash);
+  }
+  return key;
+})();
+const KEY_HEADERS = FUNC_KEY ? { 'x-functions-key': FUNC_KEY } : {};
 const api = (path, opts = {}) => {
-  opts.headers = Object.assign({'Content-Type': 'application/json'}, opts.headers || {});
-  const sep = path.includes('?') ? '&' : '?';
-  const url = FUNC_KEY ? `${BASE}/api/${path}${sep}code=${FUNC_KEY}` : `${BASE}/api/${path}`;
+  opts.headers = Object.assign({'Content-Type': 'application/json'}, KEY_HEADERS, opts.headers || {});
+  const url = `${BASE}/api/${path}`;
   return fetch(url, opts).then(r => {
     if (r.status === 401) { showAuthHelp(); }
     if (!r.ok) { throw new Error(`API error: ${r.status}`); }
@@ -489,8 +506,8 @@ function showAuthHelp() {
   const b = document.getElementById('authBanner');
   if (!b || b.style.display === 'block') return;
   b.textContent = 'This link uses a key that only opens the Dashboard, so its data requests are refused (401). '
-    + 'Open it with the host key named default (not the Dashboard function key, also named default): use the dashboardUrl output of the '
-    + 'deployment, the Open Dashboard link in Site24x7, or Azure portal > Function App > App keys > Host keys > default. '
+    + 'Open it with the host key named default (not the Dashboard function key, also named default): use the Open Dashboard link in '
+    + 'Site24x7, or Azure portal > Function App > App keys > Host keys > default. '
     + 'Avoid the _master key: it also grants key management.';
   b.style.display = 'block';
 }
@@ -521,8 +538,16 @@ function switchTab(name) {
   if (name === 'debug' && !_debugLoaded) loadDebugInfo(false);
 }
 
-function escAttr(s) { return s.replace(/&/g,'&amp;').replace(/'/g,'&#39;').replace(/"/g,'&quot;'); }
-function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+// HTML-escape for text and attribute values alike.
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function escAttr(s) { return esc(s); }
+// A value passed to an inline handler: a JS string literal first, then HTML-escaped.
+// (The browser decodes the attribute before running it, so HTML-escaping alone
+// lets a quote end the string.)
+function jsArg(s) { return esc(JSON.stringify(String(s ?? ''))); }
 
 function copyField(elId, label) {
   const val = (document.getElementById(elId).textContent || '').trim();
@@ -555,7 +580,7 @@ function renderEntraLogTypes(logtypes) {
     const unsupported = lt.supported === false;
     const toggle = unsupported
       ? `<button class="toggle" disabled style="opacity:.4;cursor:not-allowed"></button>`
-      : `<button class="toggle ${lt.enabled ? 'on' : ''}" onclick="toggleEntraLogType('${escAttr(lt.normalized)}', ${lt.enabled})"></button>`;
+      : `<button class="toggle ${lt.enabled ? 'on' : ''}" onclick="toggleEntraLogType(${jsArg(lt.normalized)}, ${!!lt.enabled})"></button>`;
     return `
     <div class="toggle-row" style="padding:6px 10px;background:var(--bg);border-radius:6px;border:1px solid var(--border);${unsupported ? 'opacity:.65' : ''}">
       <div style="min-width:0">
@@ -959,12 +984,11 @@ async function triggerScan() {
   const origText = scanBtn.innerHTML;
   scanBtn._userTriggered = true;
   try {
-    const r = await fetch(`${BASE}/api/scan${FUNC_KEY ? '?code=' + FUNC_KEY : ''}`, {
-      method: 'POST'
-    });
+    const r = await fetch(`${BASE}/api/scan`, { method: 'POST', headers: KEY_HEADERS });
+    if (r.status === 401) { showAuthHelp(); }
     const data = await r.json().catch(() => ({}));
-    if (data.error) {
-      showToast('Scan error: ' + data.error, 'error');
+    if (!r.ok || data.error) {
+      showToast('Scan error: ' + (data.error || ('HTTP ' + r.status)), 'error');
       setLoading('scanBtn', false);
       scanBtn._userTriggered = false;
       return;
@@ -1092,7 +1116,7 @@ function renderIgnoreList() {
       el.innerHTML = '<span style="font-size:12px;color:var(--muted)">None</span>';
     } else {
       el.innerHTML = items.map(v =>
-        `<span class="ignore-tag"><span title="${escAttr(v)}">${escAttr(v)}</span><button onclick="removeIgnoreItem('${key}','${escAttr(v)}')">&times;</button></span>`
+        `<span class="ignore-tag"><span title="${escAttr(v)}">${escAttr(v)}</span><button onclick="removeIgnoreItem(${jsArg(key)}, ${jsArg(v)})">&times;</button></span>`
       ).join('');
     }
     const sel = document.getElementById(ui.selEl);
@@ -1114,7 +1138,7 @@ function renderTagSection(mode, tagsElId, selElId) {
   } else {
     const color = mode === 'include' ? 'var(--green)' : 'var(--red)';
     el.innerHTML = tags.map(v =>
-      `<span class="ignore-tag" style="border-color:${color}40;color:${color};background:${color}18"><span title="${escAttr(v)}">${escAttr(v)}</span><button onclick="removeTag('${mode}','${escAttr(v)}')">&times;</button></span>`
+      `<span class="ignore-tag" style="border-color:${color}40;color:${color};background:${color}18"><span title="${escAttr(v)}">${escAttr(v)}</span><button onclick="removeTag(${jsArg(mode)}, ${jsArg(v)})">&times;</button></span>`
     ).join('');
   }
   const sel = document.getElementById(selElId);
@@ -1269,7 +1293,7 @@ function renderLogTypes() {
         ${t.category.toLowerCase() !== t.category_key ? `<div style="font-size:11px;color:var(--muted);font-family:monospace">${esc(t.category_key)}</div>` : ''}
         ${rtypes}
       </div>
-      <button class="toggle ${toggleCls}" onclick="toggleLogTypeCategory('${escAttr(t.category_key)}', ${isDisabled})"></button>
+      <button class="toggle ${toggleCls}" onclick="toggleLogTypeCategory(${jsArg(t.category_key)}, ${!!isDisabled})"></button>
     </div>`;
   }).join('');
 }
@@ -1516,10 +1540,7 @@ async function exportDebugBundle(format) {
   const download = format === 'log' ? 'log' : '1';
   setLoading(btn, true);
   try {
-    const url = FUNC_KEY
-      ? `${BASE}/api/debug?download=${download}&test_s247=1&code=${FUNC_KEY}`
-      : `${BASE}/api/debug?download=${download}&test_s247=1`;
-    const resp = await fetch(url);
+    const resp = await fetch(`${BASE}/api/debug?download=${download}&test_s247=1`, { headers: KEY_HEADERS });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const blob = await resp.blob();
     const cd = resp.headers.get('content-disposition') || '';
@@ -1591,5 +1612,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     )
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["X-Frame-Options"] = "DENY"
-    resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    # The page is opened with ?code=<key>; never send that URL as a Referer.
+    resp.headers["Referrer-Policy"] = "no-referrer"
     return resp

@@ -26,6 +26,25 @@ from typing import Optional, Dict, List, Any, Tuple
 logger = logging.getLogger(__name__)
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects on requests that carry the Device Key: urllib would
+    resend the key (header or query) to whatever host a 3xx names, even over
+    plain HTTP. A redirect surfaces as an HTTPError instead."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_KEYED_OPENER = urllib.request.build_opener(_NoRedirect())
+
+
+def _require_https(url: str) -> str:
+    """Requests that carry the Device Key go over HTTPS only."""
+    if not url.lower().startswith("https://"):
+        raise ValueError("Site24x7 endpoint must use HTTPS")
+    return url
+
+
 class CircuitBreaker:
     """Persistent circuit breaker — state survives across function invocations.
 
@@ -240,9 +259,9 @@ class Site24x7Client:
         url = f"{self._get_api_base_url()}{path}?{urllib.parse.urlencode(url_params)}"
 
         try:
-            req = urllib.request.Request(url, method=method)
+            req = urllib.request.Request(_require_https(url), method=method)
             req.add_header("Accept", "application/json")
-            resp = urllib.request.urlopen(req, timeout=120)
+            resp = _KEYED_OPENER.open(req, timeout=120)
             result = json.loads(resp.read().decode("utf-8"))
             if isinstance(result, dict) and str(result.get("status", "")).upper() in ("ERROR", "FAILURE", "FAILED"):
                 self.last_error = {"path": path, "http_status": getattr(resp, "status", 200),
@@ -556,7 +575,8 @@ class Site24x7Client:
                      "Accept": "application/json"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            _require_https(req.full_url)
+            with _KEYED_OPENER.open(req, timeout=timeout) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
             if str(result.get("status", "")).lower() == "success":
                 return True
@@ -958,7 +978,8 @@ def _json_log_parser(
             parsed_lines.append(formatted_line)
 
         except Exception as e:
-            logger.warning("Unable to parse event: %s — %s", event_obj, e)
+            # Never log the record itself: it is customer data, not yet masked.
+            logger.warning("Unable to parse event (%s)", type(e).__name__)
 
     return parsed_lines, log_size
 
@@ -977,16 +998,13 @@ def _send_logs_to_s247(config: Dict, gzipped_data: bytes, log_size: int) -> None
     upload_domain = config['uploadDomain']
     upload_url = f"https://{upload_domain}/upload"
     request = urllib.request.Request(upload_url, headers=header_obj)
-    response = urllib.request.urlopen(request, data=gzipped_data, timeout=120)
+    response = _KEYED_OPENER.open(request, data=gzipped_data, timeout=120)
     resp_headers = dict(response.getheaders())
     upload_id = resp_headers.get("x-uploadid", "unknown")
 
     if response.status == 200:
         logger.info("%s: Logs uploaded to Site24x7 successfully", upload_id)
     else:
-        logger.error(
-            "%s: Upload failed — status=%d, reason=%s",
-            upload_id,
-            response.status,
-            response.read(),
-        )
+        # Only 200 means accepted; anything else must not advance the checkpoint.
+        logger.error("%s: Upload failed — status=%d", upload_id, response.status)
+        raise RuntimeError(f"Site24x7 upload answered HTTP {response.status}")

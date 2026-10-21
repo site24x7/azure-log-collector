@@ -10,8 +10,9 @@ on:
     inputs:
       force_release:
         description: 'Force a release even if VERSION unchanged'
+        type: boolean
         required: false
-        default: 'false'
+        default: false
       stable_validation_confirmed:
         description: 'Confirm matching candidate passed fresh install, repeat deploy, upgrade, rollback and real ingestion'
         type: boolean
@@ -34,10 +35,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.11'
 
@@ -45,6 +46,11 @@ jobs:
         id: version
         run: |
           VERSION=$(cat function-app/VERSION | tr -d '[:space:]')
+          # Checked before any step uses it: later steps put it in shell commands.
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-z]+[0-9]*)?$ ]]; then
+            echo "::error::function-app/VERSION is not a version (x.y.z or x.y.z-betaN)"
+            exit 1
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
           echo "Version: $VERSION"
@@ -61,7 +67,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Require production validation approval for stable releases
-        if: steps.check_release.outputs.exists == 'false' || github.event.inputs.force_release == 'true'
+        if: steps.check_release.outputs.exists == 'false' || inputs.force_release == true
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
           RELEASE_EVENT: ${{ github.event_name }}
@@ -70,7 +76,7 @@ jobs:
         run: python3 setup/check-release-approval.py
 
       - name: Verify ARM template pins to this tag
-        if: steps.check_release.outputs.exists == 'false' || github.event.inputs.force_release == 'true'
+        if: steps.check_release.outputs.exists == 'false' || inputs.force_release == true
         run: |
           TAG="${{ steps.version.outputs.tag }}"
           EXPECTED="https://raw.githubusercontent.com/${{ github.repository }}/packages/${TAG}/s247-function-app.zip"
@@ -82,7 +88,7 @@ jobs:
           echo "functionZipUrl OK: pinned to ${TAG}"
 
       - name: Build function app zip
-        if: steps.check_release.outputs.exists == 'false' || github.event.inputs.force_release == 'true'
+        if: steps.check_release.outputs.exists == 'false' || inputs.force_release == true
         run: |
           cd function-app
           # Pre-install pip dependencies into .python_packages so that the zip is
@@ -115,7 +121,7 @@ jobs:
           unzip -l s247-function-app.zip | tail -5
 
       - name: Generate version.json
-        if: steps.check_release.outputs.exists == 'false' || github.event.inputs.force_release == 'true'
+        if: steps.check_release.outputs.exists == 'false' || inputs.force_release == true
         run: |
           REPO="${{ github.repository }}"
           VERSION="${{ steps.version.outputs.version }}"
@@ -139,7 +145,7 @@ jobs:
       # raw.githubusercontent.com serves directly. Published before the release so
       # a released template never points at a missing package.
       - name: Publish direct-download package copy
-        if: steps.check_release.outputs.exists == 'false' || github.event.inputs.force_release == 'true'
+        if: steps.check_release.outputs.exists == 'false' || inputs.force_release == true
         run: |
           TAG="${{ steps.version.outputs.tag }}"
           REPO="${{ github.repository }}"
@@ -150,6 +156,13 @@ jobs:
           else
             git init -b packages "$PKG_DIR"
             git -C "$PKG_DIR" remote add origin "$REMOTE"
+          fi
+          # A released version's package is never replaced: the template of that
+          # release installs from this path. Only a run that failed before
+          # creating the release may publish it again.
+          if [ -f "$PKG_DIR/$TAG/s247-function-app.zip" ] && [ "$RELEASE_EXISTS" = "true" ]; then
+            echo "::error::$TAG is already released; bump function-app/VERSION instead of replacing its package"
+            exit 1
           fi
           mkdir -p "$PKG_DIR/$TAG"
           cp s247-function-app.zip "$PKG_DIR/$TAG/s247-function-app.zip"
@@ -177,9 +190,10 @@ jobs:
           exit 1
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_EXISTS: ${{ steps.check_release.outputs.exists }}
 
       - name: Create GitHub Release
-        if: steps.check_release.outputs.exists == 'false' || github.event.inputs.force_release == 'true'
+        if: steps.check_release.outputs.exists == 'false' || inputs.force_release == true
         run: |
           TAG="${{ steps.version.outputs.tag }}"
           VERSION="${{ steps.version.outputs.version }}"
@@ -195,7 +209,7 @@ jobs:
           fi
 
           # Delete existing release if force
-          if [ "${{ github.event.inputs.force_release }}" = "true" ]; then
+          if [ "$FORCE_RELEASE" = "true" ]; then
             gh release delete "$TAG" --yes 2>/dev/null || true
             git push --delete origin "$TAG" 2>/dev/null || true
           fi
@@ -211,6 +225,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VALIDATION_REPORT_URL: ${{ inputs.validation_report_url }}
+          FORCE_RELEASE: ${{ inputs.force_release }}
 
       - name: Summary
         run: |

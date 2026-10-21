@@ -425,10 +425,6 @@
             "functionAppPrincipalId": {
               "type": "string",
               "value": "[reference(resourceId('Microsoft.Web/sites', parameters('functionAppName')), '2023-01-01', 'Full').identity.principalId]"
-            },
-            "functionKey": {
-              "type": "string",
-              "value": "[listkeys(concat(resourceId('Microsoft.Web/sites', parameters('functionAppName')), '/host/default'), '2022-03-01').functionKeys.default]"
             }
           }
         }
@@ -509,7 +505,7 @@
     },
     "dashboardUrl": {
       "type": "string",
-      "value": "[concat('https://', variables('functionAppName'), '.azurewebsites.net/api/dashboard?code=', reference('s247-diag-logs-resources').outputs.functionKey.value)]"
+      "value": "[concat('https://', variables('functionAppName'), '.azurewebsites.net/api/dashboard')]"
     },
     "cleanupNote": {
       "type": "string",

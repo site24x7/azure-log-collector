@@ -359,24 +359,37 @@ provision_infrastructure() {
 
     # ── Function App Settings ────────────────────────────────
     log_info "Configuring Function App settings ..."
-    run_az "Set Function App settings" functionapp config appsettings set \
+    # Values go in a private file (mode 600), not on the command line, where the
+    # Device Key would be visible to other local users in the process list.
+    local settings_file
+    settings_file=$(mktemp)
+    chmod 600 "$settings_file"
+    SITE24X7_API_KEY="${SITE24X7_API_KEY}" jq -n \
+        --arg SUBSCRIPTION_IDS "${SUBSCRIPTION_IDS}" \
+        --arg SITE24X7_BASE_URL "https://www.${SITE24X7_DOMAIN:-site24x7.com}" \
+        --arg GENERAL_LOGTYPE_ENABLED "${GENERAL_LOGTYPE}" \
+        --arg TIMER_SCHEDULE "${TIMER}" \
+        --arg RESOURCE_GROUP_NAME "${RG}" \
+        --arg DIAG_STORAGE_SUFFIX "${diag_suffix}" \
+        --arg DIAG_SEED_REGION "${REGION}" \
+        --arg UPDATE_CHECK_URL "${UPDATE_CHECK_URL:-}" \
+        '{SUBSCRIPTION_IDS: $SUBSCRIPTION_IDS, SITE24X7_BASE_URL: $SITE24X7_BASE_URL,
+          GENERAL_LOGTYPE_ENABLED: $GENERAL_LOGTYPE_ENABLED, TIMER_SCHEDULE: $TIMER_SCHEDULE,
+          RESOURCE_GROUP_NAME: $RESOURCE_GROUP_NAME, PROCESSING_ENABLED: "true",
+          FUNCTIONS_WORKER_RUNTIME: "python", DIAG_STORAGE_SUFFIX: $DIAG_STORAGE_SUFFIX,
+          DIAG_SEED_REGION: $DIAG_SEED_REGION, UPDATE_CHECK_URL: $UPDATE_CHECK_URL,
+          ENABLE_ORYX_BUILD: "true", SCM_DO_BUILD_DURING_DEPLOYMENT: "true",
+          SITE24X7_API_KEY: env.SITE24X7_API_KEY}
+         | to_entries | map({name: .key, value: .value, slotSetting: false})' > "$settings_file"
+    if ! run_az "Set Function App settings" functionapp config appsettings set \
         --name "$FUNC_APP" \
         --resource-group "$RG" \
-        --settings \
-            "SUBSCRIPTION_IDS=${SUBSCRIPTION_IDS}" \
-            "SITE24X7_API_KEY=${SITE24X7_API_KEY}" \
-            "SITE24X7_BASE_URL=https://www.${SITE24X7_DOMAIN:-site24x7.com}" \
-            "GENERAL_LOGTYPE_ENABLED=${GENERAL_LOGTYPE}" \
-            "TIMER_SCHEDULE=${TIMER}" \
-            "RESOURCE_GROUP_NAME=${RG}" \
-            "PROCESSING_ENABLED=true" \
-            "FUNCTIONS_WORKER_RUNTIME=python" \
-            "DIAG_STORAGE_SUFFIX=${diag_suffix}" \
-            "DIAG_SEED_REGION=${REGION}" \
-            "UPDATE_CHECK_URL=${UPDATE_CHECK_URL:-}" \
-            "ENABLE_ORYX_BUILD=true" \
-            "SCM_DO_BUILD_DURING_DEPLOYMENT=true" \
-        -o none
+        --settings "@${settings_file}" \
+        -o none; then
+        rm -f "$settings_file"
+        return 1
+    fi
+    rm -f "$settings_file"
     log_ok "Function App settings configured (storage account polling + remote build)"
 }
 
@@ -387,7 +400,13 @@ deploy_function_app() {
     log_section "Function App Deployment"
 
     local func_src="${SCRIPT_DIR}/../function-app"
-    local zip_path="/tmp/s247-function-app.zip"
+    # A private temp directory: a fixed /tmp name could be replaced by another
+    # local user, or clash with a parallel deployment.
+    local zip_dir zip_path
+    zip_dir=$(mktemp -d)
+    chmod 700 "$zip_dir"
+    zip_path="${zip_dir}/s247-function-app.zip"
+    trap 'rm -rf "$zip_dir"' RETURN
 
     if [[ ! -d "$func_src" ]]; then
         log_error "Function App source not found at ${func_src}"
@@ -505,12 +524,18 @@ deploy_function_app() {
         username=$(echo "$creds" | jq -r '.publishingUserName')
         password=$(echo "$creds" | jq -r '.publishingPassword')
 
+        # Credentials in a private curl config file, not on the command line.
+        local curl_config
+        curl_config=$(mktemp)
+        chmod 600 "$curl_config"
+        printf 'user = "%s:%s"\n' "$username" "$password" > "$curl_config"
         if deploy_output=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
             -X POST \
-            -u "${username}:${password}" \
+            -K "$curl_config" \
             -H "Content-Type: application/zip" \
             --data-binary "@${zip_path}" \
             "${scm_uri}/api/zipdeploy?isAsync=true" 2>&1); then
+            rm -f "$curl_config"
             local http_status
             http_status=$(echo "$deploy_output" | grep "HTTP_STATUS:" | sed 's/HTTP_STATUS://')
             local body
@@ -523,6 +548,7 @@ deploy_function_app() {
                 log_info "Method 3 failed (HTTP ${http_status}): ${body}"
             fi
         else
+            rm -f "$curl_config"
             log_info "Method 3 curl failed: ${deploy_output}"
         fi
     fi
@@ -572,9 +598,9 @@ deploy_webapp() {
         --resource-group "$RG" \
         --query "[0].value" -o tsv)
 
-    if run_az "Upload webapp files" storage blob upload-batch \
+    # The key goes in the environment (only this user can read it), not on the command line.
+    if AZURE_STORAGE_KEY="$storage_key" run_az "Upload webapp files" storage blob upload-batch \
         --account-name "$STORAGE" \
-        --account-key "$storage_key" \
         --destination '$web' \
         --source "$webapp_src" \
         --overwrite \

@@ -63,7 +63,8 @@ the identical zip to the `packages` branch and the template uses its
 `raw.githubusercontent.com` link, which is served directly. A successful ARM validation is not proof of code
 startup; verify `/api/health` and actual ingestion after deployment.
 
-**Which key opens the dashboard.** Use the deployment's `dashboardUrl` output, or
+**Which key opens the dashboard.** The deployment's `dashboardUrl` output is the
+address without a key (keys are never written to deployment outputs). Open it with
 the Function App's **host** key named `default` (App keys > Host keys > default).
 The Dashboard function's own key (Functions > Dashboard > Function keys), also
 named `default`, opens only the page: every data request it makes returns 401.

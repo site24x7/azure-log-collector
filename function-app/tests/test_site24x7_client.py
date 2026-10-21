@@ -398,7 +398,7 @@ class TestSite24x7Client:
         client = Site24x7Client()
         assert client._make_s247_request("/test") is None
 
-    @patch("shared.site24x7_client.urllib.request.urlopen")
+    @patch("shared.site24x7_client._KEYED_OPENER.open")
     def test_get_supported_log_types_success(self, mock_urlopen, client):
         mock_resp = MagicMock()
         mock_resp.read.return_value = json.dumps(
@@ -410,7 +410,7 @@ class TestSite24x7Client:
         assert result is not None
         assert result["status"] == "SUCCESS"
 
-    @patch("shared.site24x7_client.urllib.request.urlopen")
+    @patch("shared.site24x7_client._KEYED_OPENER.open")
     def test_get_supported_log_types_failure(self, mock_urlopen, client):
         mock_resp = MagicMock()
         mock_resp.read.return_value = json.dumps(
@@ -421,7 +421,7 @@ class TestSite24x7Client:
         result = client.get_supported_log_types()
         assert result is None
 
-    @patch("shared.site24x7_client.urllib.request.urlopen")
+    @patch("shared.site24x7_client._KEYED_OPENER.open")
     def test_create_log_types_success(self, mock_urlopen, client):
         """create_log_types calls /applog/logtype per category and maps the response."""
         mock_resp = MagicMock()
@@ -445,7 +445,7 @@ class TestSite24x7Client:
         assert config["uploadDomain"] == "logc.site24x7.com"
         assert config["jsonPath"] == [{"name": "time", "key": "time"}]
 
-    @patch("shared.site24x7_client.urllib.request.urlopen")
+    @patch("shared.site24x7_client._KEYED_OPENER.open")
     def test_create_log_type_single(self, mock_urlopen, client):
         """create_log_type returns a sourceConfig dict for a single category."""
         mock_resp = MagicMock()
@@ -469,7 +469,7 @@ class TestSite24x7Client:
         assert "maskingConfig" in config
         assert "filterConfig" in config
 
-    @patch("shared.site24x7_client.urllib.request.urlopen")
+    @patch("shared.site24x7_client._KEYED_OPENER.open")
     def test_create_log_type_not_api_upload(self, mock_urlopen, client):
         """Returns None when log type doesn't allow API upload."""
         mock_resp = MagicMock()
@@ -483,7 +483,7 @@ class TestSite24x7Client:
         result = client.create_log_type("SomeType")
         assert result is None
 
-    @patch("shared.site24x7_client.urllib.request.urlopen")
+    @patch("shared.site24x7_client._KEYED_OPENER.open")
     def test_create_log_type_error_status(self, mock_urlopen, client):
         """Returns None when server returns error status."""
         mock_resp = MagicMock()
@@ -536,7 +536,7 @@ class TestSite24x7Client:
         result = client.create_log_types([])
         assert result == []
 
-    @patch("shared.site24x7_client.urllib.request.urlopen")
+    @patch("shared.site24x7_client._KEYED_OPENER.open")
     def test_post_logs_circuit_breaker_blocks(self, mock_urlopen, client):
         # Force circuit breaker open
         for _ in range(5):
@@ -544,7 +544,7 @@ class TestSite24x7Client:
         assert client.post_logs("dummy", []) is False
         mock_urlopen.assert_not_called()
 
-    @patch("shared.site24x7_client.urllib.request.urlopen")
+    @patch("shared.site24x7_client._KEYED_OPENER.open")
     def test_post_logs_overrides_stale_config(self, mock_urlopen, client):
         """post_logs() overrides uploadDomain and apiKey from stale blob configs."""
         client.device_key = "live_key_123"
@@ -573,7 +573,7 @@ class TestSite24x7Client:
         assert "logc.site24x7.in" in req.full_url
         assert "live_key_123" in req.full_url or req.get_header("X-devicekey") == "live_key_123"
 
-    @patch("shared.site24x7_client.urllib.request.urlopen")
+    @patch("shared.site24x7_client._KEYED_OPENER.open")
     def test_post_logs_success(self, mock_urlopen, client):
         config = {
             "apiKey": "key",

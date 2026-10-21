@@ -320,7 +320,13 @@ def get_logtype_config(category: str, force_refresh: bool = False, strict: bool 
 
 
 def save_logtype_config(category: str, config: Dict) -> bool:
-    """Save sourceConfig for a log category."""
+    """Save sourceConfig for a log category.
+
+    The Device Key is not stored with it: uploads always use the live key from
+    the app settings, so a saved copy would only be one more place it leaks from.
+    """
+    if isinstance(config, dict):
+        config = {k: v for k, v in config.items() if k != "apiKey"}
     config_key = f"S247_{_normalize_category(category)}"
     blob_path = f"{LOGTYPE_CONFIGS_PREFIX}{config_key}.json"
     if _write_blob(blob_path, json.dumps(config, indent=2)):

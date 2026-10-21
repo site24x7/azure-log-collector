@@ -80,7 +80,7 @@ def test_keys_go_in_the_post_body_not_the_url(azure_env):
         resp.__enter__.return_value.read.return_value = b'{"status":"SUCCESS"}'
         return resp
 
-    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+    with patch("shared.site24x7_client._KEYED_OPENER.open", side_effect=fake_urlopen):
         assert Site24x7Client().register_collector({"functionKey": SECRET, "resourceUrl": "u"})
     assert captured["url"].endswith("/applog/azure/register_collector")
     assert "?" not in captured["url"]
@@ -92,7 +92,7 @@ def test_keys_go_in_the_post_body_not_the_url(azure_env):
 def test_failure_never_raises_or_logs_the_key(azure_env, no_state, caplog):
     caplog.set_level(logging.DEBUG)
     with patch.object(registration, "get_function_key", return_value=SECRET), \
-         patch("urllib.request.urlopen", side_effect=OSError(f"boom {SECRET}")):
+         patch("shared.site24x7_client._KEYED_OPENER.open", side_effect=OSError(f"boom {SECRET}")):
         assert registration.register_with_site24x7() is False
     assert SECRET not in caplog.text
 

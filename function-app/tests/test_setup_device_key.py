@@ -30,17 +30,23 @@ set -euo pipefail
 az() {
     if [[ "$*" == *"appsettings set"* ]]; then
         printf '%s\\n' "$@" > "$CAPTURE"
+        for arg in "$@"; do
+            if [[ "$arg" == @* ]]; then cat "${arg#@}" > "$CAPTURE.settings"; fi
+        done
     elif [[ "$*" == *"check-name"* ]]; then
         echo true
     fi
 }
-jq() { :; }
 zip() { :; }
 source "$SETUP"
 LOG_FILE="$SETUP_LOG"
 preflight_checks
 diag_suffix=test
-''' + settings)
+apply_settings() {
+''' + settings + '''
+}
+apply_settings
+''')
     env = {k: v for k, v in os.environ.items() if not k.startswith('SITE24X7_')}
     env.update(SETUP=str(setup), CAPTURE=str(capture), SETUP_LOG=str(tmp_path / "setup.log"))
     result = subprocess.run(['bash', str(runner)], env=env, capture_output=True, text=True)
@@ -51,8 +57,12 @@ diag_suffix=test
         return
     assert result.returncode == 0, result.stderr
     args = capture.read_text().splitlines()
-    assert 'SITE24X7_API_KEY=test-device-key' in args
-    assert not any(arg.startswith('SITE24X7_API_TOKEN=') for arg in args)
+    # The key reaches Azure through a private settings file, never a command-line argument.
+    assert not any('test-device-key' in arg for arg in args)
+    import json
+    settings = {s['name']: s['value'] for s in json.loads(Path(str(capture) + '.settings').read_text())}
+    assert settings['SITE24X7_API_KEY'] == 'test-device-key'
+    assert 'SITE24X7_API_TOKEN' not in settings
     assert 'test-device-key' not in result.stdout
     assert 'test-device-key' not in (tmp_path / 'setup.log').read_text()
 

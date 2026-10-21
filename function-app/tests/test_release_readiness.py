@@ -54,7 +54,7 @@ def test_health_requires_authenticated_alive_response_and_healthy_dependencies(m
         assert result['healthy'] is (response == 'healthy')
         assert 'test-private-key' not in str(result)
         get.assert_called_once_with('https://demo-app.azurewebsites.net/api/health',
-                                    headers={'x-functions-key': 'test-private-key'}, timeout=15)
+                                    headers={'x-functions-key': 'test-private-key'}, timeout=15, allow_redirects=False)
         web.return_value.web_apps.list_host_keys.assert_called_once_with('demo-rg', 'demo-app')
 
 

@@ -441,7 +441,7 @@ def _post_deploy_health_check(func_app_name: str, checks: int = 3,
     results = []
     for i in range(checks):
         try:
-            resp = requests.get(url, headers={"x-functions-key": key}, timeout=15)
+            resp = requests.get(url, headers={"x-functions-key": key}, timeout=15, allow_redirects=False)
             healthy = False
             if resp.ok:
                 try:
