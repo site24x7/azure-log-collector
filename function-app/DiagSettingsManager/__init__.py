@@ -744,8 +744,6 @@ def run_scan():
                        and configured_resources[rid].get("setting_name", LEGACY_SETTING_NAME) == setting_name}
 
     # Use ThreadPoolExecutor for parallel diagnostic settings creation
-    from shared.azure_manager import _extract_subscription_id
-
     def _restore_legacy(resource_id, storage_account_id, categories):
         """The rename failed after the old setting was removed: put it back so logs keep flowing."""
         if not azure_mgr.create_diagnostic_setting(resource_id=resource_id, storage_account_id=storage_account_id,
@@ -757,9 +755,11 @@ def run_scan():
         Returns (action, error, mark_data) where mark_data is
         (resource_id, categories, sa_name) if resource should be marked configured."""
         try:
-            res_sub_id = _extract_subscription_id(resource_id) or subscription_ids[0]
+            # The regional storage accounts are created in the collector's own
+            # subscription (RegionManager(subscription_ids[0])), whatever
+            # subscription the resource is in.
             storage_account_id = (
-                f"/subscriptions/{res_sub_id}/resourceGroups/{resource_group}"
+                f"/subscriptions/{subscription_ids[0]}/resourceGroups/{resource_group}"
                 f"/providers/Microsoft.Storage/storageAccounts/{info['sa_name']}"
             )
 

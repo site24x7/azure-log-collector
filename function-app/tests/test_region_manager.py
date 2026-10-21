@@ -404,3 +404,19 @@ class TestRemoveLock:
             assert result is True
         finally:
             rm_mod.ManagementLockClient = original
+
+
+
+def test_storage_lock_is_removed_at_the_scope_it_was_created(rm):
+    import shared.region_manager as rm_mod
+    original = rm_mod.ManagementLockClient
+    rm_mod.ManagementLockClient = MagicMock()
+    try:
+        assert rm.remove_lock("rg", "s247-lock-x", resource_name="s247diagx",
+                              resource_type="Microsoft.Storage/storageAccounts")
+        locks = rm_mod.ManagementLockClient.return_value.management_locks
+        locks.delete_at_resource_level.assert_called_once()
+        locks.delete_at_resource_group_level.assert_not_called()
+        assert locks.delete_at_resource_level.call_args.kwargs["resource_name"] == "s247diagx"
+    finally:
+        rm_mod.ManagementLockClient = original

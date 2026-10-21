@@ -477,7 +477,10 @@ class RegionManager:
         #   2. Attempt delete
         #   3. If delete fails, restore the lock so the SA isn't left
         #      unprotected with unprocessed logs inside it.
-        self.remove_lock(resource_group, lock_nm)
+        if not self.remove_lock(resource_group, lock_nm, resource_name=sa_name,
+                                resource_type="Microsoft.Storage/storageAccounts"):
+            logger.error(f"Could not remove the lock on '{sa_name}'; not deleting it")
+            return False
         try:
             storage_client.storage_accounts.delete(
                 resource_group_name=resource_group,
@@ -645,8 +648,14 @@ class RegionManager:
             logger.error(f"Failed to apply lock on {resource_name}: {e}")
             return False
 
-    def remove_lock(self, resource_group: str, lock_name: str) -> bool:
-        """Remove a management lock by name from a resource group."""
+    def remove_lock(self, resource_group: str, lock_name: str, resource_name: str = "",
+                    resource_type: str = "") -> bool:
+        """Remove a management lock by name.
+
+        With ``resource_name``/``resource_type`` the lock is removed from that
+        resource, the scope apply_lock created it at; without them, from the
+        resource group.
+        """
         if ManagementLockClient is None:
             logger.warning("ManagementLockClient unavailable — skipping lock removal")
             return False
@@ -654,11 +663,22 @@ class RegionManager:
             self.credential, self.subscription_id
         )
         try:
-            lock_client.management_locks.delete_at_resource_group_level(
-                resource_group_name=resource_group,
-                lock_name=lock_name,
-            )
-            logger.info(f"Removed lock '{lock_name}' from RG '{resource_group}'")
+            if resource_name:
+                provider_namespace, resource_type_short = resource_type.split("/", 1)
+                lock_client.management_locks.delete_at_resource_level(
+                    resource_group_name=resource_group,
+                    resource_provider_namespace=provider_namespace,
+                    parent_resource_path="",
+                    resource_type=resource_type_short,
+                    resource_name=resource_name,
+                    lock_name=lock_name,
+                )
+            else:
+                lock_client.management_locks.delete_at_resource_group_level(
+                    resource_group_name=resource_group,
+                    lock_name=lock_name,
+                )
+            logger.info(f"Removed lock '{lock_name}' from '{resource_name or resource_group}'")
             return True
         except Exception as e:
             if "NotFound" in str(type(e).__name__) or "not found" in str(e).lower():
