@@ -7,6 +7,23 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.0.1-beta10] — 2026-10-21
+
+### Changed
+- An upload that fails (Site24x7 unreachable, timeout, rejected request) now
+  counts as **retrying**, not dropped: the collector keeps its read position and
+  sends those records again on the next run, so nothing is lost. Before, every
+  failed attempt counted as dropped, so a short outage looked like tens of
+  thousands of lost records. **Dropped** now means records that will never be
+  sent (unreadable records, files too large to read). A blob that fails with a
+  processing error is listed in the run's errors and read again next run.
+- Registration reports `pending_records`: the records the latest run could not
+  send. It goes back to 0 as soon as uploads work again.
+- The dashboard checks the collector's status every 15 seconds while its tab is
+  visible (it paused while hidden), so a scan started from Site24x7 or by the
+  timer shows its progress there too. The run history shows retrying and
+  dropped separately.
+
 ## [1.0.1-beta9] — 2026-10-20
 
 ### Added
