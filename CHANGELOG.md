@@ -23,6 +23,9 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
   visible (it paused while hidden), so a scan started from Site24x7 or by the
   timer shows its progress there too. The run history shows retrying and
   dropped separately.
+- Pause / resume waits at most 10 seconds for its report to Site24x7 before
+  answering, so the answer reaches Site24x7 within its 30-second limit. The
+  setting is saved first; a slow report is sent by the next scan or timer run.
 
 ## [1.0.1-beta9] — 2026-10-20
 

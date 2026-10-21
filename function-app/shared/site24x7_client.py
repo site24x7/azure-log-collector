@@ -539,7 +539,7 @@ class Site24x7Client:
             return [{"category": None, "sourceConfig": None, "_errors": errors}]
         return None
 
-    def register_collector(self, fields: Dict[str, str]) -> bool:
+    def register_collector(self, fields: Dict[str, str], timeout: float = 60) -> bool:
         """POST this collector's details to Site24x7 (see shared/registration.py).
 
         Unlike the GET helpers, the Device Key and function key go in the
@@ -556,7 +556,7 @@ class Site24x7Client:
                      "Accept": "application/json"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
             if str(result.get("status", "")).lower() == "success":
                 return True

@@ -31,6 +31,8 @@ def test_stop_processing_succeeds_when_saved_and_reports_the_new_state():
         resp = StopProcessing.main(_req({"enabled": False}))
     assert resp.status_code == 200
     assert register.called  # Site24x7 sees "paused" without waiting for the next scan
+    # Bounded so the answer reaches Site24x7 within its 30 s limit.
+    assert register.call_args.kwargs["timeout"] == StopProcessing.REPORT_TIMEOUT_SEC <= 10
 
 
 def test_general_logtype_reports_a_failed_save():

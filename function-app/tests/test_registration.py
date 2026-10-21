@@ -199,3 +199,10 @@ def test_subscription_name_failure_falls_back_to_ids(monkeypatch):
     monkeypatch.setenv("IDENTITY_ENDPOINT", "http://localhost/identity")
     with patch("azure.identity.DefaultAzureCredential", side_effect=RuntimeError("no identity")):
         assert registration._subscription_names([SUB_A]) == {}
+
+
+def test_registration_passes_its_timeout_to_site24x7(azure_env, no_state):
+    with patch.object(registration, "get_function_key", return_value=SECRET), \
+         patch("shared.site24x7_client.Site24x7Client.register_collector", return_value=True) as call:
+        assert registration.register_with_site24x7(timeout=10) is True
+    assert call.call_args.kwargs["timeout"] == 10

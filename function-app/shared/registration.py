@@ -198,15 +198,19 @@ def build_registration() -> Optional[Dict[str, str]]:
     }
 
 
-def register_with_site24x7() -> bool:
-    """Best effort: a failure here must never fail or delay the scan."""
+def register_with_site24x7(timeout: float = 60) -> bool:
+    """Best effort: a failure here must never fail or delay the scan.
+
+    ``timeout`` bounds the call to Site24x7; callers answering an HTTP request
+    pass a short one so they still answer in time.
+    """
     try:
         fields = build_registration()
         if not fields:
             return False
         from shared.site24x7_client import Site24x7Client
 
-        ok = Site24x7Client().register_collector(fields)
+        ok = Site24x7Client().register_collector(fields, timeout=timeout)
         if ok:
             logger.info("Registration: Site24x7 updated")
         else:

@@ -5,6 +5,10 @@ import logging
 import azure.functions as func
 
 
+# Longest wait for the report to Site24x7 before answering the caller.
+REPORT_TIMEOUT_SEC = 10
+
+
 def main(req: func.HttpRequest) -> func.HttpResponse:
     from shared.azure_manager import AzureManager
 
@@ -50,8 +54,10 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         # Update in-process env so subsequent reads reflect the change
         os.environ["PROCESSING_ENABLED"] = new_value
         # Tell Site24x7 now, so its page shows the new state before the next scan.
+        # Bounded: Site24x7 waits 30 s for this answer, and the setting is already
+        # saved; if the report is slow, the next scan or timer run reports it.
         from shared.registration import register_with_site24x7
-        register_with_site24x7()
+        register_with_site24x7(timeout=REPORT_TIMEOUT_SEC)
 
         action = "enabled" if enabled else "stopped"
         logging.info("StopProcessing: Processing %s", action)
