@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import azure.functions as func
 
@@ -110,6 +110,13 @@ def _refresh_supported_types(client):
     except Exception:
         logging.exception("DiagSettingsManager: Catalog refresh failed; using cached types")
         return cached
+
+
+# Once a day the fast path checks each tracked setting in Azure, so a setting
+# deleted or changed by hand is repaired instead of being trusted forever.
+FULL_RECONCILE_HOURS = 24
+# After the phase 6 deadline, how long running Azure changes may still finish.
+PHASE6_GRACE_SECONDS = 45
 
 
 def run_scan():
@@ -294,6 +301,27 @@ def run_scan():
     _category_cache_by_type = {}  # resource_type -> [categories] or None
     types_needing_discovery = {}  # resource_type -> sample_resource_id
 
+    from shared.config_store import get_scan_state
+    last_reconcile = (get_scan_state() or {}).get("last_full_reconcile", "")
+    try:
+        reconcile_due = (datetime.now(timezone.utc) - datetime.fromisoformat(last_reconcile)
+                         > timedelta(hours=FULL_RECONCILE_HOURS))
+    except (TypeError, ValueError):
+        reconcile_due = True
+    reconcile_complete = True
+
+    def _matches_azure(resource_id, prev_config, sa_name):
+        """The tracked setting still exists in Azure as recorded."""
+        nonlocal reconcile_complete
+        try:
+            actual = azure_mgr.get_diagnostic_setting(resource_id, setting_name, raise_errors=True)
+        except Exception:
+            reconcile_complete = False
+            return True   # unknown: keep trusting the record this time
+        return bool(actual) and \
+            (actual.get("storage_account_id") or "").lower().endswith("/" + sa_name.lower()) and \
+            set(actual.get("categories") or []) == set(prev_config.get("categories") or [])
+
     for resource in active_resources:
         resource_id = resource.get("id", "")
         location = resource.get("location", "")
@@ -306,7 +334,8 @@ def run_scan():
             # must not fast-path: rediscover and re-point the setting.
             # A legacy-named setting must not fast-path either: it is renamed below.
             if sa_name and prev_config.get("storage_account", sa_name) == sa_name and \
-                    prev_config.get("setting_name", LEGACY_SETTING_NAME) == setting_name:
+                    prev_config.get("setting_name", LEGACY_SETTING_NAME) == setting_name and \
+                    (not reconcile_due or _matches_azure(resource_id, prev_config, sa_name)):
                 resource_category_map[resource_id] = {
                     "categories": prev_config["categories"],
                     "effective_categories": prev_config["categories"],
@@ -894,9 +923,25 @@ def run_scan():
             "DiagSettingsManager: Time budget hit — %d/%d resources done, %d still running",
             done_count, len(resources_to_configure), len(remaining_futures),
         )
-        # Cancel unstarted futures (can't cancel running ones)
+        # Cancel unstarted futures; let the running ones finish (briefly) and
+        # record them, so no Azure change lands after the scan saved its state.
         for f in remaining_futures:
             f.cancel()
+        running = [f for f in remaining_futures if not f.cancelled()]
+        finished, _ = wait(running, timeout=PHASE6_GRACE_SECONDS)
+        for future in finished:
+            try:
+                action, error, mark_data = future.result(timeout=1)
+            except Exception as e:
+                action, error, mark_data = "error", f"Exception: {e}", None
+            if action == "error":
+                stats["errors"] += 1
+            elif action in stats:
+                stats[action] += 1
+            if mark_data:
+                pending_marks.append(mark_data)
+            done_count += 1
+    executor.shutdown(wait=False, cancel_futures=True)
 
     # Final flush of any remaining marks
     _flush_marks()
@@ -985,6 +1030,8 @@ def run_scan():
         "entra_target_subscription_name": entra_target_sub_name,
         "review_pending": False,
         "discovery_errors": len(azure_mgr.discovery_errors),
+        "last_full_reconcile": (scan_time if reconcile_due and reconcile_complete
+                                else last_reconcile),
         "in_progress": False,
     }
     # The scan state blob is the record of the last scan. Never write an app

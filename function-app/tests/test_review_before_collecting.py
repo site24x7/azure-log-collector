@@ -101,3 +101,39 @@ def test_registration_reports_review_mode(monkeypatch):
          patch("shared.debug_logger.get_processing_stats", return_value=[]):
         status = registration.build_status_summary()
     assert (status["review_pending"], status["planned_regions"], status["planned_resource_types"]) == (True, 3, 7)
+
+
+def test_daily_reconcile_repairs_a_setting_deleted_by_hand(monkeypatch):
+    """A tracked resource whose setting vanished from Azure must not be fast-pathed."""
+    monkeypatch.setenv("SUBSCRIPTION_IDS", "s1")
+    monkeypatch.setenv("DIAG_STORAGE_SUFFIX", "")
+    res = RESOURCES[0]
+    tracked = {res["id"]: {"categories": ["AppServiceHTTPLogs"], "storage_account": "s247diagwesteurope",
+                           "setting_name": "s247-diag-logs"}}
+    region_mgr = MagicMock()
+    region_mgr.get_active_regions.return_value = {"westeurope"}
+    region_mgr.get_provisioned_regions.return_value = {"westeurope": "s247diagwesteurope"}
+    region_mgr.reconcile_regions.return_value = {"added": [], "removed": [], "errors": []}
+    azure_mgr = MagicMock()
+    azure_mgr.return_value.get_all_resources.return_value = [res]
+    azure_mgr.return_value.discovery_complete = True
+    azure_mgr.return_value.discovery_errors = []
+    azure_mgr.return_value.get_diagnostic_setting.return_value = None   # deleted by hand
+    with patch("shared.azure_manager.AzureManager", azure_mgr), \
+         patch("shared.region_manager.RegionManager", return_value=region_mgr), \
+         patch("shared.site24x7_client.Site24x7Client"), \
+         patch("shared.ignore_list.load_ignore_list", return_value={}), \
+         patch("shared.config_store.get_configured_resources", return_value=tracked), \
+         patch("shared.config_store.get_scan_state", return_value={"last_full_reconcile": "2020-01-01T00:00:00+00:00"}), \
+         patch("shared.config_store.clear_cache"), \
+         patch("shared.config_store.is_collection_active", return_value=True), \
+         patch("shared.debug_logger.log_event"), \
+         patch.object(DiagSettingsManager, "_refresh_supported_types", return_value={}), \
+         patch.object(DiagSettingsManager, "_update_phase"), \
+         patch.object(DiagSettingsManager, "_save_early_scan_state"):
+        try:
+            DiagSettingsManager.run_scan()
+        except Exception:
+            pass  # later phases are not mocked; only the fast-path decision matters here
+    # The resource was checked against Azure (not trusted from tracking)
+    azure_mgr.return_value.get_diagnostic_setting.assert_any_call(res["id"], "s247-diag-logs", raise_errors=True)

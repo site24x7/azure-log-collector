@@ -58,6 +58,14 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
   failures are saved between runs; timestamps with an offset (`+05:30`) are no
   longer read as UTC.
 
+- Scans: once a day each tracked diagnostic setting is checked in Azure, so
+  one deleted or changed by hand is repaired (before, tracking was trusted
+  forever). Azure changes still running at the scan deadline finish (up to
+  45 s) and are recorded before the scan ends. An exclusion or category change
+  made while a scan runs queues another scan, so the running one cannot undo it.
+  App-setting changes are read back and written again if a concurrent change
+  lost them, and an unchanged value is not written (no needless restart).
+
 ### Fixed
 - Saving an include-tag exclusion (e.g. `env=prod`) removed the diagnostic
   settings of every configured resource, including the ones carrying the tag.

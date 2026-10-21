@@ -71,7 +71,7 @@ def _disable(configured, disabled_ok=True, deleted=True):
          patch("shared.config_store.unmark_resource_configured", return_value=True) as unmark, \
          patch("shared.config_store.get_disabled_log_types", return_value=["AuditEvent"]), \
          patch("shared.azure_manager.AzureManager", mgr):
-        resp = UpdateDisabledLogTypes.main(_req({"action": "disable", "category": "AuditEvent"}, "POST"))
+        resp = UpdateDisabledLogTypes.main(_req({"action": "disable", "category": "AuditEvent"}, "POST"), MagicMock())
     return resp, mgr.return_value.delete_own_settings, unmark
 
 
@@ -97,7 +97,7 @@ def test_only_category_removes_setting_and_record():
 def test_failed_enable_is_reported():
     with patch("shared.config_store.enable_log_type", return_value=False), \
          patch("shared.azure_manager.AzureManager"):
-        resp = UpdateDisabledLogTypes.main(_req({"action": "enable", "category": "AuditEvent"}, "POST"))
+        resp = UpdateDisabledLogTypes.main(_req({"action": "enable", "category": "AuditEvent"}, "POST"), MagicMock())
     assert resp.status_code == 500
 
 
@@ -177,3 +177,50 @@ def test_failed_legacy_lookup_keeps_the_record():
         summary = mgr.remove_all_diagnostic_settings(["s1"], {RES: {"storage_account": "s247diagwesteuoct14"}})
         assert mgr.delete_own_settings(RES, {"storage_account": "s247diagwesteuoct14"}) is False
     assert (summary["errors"], summary["resolved_ids"]) == (1, [])
+
+
+def _settings_client(sequence):
+    """WebSiteManagementClient whose list_application_settings returns ``sequence`` in turn."""
+    client = MagicMock()
+    client.web_apps.list_application_settings.side_effect = [MagicMock(properties=dict(s)) for s in sequence]
+    return client
+
+
+def _update(monkeypatch, sequence):
+    monkeypatch.setenv("SUBSCRIPTION_IDS", "s1")
+    monkeypatch.setenv("WEBSITE_SITE_NAME", "app")
+    mgr = AzureManager.__new__(AzureManager)
+    mgr.credential = MagicMock()
+    client = _settings_client(sequence)
+    with patch("azure.mgmt.web.WebSiteManagementClient", return_value=client):
+        ok = mgr.update_app_setting("AUTO_SCAN_ENABLED", "false")
+    return ok, client.web_apps.update_application_settings
+
+
+def test_unchanged_setting_is_not_written(monkeypatch):
+    ok, write = _update(monkeypatch, [{"AUTO_SCAN_ENABLED": "false"}])
+    assert ok and not write.called          # no needless restart
+
+
+def test_setting_lost_to_a_concurrent_write_is_written_again(monkeypatch):
+    ok, write = _update(monkeypatch, [{"A": "1"}, {"A": "1"}, {"A": "1", "AUTO_SCAN_ENABLED": "false"}])
+    assert ok and write.call_count == 2
+
+
+def test_setting_that_never_sticks_is_reported(monkeypatch):
+    ok, _ = _update(monkeypatch, [{"A": "1"}] * 4)
+    assert ok is False
+
+
+def test_disable_during_a_scan_queues_another():
+    queue = MagicMock()
+    mgr = MagicMock()
+    with patch("shared.config_store.disable_log_type", return_value=True), \
+         patch("shared.config_store.delete_logtype_config"), \
+         patch("shared.config_store.get_configured_resources", return_value={}), \
+         patch("shared.config_store.get_disabled_log_types", return_value=["AuditEvent"]), \
+         patch("shared.config_store.get_scan_state", return_value={"in_progress": True}), \
+         patch("shared.azure_manager.AzureManager", mgr):
+        resp = UpdateDisabledLogTypes.main(_req({"action": "disable", "category": "AuditEvent"}, "POST"), queue)
+    assert resp.status_code == 200 and json.loads(resp.get_body())["scan_queued"] is True
+    queue.set.assert_called_once()

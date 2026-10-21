@@ -408,19 +408,32 @@ class AzureManager:
 
         try:
             client = WebSiteManagementClient(self.credential, sub_id)
+            # The settings API replaces the whole map, so two writers can undo
+            # each other: write, read back, and write again if ours was lost.
+            # An unchanged value is not written at all (every write restarts the app).
+            for attempt in range(3):
+                current = client.web_apps.list_application_settings(
+                    resource_group_name=resource_group,
+                    name=func_app_name,
+                )
+                settings = dict(current.properties) if current.properties else {}
+                if settings.get(key) == value:
+                    if attempt:
+                        logger.info(f"Updated app setting '{key}' on '{func_app_name}'")
+                    return True
+                settings[key] = value
+                client.web_apps.update_application_settings(
+                    resource_group_name=resource_group,
+                    name=func_app_name,
+                    app_settings={"properties": settings},
+                )
             current = client.web_apps.list_application_settings(
-                resource_group_name=resource_group,
-                name=func_app_name,
-            )
-            settings = dict(current.properties) if current.properties else {}
-            settings[key] = value
-            client.web_apps.update_application_settings(
-                resource_group_name=resource_group,
-                name=func_app_name,
-                app_settings={"properties": settings},
-            )
-            logger.info(f"Updated app setting '{key}' on '{func_app_name}'")
-            return True
+                resource_group_name=resource_group, name=func_app_name)
+            if (current.properties or {}).get(key) == value:
+                logger.info(f"Updated app setting '{key}' on '{func_app_name}'")
+                return True
+            logger.error(f"App setting '{key}' did not stick (concurrent changes)")
+            return False
         except Exception as e:
             logger.error(f"Failed to update app setting '{key}': {e}")
             return False

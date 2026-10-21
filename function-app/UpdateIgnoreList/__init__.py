@@ -79,8 +79,12 @@ def main(req: func.HttpRequest, scanQueue: func.Out[str]) -> func.HttpResponse:
 
         # Location / type / tag changes are applied by a scan, which has the details.
         scan_queued = False
-        if previous is None or any(_normalized(key, previous.get(key)) != _normalized(key, updated.get(key))
-                                   for key in _DETAIL_RULES):
+        # Also when a scan is running: it loaded the old list and could undo this change.
+        from shared.config_store import get_scan_state
+        scan_running = bool((get_scan_state() or {}).get("in_progress"))
+        if scan_running or previous is None or any(
+                _normalized(key, previous.get(key)) != _normalized(key, updated.get(key))
+                for key in _DETAIL_RULES):
             scanQueue.set(json.dumps({
                 "requested_at": datetime.now(timezone.utc).isoformat(),
                 "source": "ignore-list",

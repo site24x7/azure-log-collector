@@ -5,7 +5,7 @@ import logging
 import azure.functions as func
 
 
-def main(req: func.HttpRequest) -> func.HttpResponse:
+def main(req: func.HttpRequest, scanQueue: func.Out[str]) -> func.HttpResponse:
     from shared.config_store import (
         disable_log_type,
         enable_log_type,
@@ -165,6 +165,13 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             result["note"] = "Categories re-enabled. Run a scan to re-create log types and diagnostic settings."
 
         result["disabled_logtypes"] = get_disabled_log_types()
+        # A running scan loaded the old list and could undo this change: queue another.
+        from shared.config_store import get_scan_state
+        if (get_scan_state() or {}).get("in_progress"):
+            from datetime import datetime, timezone
+            scanQueue.set(json.dumps({"requested_at": datetime.now(timezone.utc).isoformat(),
+                                      "source": "disabled-logtypes"}))
+            result["scan_queued"] = True
 
         return func.HttpResponse(
             json.dumps(result, indent=2),
