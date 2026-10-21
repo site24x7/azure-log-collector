@@ -103,10 +103,20 @@ def _disabled_entra_categories():
 
 
 def _process_all_regions():
-    from shared.config_store import get_all_logtype_configs, clear_cache, is_log_type_disabled
+    from shared.config_store import (get_all_logtype_configs, clear_cache, is_log_type_disabled,
+                                     get_disabled_log_types)
     from shared.site24x7_client import Site24x7Client
 
     clear_cache()
+    # Read the switched-off categories first and strictly: if the list cannot be
+    # read, skip this run (the blobs stay and are read next run) rather than
+    # send categories the user turned off.
+    try:
+        get_disabled_log_types(strict=True)
+    except Exception as e:
+        logger.warning("BlobLogProcessor: disabled log types unreadable (%s) — skipping this run",
+                       type(e).__name__)
+        return
 
     credential = DefaultAzureCredential()
     subscription_id = os.environ.get("SUBSCRIPTION_IDS", "").split(",")[0].strip()

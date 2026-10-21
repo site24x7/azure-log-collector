@@ -41,6 +41,13 @@ class AzureManager:
         self.credential = DefaultAzureCredential()
         self._diag_support_cache: Dict[str, bool] = {}
         self._monitor_clients: Dict[str, MonitorManagementClient] = {}
+        # What the last get_all_resources() could not read. While it is not
+        # empty the list is partial, and nothing may be removed on its basis.
+        self.discovery_errors: List[str] = []
+
+    @property
+    def discovery_complete(self) -> bool:
+        return not self.discovery_errors
 
     def _get_monitor_client(self, subscription_id: str) -> MonitorManagementClient:
         """Get or create a cached MonitorManagementClient for a subscription."""
@@ -79,8 +86,10 @@ class AzureManager:
             self._diag_support_cache[rtype] = has_logs
             logger.debug(f"Diagnostic support for {rtype}: {has_logs}")
             return has_logs
-        except Exception:
-            self._diag_support_cache[rtype] = False
+        except Exception as e:
+            # Unknown, not "no logs": not cached, and the discovery is incomplete
+            # (else every resource of this type would look gone and be cleaned up).
+            self.discovery_errors.append(f"support check for {rtype}: {type(e).__name__}")
             return False
 
     def get_all_resources(self, subscription_ids: List[str]) -> List[Dict]:
@@ -91,6 +100,7 @@ class AzureManager:
         diagnostic settings can be applied.
         """
         all_resources: List[Dict] = []
+        self.discovery_errors = []
         for sub_id in subscription_ids:
             try:
                 client = ResourceManagementClient(self.credential, sub_id)
@@ -114,6 +124,7 @@ class AzureManager:
                 logger.error(
                     f"Failed to list resources for subscription {sub_id}: {e}"
                 )
+                self.discovery_errors.append(f"subscription {sub_id}: {type(e).__name__}")
         return all_resources
 
     # ------------------------------------------------------------------

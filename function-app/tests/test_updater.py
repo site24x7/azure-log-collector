@@ -424,7 +424,7 @@ class TestCheckAndApplyUpdate:
         mock_deploy.return_value = {"success": True, "status_code": 200}
         result = check_and_apply_update(auto_apply=True)
         assert result["action"] == "deployed"
-        mock_deploy.assert_called_once_with("https://example.com/v2.zip", expected_sha256=None)
+        mock_deploy.assert_called_once_with("https://example.com/v2.zip", expected_sha256=None, expected_version="2.0.0")
 
     @patch("shared.updater.fetch_remote_version")
     @patch("shared.updater.get_local_version")
@@ -503,7 +503,7 @@ class TestPinnedVersion:
         mock_deploy.return_value = {"success": True}
         result = check_and_apply_update(auto_apply=True)
         assert result["action"] == "deployed"
-        mock_deploy.assert_called_once_with("pkg", expected_sha256="abc")
+        mock_deploy.assert_called_once_with("pkg", expected_sha256="abc", expected_version="1.5.0")
 
 
 class TestReleaseAgeGate:
@@ -704,3 +704,22 @@ class TestUpdateChannel:
         result = fetch_remote_version("https://api.github.com/repos/o/r/releases?per_page=5")
         assert result["version"] == "2.0.0-beta.1"
         assert result["prerelease"] is True
+
+
+def test_package_version_must_match_the_advertised_version(tmp_path):
+    """A manifest saying 2.0.0 cannot ship an older package past the downgrade check."""
+    import zipfile
+    from shared.updater import validate_zip_package
+    pkg = tmp_path / "pkg.zip"
+    with zipfile.ZipFile(pkg, "w") as zf:
+        zf.writestr("host.json", "{}")
+        zf.writestr("VERSION", "1.0.0")
+        zf.writestr("AutoUpdater/__init__.py", "x = 1\n")
+        zf.writestr("shared/updater.py", "x = 1\n")
+        zf.writestr("requirements.txt", "")
+        zf.writestr("AutoUpdater/function.json", "{}")
+    ok_any, _ = validate_zip_package(str(pkg))
+    assert ok_any
+    ok_match, _ = validate_zip_package(str(pkg), expected_version="1.0.0")
+    ok_other, reason = validate_zip_package(str(pkg), expected_version="2.0.0")
+    assert (ok_match, ok_other) == (ok_any, False) and "does not match" in reason

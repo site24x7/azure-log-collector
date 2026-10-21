@@ -126,14 +126,16 @@ def _read_events() -> List[Dict]:
         return []
 
 
-def _write_events(events: List[Dict]) -> None:
-    """Write events to blob."""
+def _write_events(events: List[Dict]) -> bool:
+    """Write events to blob. Returns whether the write succeeded."""
     try:
         client = _get_blob_client(EVENTS_BLOB)
         if client:
             client.upload_blob(json.dumps(events, indent=2), overwrite=True)
+            return True
     except Exception as e:
         logger.error("debug_logger: Failed to write events: %s", e)
+    return False
 
 
 def log_event(
@@ -181,9 +183,9 @@ def get_recent_events(limit: int = 50, level: Optional[str] = None) -> List[Dict
     return list(reversed(events[-limit:]))
 
 
-def clear_events() -> None:
-    """Clear all debug events."""
-    _write_events([])
+def clear_events() -> bool:
+    """Clear all debug events. Returns whether that worked."""
+    return _write_events([])
 
 
 # ─── Processing Stats (BlobLogProcessor run history) ─────────────────────────

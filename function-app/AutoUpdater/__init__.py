@@ -32,11 +32,9 @@ def main(timer: func.TimerRequest) -> None:
     # new build breaks and Function-level logging looks weird afterwards.
     try:
         log_event(
-            "auto_update_run",
-            action=action,
-            local_version=result.get("local_version"),
-            remote_version=result.get("remote_version"),
-            message=result.get("message", ""),
+            "info", "AutoUpdater", f"Auto-update run: {action}",
+            {"action": action, "local_version": result.get("local_version"),
+             "remote_version": result.get("remote_version"), "message": result.get("message", "")},
         )
     except Exception as e:
         logger.warning("Could not audit-log AutoUpdater run: %s", e)
@@ -56,10 +54,10 @@ def main(timer: func.TimerRequest) -> None:
                 health = _post_deploy_health_check(func_app_name)
                 try:
                     log_event(
-                        "auto_update_health_check",
-                        healthy=health.get("healthy"),
-                        checks=health.get("checks"),
-                        deployed_version=result.get("remote_version"),
+                        "info" if health.get("healthy") else "error", "AutoUpdater",
+                        "Post-update health check " + ("passed" if health.get("healthy") else "FAILED"),
+                        {"healthy": health.get("healthy"), "checks": health.get("checks"),
+                         "deployed_version": result.get("remote_version")},
                     )
                 except Exception:
                     pass

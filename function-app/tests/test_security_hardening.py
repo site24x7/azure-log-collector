@@ -100,3 +100,24 @@ def test_saved_logtype_config_has_no_device_key():
     with patch.object(config_store, "_write_blob", return_value=True) as write:
         assert config_store.save_logtype_config("AuditEvent", {"logType": "x", "apiKey": "secret-key"})
     assert "secret-key" not in write.call_args.args[1]
+
+
+def test_masking_pattern_without_groups_masks_the_whole_match():
+    import re as _re
+    from shared.site24x7_client import _apply_masking
+    line = {"msg": "card 4111111111111111 ok"}
+    _apply_masking(line, {"msg": {"regex": _re.compile(r"\d{16}"), "string": "****"}})
+    assert line["msg"] == "card **** ok"
+
+
+def test_broken_masking_or_hashing_rule_withholds_the_field():
+    from shared.site24x7_client import _apply_hashing, _apply_masking
+    broken = MagicMock()
+    broken.finditer.side_effect = RuntimeError("catastrophic backtracking guard")
+    broken.groups = 1
+    line = {"secret": "hunter2"}
+    _apply_masking(line, {"secret": {"regex": broken, "string": "[masked]"}})
+    assert line["secret"] == "[masked]"
+    line = {"secret": "hunter2"}
+    _apply_hashing(line, {"secret": {"regex": broken}})
+    assert "hunter2" not in line["secret"] and len(line["secret"]) == 64

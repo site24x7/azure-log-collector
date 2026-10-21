@@ -38,9 +38,15 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             get_configured_resources,
         )
 
-        # Handle clear request
+        # Clearing deletes troubleshooting evidence: POST only (a GET link or a
+        # link checker must never do it), and say so when the write failed.
         if req.params.get("clear") == "1":
-            clear_events()
+            if req.method != "POST":
+                return func.HttpResponse(json.dumps({"error": "Use POST to clear debug events"}),
+                                         mimetype="application/json", status_code=405)
+            if not clear_events():
+                return func.HttpResponse(json.dumps({"error": "Failed to clear debug events"}),
+                                         mimetype="application/json", status_code=500)
             return func.HttpResponse(
                 json.dumps({"status": "ok", "message": "Debug events cleared"}),
                 mimetype="application/json",

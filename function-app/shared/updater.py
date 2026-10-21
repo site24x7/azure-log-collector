@@ -316,13 +316,17 @@ def _release_too_young(published_at: str, min_age_minutes: int) -> bool:
     return age < min_age_minutes
 
 
-def validate_zip_package(zip_path: str) -> Tuple[bool, str]:
+def validate_zip_package(zip_path: str, expected_version: Optional[str] = None) -> Tuple[bool, str]:
     """Validate a downloaded update zip before deploying it.
 
     Refuses anything with:
       - syntax errors in any .py file
       - invalid JSON in host.json / function.json
       - missing critical files (host.json, VERSION, AutoUpdater, shared/updater.py)
+
+    With ``expected_version`` the package's VERSION must equal it: the
+    manifest's version is what the downgrade check compared, so a manifest
+    advertising a newer version cannot ship an older package.
 
     Returns ``(ok, reason)``. ``reason`` is empty on success.
     """
@@ -398,6 +402,8 @@ def validate_zip_package(zip_path: str) -> Tuple[bool, str]:
                 v = zf.read(version_path).decode("utf-8").strip()
                 if not v or len(v) > 64:
                     return False, "VERSION file empty or absurdly long"
+                if expected_version and v.lstrip("v") != expected_version.strip().lstrip("v"):
+                    return False, f"package VERSION {v} does not match the advertised {expected_version}"
             except Exception as e:
                 return False, f"cannot read VERSION: {e}"
 
@@ -462,7 +468,8 @@ def _post_deploy_health_check(func_app_name: str, checks: int = 3,
     return {"healthy": False, "checks": results, "url": url}
 
 
-def deploy_update(package_url: str, expected_sha256: Optional[str] = None) -> Dict:
+def deploy_update(package_url: str, expected_sha256: Optional[str] = None,
+                  expected_version: Optional[str] = None) -> Dict:
     """Download the package and deploy it to this Function App.
 
     The customer-facing one-click ARM template deploys the Function App with
@@ -532,7 +539,7 @@ def deploy_update(package_url: str, expected_sha256: Optional[str] = None) -> Di
 
         # ── Gate 3: never deploy a zip that won't import / parse.
         # This is what prevents AutoUpdater from bricking itself.
-        ok, reason = validate_zip_package(tmp_path)
+        ok, reason = validate_zip_package(tmp_path, expected_version=expected_version)
         if not ok:
             logger.error("Refusing to deploy — package validation failed: %s", reason)
             return {
@@ -744,7 +751,8 @@ def check_and_apply_update(auto_apply: bool = False) -> Dict:
     if has_update and auto_apply:
         logger.info(f"Applying update: {local_ver} → {remote_ver}")
         deploy_result = deploy_update(
-            remote_info["package_url"], expected_sha256=remote_info.get("sha256")
+            remote_info["package_url"], expected_sha256=remote_info.get("sha256"),
+            expected_version=remote_ver,
         )
         result["deploy_result"] = deploy_result
         result["action"] = "deployed" if deploy_result["success"] else "deploy_failed"

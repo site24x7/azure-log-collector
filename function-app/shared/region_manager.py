@@ -554,14 +554,17 @@ class RegionManager:
         active_regions: Set[str],
         provisioned_map: Dict[str, str],
         suffix: str,
+        allow_remove: bool = True,
     ) -> Dict:
         """Add/remove per-region storage accounts to match active regions.
 
+        ``allow_remove=False`` (an incomplete discovery) only adds: a region
+        that merely failed to list must not lose its storage account.
         Returns a summary dict with ``added``, ``removed``, and ``errors``.
         """
         provisioned_regions = set(provisioned_map.keys())
         to_add = active_regions - provisioned_regions
-        to_remove = provisioned_regions - active_regions
+        to_remove = provisioned_regions - active_regions if allow_remove else set()
 
         summary: Dict = {"added": [], "removed": [], "errors": []}
 

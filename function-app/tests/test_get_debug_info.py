@@ -40,10 +40,10 @@ import azure.functions as func
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
 
-def _make_req(params=None):
+def _make_req(params=None, method="GET"):
     """Create a mock HTTP request with query params."""
     return func.HttpRequest(
-        method="GET",
+        method=method,
         url="/api/debug",
         params=params or {},
         body=b"",
@@ -123,11 +123,20 @@ class TestGetDebugInfo:
     @mock.patch(f"{_DL}.clear_events")
     def test_clear_events(self, mock_clear):
         from GetDebugInfo import main
-        resp = main(_make_req({"clear": "1"}))
+        mock_clear.return_value = True
+        resp = main(_make_req({"clear": "1"}, method="POST"))
         assert resp.status_code == 200
         data = json.loads(resp.get_body())
         assert data["status"] == "ok"
         mock_clear.assert_called_once()
+
+    @mock.patch(f"{_DL}.clear_events")
+    def test_clear_needs_post_and_reports_a_failed_write(self, mock_clear):
+        from GetDebugInfo import main
+        assert main(_make_req({"clear": "1"})).status_code == 405
+        mock_clear.assert_not_called()
+        mock_clear.return_value = False
+        assert main(_make_req({"clear": "1"}, method="POST")).status_code == 500
 
     @mock.patch(f"{_CS}.get_configured_resources", return_value={})
     @mock.patch(f"{_CS}.get_disabled_log_types", return_value=[])

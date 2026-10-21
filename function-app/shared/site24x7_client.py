@@ -833,65 +833,55 @@ def _is_filters_matched(formatted_line: Dict, config: Dict) -> bool:
     return True
 
 
-def _apply_masking(formatted_line: Dict, masking_config: Dict) -> int:
+def _replace_matches(value: str, regex, replace) -> str:
+    """Replace each capture group of every match (the whole match when the
+    pattern has no groups) with ``replace(matched_text)``."""
+    groups = range(1, regex.groups + 1) if regex.groups else (0,)
+    spans = []
+    for matcher in regex.finditer(value):
+        for g in groups:
+            if matcher.group(g):
+                spans.append((matcher.start(g), matcher.end(g)))
+    for start, end in sorted(set(spans), reverse=True):
+        value = value[:start] + replace(value[start:end]) + value[end:]
+    return value
+
+
+def _transform_fields(formatted_line: Dict, rules: Dict, replace, fallback) -> int:
+    """Apply masking/hashing rules field by field. Fails closed: if a rule
+    cannot be applied, the whole field is replaced by ``fallback(value)`` so the
+    original value is never sent. Returns the size change (old - new)."""
     adjust_total = 0
-    try:
-        for config_key in masking_config:
-            adjust_length = 0
-            mask_regex = masking_config[config_key]["regex"]
-            if config_key in formatted_line:
-                field_value = str(formatted_line[config_key])
-                for matcher in re.finditer(mask_regex, field_value):
-                    for i in range(mask_regex.groups):
-                        matched_value = matcher.group(i + 1)
-                        if matched_value:
-                            start = matcher.start(i + 1) - adjust_length
-                            end = matcher.end(i + 1) - adjust_length
-                            if start >= 0 and end > 0:
-                                adjust_length += (end - start) - len(
-                                    masking_config[config_key]["string"]
-                                )
-                                field_value = (
-                                    field_value[:start]
-                                    + masking_config[config_key]["string"]
-                                    + field_value[end:]
-                                )
-                formatted_line[config_key] = field_value
-                adjust_total += adjust_length
-    except Exception:
-        traceback.print_exc()
+    for field, rule in rules.items():
+        if field not in formatted_line:
+            continue
+        original = str(formatted_line[field])
+        try:
+            transformed = _replace_matches(original, rule["regex"], lambda text: replace(rule, text))
+        except Exception as e:
+            logger.warning("Masking/hashing rule for field %s failed (%s); field withheld",
+                           field, type(e).__name__)
+            transformed = fallback(rule, original)
+        formatted_line[field] = transformed
+        adjust_total += len(original) - len(transformed)
     return adjust_total
+
+
+def _apply_masking(formatted_line: Dict, masking_config: Dict) -> int:
+    return _transform_fields(
+        formatted_line, masking_config,
+        replace=lambda rule, text: str(rule.get("string", "")),
+        fallback=lambda rule, text: str(rule.get("string", "")) if isinstance(rule, dict) else "",
+    )
 
 
 def _apply_hashing(formatted_line: Dict, hashing_config: Dict) -> int:
-    adjust_total = 0
-    try:
-        for config_key in hashing_config:
-            adjust_length = 0
-            mask_regex = hashing_config[config_key]["regex"]
-            if config_key in formatted_line:
-                field_value = str(formatted_line[config_key])
-                for matcher in re.finditer(mask_regex, field_value):
-                    for i in range(mask_regex.groups):
-                        matched_value = matcher.group(i + 1)
-                        if matched_value:
-                            start = matcher.start(i + 1) - adjust_length
-                            end = matcher.end(i + 1) - adjust_length
-                            if start >= 0 and end > 0:
-                                hash_string = hashlib.sha256(
-                                    matched_value.encode("utf-8")
-                                ).hexdigest()
-                                adjust_length += (end - start) - len(hash_string)
-                                field_value = (
-                                    field_value[:start]
-                                    + hash_string
-                                    + field_value[end:]
-                                )
-                formatted_line[config_key] = field_value
-                adjust_total += adjust_length
-    except Exception:
-        traceback.print_exc()
-    return adjust_total
+    sha = lambda text: hashlib.sha256(text.encode("utf-8")).hexdigest()  # noqa: E731
+    return _transform_fields(
+        formatted_line, hashing_config,
+        replace=lambda rule, text: sha(text),
+        fallback=lambda rule, text: sha(text),
+    )
 
 
 def _apply_derived_fields(

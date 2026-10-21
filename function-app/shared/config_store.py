@@ -372,16 +372,26 @@ def get_all_logtype_configs() -> Dict[str, Dict]:
 # ─── Disabled Log Types ──────────────────────────────────────────────────────
 
 
-def get_disabled_log_types() -> List[str]:
-    """Get list of disabled log type categories."""
+def get_disabled_log_types(strict: bool = False) -> List[str]:
+    """Get list of disabled log type categories.
+
+    With ``strict`` a read failure or corrupt list raises instead of looking
+    like "nothing disabled" (the processor would then send disabled logs).
+    """
     _expire_cache()
     if _cache["disabled_types"] is not None:
         return list(_cache["disabled_types"])
 
-    data = _read_blob(DISABLED_TYPES_BLOB)
+    data = _read_blob(DISABLED_TYPES_BLOB, strict=True) if strict else _read_blob(DISABLED_TYPES_BLOB)
     if data:
-        _cache["disabled_types"] = json.loads(data)
-        return list(_cache["disabled_types"])
+        disabled = json.loads(data)
+        if not isinstance(disabled, list):
+            if strict:
+                raise ValueError("disabled log types is not a list")
+            return []
+        _cache["disabled_types"] = disabled
+        return list(disabled)
+    _cache["disabled_types"] = []
     return []
 
 

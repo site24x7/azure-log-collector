@@ -193,6 +193,8 @@ def proc_env(monkeypatch, tmp_path):
     monkeypatch.setenv("RESOURCE_GROUP_NAME", "rg-test")
     monkeypatch.setenv("PROCESSING_ENABLED", "true")
     monkeypatch.setenv("AzureWebJobsStorage", "")  # disables checkpoint persistence
+    # No configuration storage here: the run's strict read of the disabled list is stubbed.
+    monkeypatch.setattr("shared.config_store.get_disabled_log_types", lambda strict=False: [])
 
 
 def _patched_run(proc_env, blob_specs, all_configs=None,
@@ -552,3 +554,17 @@ class TestDisabledEntraCategories:
         from BlobLogProcessor import _disabled_entra_categories
         with patch("shared.config_store.get_entra_logtype_states", side_effect=RuntimeError("down")):
             assert _disabled_entra_categories() is None
+
+
+
+def test_unreadable_disabled_list_skips_the_run(monkeypatch):
+    """Disabled categories must not be sent because their list could not be read."""
+    from BlobLogProcessor import _process_all_regions
+    monkeypatch.setenv("SUBSCRIPTION_IDS", "sub-1")
+
+    def unreadable(strict=False):
+        raise RuntimeError("throttled")
+    monkeypatch.setattr("shared.config_store.get_disabled_log_types", unreadable)
+    with patch("BlobLogProcessor.DefaultAzureCredential") as cred:
+        _process_all_regions()
+    cred.assert_not_called()   # stopped before touching any storage account

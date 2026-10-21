@@ -199,6 +199,15 @@ def run_scan():
     _update_phase(2)
     phase_start = _time.monotonic()
     all_resources = azure_mgr.get_all_resources(subscription_ids)
+    # A partial discovery must never remove settings or storage of resources it
+    # merely failed to see (a throttled subscription, a failed support check).
+    discovery_complete = azure_mgr.discovery_complete
+    if not discovery_complete:
+        logging.warning("DiagSettingsManager: discovery incomplete (%s) — nothing will be removed this scan",
+                        "; ".join(azure_mgr.discovery_errors[:5]))
+        _log_event("warning", "DiagSettingsManager",
+                   "Resource discovery was incomplete; settings and storage are not removed this scan",
+                   {"errors": azure_mgr.discovery_errors[:20]})
     logging.info("DiagSettingsManager: Phase 2 (discovery) — %d resources in %.1fs [total=%.1fs]",
                  len(all_resources), _time.monotonic() - phase_start, _elapsed())
     phase_timings["phase2_discovery"] = round(_time.monotonic() - phase_start, 1)
@@ -252,7 +261,8 @@ def run_scan():
     active_regions = region_mgr.get_active_regions(active_resources)
     provisioned_regions = region_mgr.get_provisioned_regions(resource_group)
     reconcile_result = region_mgr.reconcile_regions(
-        resource_group, active_regions, provisioned_regions, diag_storage_suffix
+        resource_group, active_regions, provisioned_regions, diag_storage_suffix,
+        allow_remove=discovery_complete,
     )
     provisioned_regions = region_mgr.get_provisioned_regions(resource_group)
     logging.info(
@@ -908,7 +918,9 @@ def run_scan():
 
     # ── Cleanup: remove settings for ignored/deleted resources ──
     elapsed_total = _time.monotonic() - _scan_start_mono
-    if elapsed_total > MAX_SCAN_SECONDS:
+    if not discovery_complete:
+        logging.warning("DiagSettingsManager: Skipping cleanup — resource discovery was incomplete.")
+    elif elapsed_total > MAX_SCAN_SECONDS:
         logging.warning(
             "DiagSettingsManager: Skipping cleanup — already %.0fs elapsed (max %ds). "
             "Will clean up on next scan.",
@@ -972,6 +984,7 @@ def run_scan():
         "entra_target_storage_account_name": entra_target_sa.get("name", ""),
         "entra_target_subscription_name": entra_target_sub_name,
         "review_pending": False,
+        "discovery_errors": len(azure_mgr.discovery_errors),
         "in_progress": False,
     }
     # The scan state blob is the record of the last scan. Never write an app

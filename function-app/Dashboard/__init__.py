@@ -1565,7 +1565,7 @@ async function clearDebugEvents() {
   if (!confirm('Clear all debug events? This cannot be undone.')) return;
   setLoading('btnClearEvents', true);
   try {
-    await api('debug?clear=1');
+    await api('debug?clear=1', { method: 'POST' });
     _debugData = null;
     _debugLoaded = false;
     loadDebugInfo(false);
