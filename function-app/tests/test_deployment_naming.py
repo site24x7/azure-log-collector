@@ -15,8 +15,17 @@ ROOT = Path(__file__).parents[2]
 
 @pytest.mark.parametrize('region', ['eastus', 'centralindia', 'australiasoutheast'])
 def test_legacy_region_names_unchanged(region):
-    assert _storage_account_name(region, 'qt4xn2') == f's247diag{region}qt4xn2'[:24]
+    # Names that fit are unchanged; earlier versions' cut-off names stay recognised.
+    from shared.storage_names import legacy_regional_storage_name
+    assert legacy_regional_storage_name(region, 'qt4xn2') == f's247diag{region}qt4xn2'[:24]
+    if len(f's247diag{region}qt4xn2') <= 24:
+        assert _storage_account_name(region, 'qt4xn2') == f's247diag{region}qt4xn2'
     assert _tenant_storage_name('qt4xn2') == 's247diagtenantqt4xn2'
+
+
+def test_short_suffix_is_never_cut_off_in_long_regions():
+    names = {_storage_account_name('switzerlandnorth', s) for s in ('alpha', 'beta')}
+    assert len(names) == 2 and all(len(n) <= 24 for n in names)
 
 
 def test_long_suffix_keeps_distinct_regions_and_full_suffix(monkeypatch):

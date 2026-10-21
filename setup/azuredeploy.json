@@ -229,7 +229,8 @@
               "tags": {
                 "managed-by": "s247-diag-logs",
                 "purpose": "diag-logs-regional",
-                "region": "[parameters('location')]"
+                "region": "[parameters('location')]",
+                "s247-collector": "[toLower(parameters('functionAppName'))]"
               }
             },
             {

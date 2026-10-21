@@ -208,6 +208,21 @@ class AzureManager:
                     raise
             return None
 
+    def _foreign_setting(self, resource_id: str, setting_name: str) -> Optional[bool]:
+        """Whether a setting with this name exists but is not this collector's:
+        it sends somewhere other than a storage account in the collector's own
+        resource group (a customer or another tool reused the name). None when
+        the lookup failed, False when there is none or it is ours."""
+        try:
+            existing = self.get_diagnostic_setting(resource_id, setting_name, raise_errors=True)
+        except Exception:
+            return None
+        if not existing:
+            return False
+        own_rg = os.environ.get("RESOURCE_GROUP_NAME", os.environ.get("RESOURCE_GROUP", "s247-diag-logs-rg"))
+        destination = (existing.get("storage_account_id") or "").lower()
+        return f"/resourcegroups/{own_rg.lower()}/providers/microsoft.storage/" not in destination
+
     def create_diagnostic_setting(
         self,
         resource_id: str,
@@ -224,6 +239,12 @@ class AzureManager:
         setting_name = setting_name or collector_setting_name()
         sub_id = _extract_subscription_id(resource_id)
         if not sub_id:
+            return False
+        # Never take over a setting of the same name that someone else made.
+        foreign = self._foreign_setting(resource_id, setting_name)
+        if foreign is not False:
+            logger.error("Not writing '%s' on %s: %s", setting_name, resource_id,
+                         "lookup failed" if foreign is None else "a setting with this name sends elsewhere")
             return False
 
         try:
@@ -261,11 +282,20 @@ class AzureManager:
         resource_id: str,
         setting_name: Optional[str] = None,
     ) -> bool:
-        """Delete this collector's diagnostic setting (or ``setting_name``) from a resource."""
+        """Delete this collector's diagnostic setting (or ``setting_name``) from a resource.
+
+        A setting of that name that sends elsewhere is not this collector's and
+        is left in place (returns True: nothing of ours is there)."""
         setting_name = setting_name or collector_setting_name()
         sub_id = _extract_subscription_id(resource_id)
         if not sub_id:
             return False
+        foreign = self._foreign_setting(resource_id, setting_name)
+        if foreign is None:
+            return False
+        if foreign:
+            logger.warning("Leaving '%s' on %s: it sends elsewhere, not to this collector", setting_name, resource_id)
+            return True
 
         try:
             client = self._get_monitor_client(sub_id)
@@ -297,7 +327,9 @@ class AzureManager:
         if collector_setting_name() == LEGACY_SETTING_NAME or not own_storage_name:
             return None
         legacy = self.get_diagnostic_setting(resource_id, LEGACY_SETTING_NAME, raise_errors=raise_errors)
-        if not legacy or _storage_name(legacy.get("storage_account_id", "")) != own_storage_name.lower():
+        own_names = {own_storage_name.lower()} if isinstance(own_storage_name, str) else \
+            {n.lower() for n in own_storage_name}
+        if not legacy or _storage_name(legacy.get("storage_account_id", "")) not in own_names:
             return None
         return self.delete_diagnostic_setting(resource_id, LEGACY_SETTING_NAME)
 
@@ -409,7 +441,7 @@ class AzureManager:
         a record the regional name this collector would use is assumed.
         Returns a summary dict with counts.
         """
-        from shared.storage_names import regional_storage_name
+        from shared.storage_names import legacy_regional_storage_name, regional_storage_name
 
         summary: Dict[str, Any] = {"removed": 0, "skipped": 0, "errors": 0, "unresolved": 0,
                                    "details": [], "resolved_ids": []}
@@ -431,7 +463,8 @@ class AzureManager:
                 own = record.get("storage_account", "")
                 if suffix and not own and resource.get("location"):
                     try:
-                        own = regional_storage_name(resource["location"], suffix, seed)
+                        own = {regional_storage_name(resource["location"], suffix, seed),
+                               legacy_regional_storage_name(resource["location"], suffix, seed)}
                     except ValueError:
                         own = ""
                 legacy = self.remove_legacy_setting_if_own(resource_id, own, raise_errors=True)

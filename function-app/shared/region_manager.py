@@ -15,7 +15,7 @@ from azure.identity import DefaultAzureCredential
 from azure.mgmt.storage import StorageManagementClient
 from azure.mgmt.resource import ResourceManagementClient
 from azure.core.exceptions import ResourceNotFoundError
-from shared.storage_names import regional_storage_name, tenant_storage_name
+from shared.storage_names import legacy_regional_storage_name, regional_storage_name, tenant_storage_name
 
 # ManagementLockClient may not be available in all azure-mgmt-resource versions
 try:
@@ -83,6 +83,49 @@ def _tenant_storage_name(suffix: str) -> str:
     return tenant_storage_name(_sanitize_region(suffix))
 
 
+# Every storage account records the collector that created it, so collectors
+# sharing a resource group never read, adopt or delete each other's accounts.
+COLLECTOR_TAG = "s247-collector"
+REGIONAL_PURPOSE = "diag-logs-regional"
+
+
+def collector_id() -> str:
+    """This collector's identity on its storage accounts: the Function App name."""
+    return os.environ.get("WEBSITE_SITE_NAME", "").strip().lower()
+
+
+def _expected_names(purpose: str, region: str, suffix: str) -> set:
+    seed = os.environ.get("DIAG_SEED_REGION", "")
+    try:
+        if purpose == REGIONAL_PURPOSE:
+            return {regional_storage_name(region, suffix, seed), legacy_regional_storage_name(region, suffix, seed)}
+        return {tenant_storage_name(_sanitize_region(suffix))}
+    except ValueError:
+        return set()
+
+
+def is_own_account(name: str, tags: Optional[Dict], purpose: str, region: str,
+                   suffix: Optional[str] = None) -> bool:
+    """Whether a storage account belongs to this collector.
+
+    Tagged accounts belong to the collector named in ``s247-collector``.
+    Accounts created before that tag belong to this collector only when their
+    name is one this collector generates (any untagged account, for installs
+    without a suffix, which predate several collectors per group).
+    """
+    tags = tags or {}
+    if tags.get("managed-by") != "s247-diag-logs" or tags.get("purpose") != purpose:
+        return False
+    owner = (tags.get(COLLECTOR_TAG) or "").strip().lower()
+    if owner:
+        return owner == collector_id() != ""
+    if suffix is None:
+        suffix = os.environ.get("DIAG_STORAGE_SUFFIX", "")
+    if not suffix:
+        return True
+    return name.lower() in _expected_names(purpose, region, suffix)
+
+
 def _check_storage_name(client, resource_group: str, name: str, region: str) -> None:
     """Fail before creation on unavailable names or unreadable ownership."""
     availability = client.storage_accounts.check_name_availability(
@@ -96,7 +139,9 @@ def _check_storage_name(client, resource_group: str, name: str, region: str) -> 
                 f"Storage name '{name}' is unavailable globally. For a fresh install, "
                 "choose another deploymentSuffix/DEPLOYMENT_SUFFIX; do not change a live collector's suffix."
             ) from error
-        if (existing.tags or {}).get("managed-by") != "s247-diag-logs":
+        tags = existing.tags or {}
+        owner = (tags.get(COLLECTOR_TAG) or "").strip().lower()
+        if tags.get("managed-by") != "s247-diag-logs" or (owner and owner != collector_id()):
             raise RuntimeError(f"Storage account '{name}' is not owned by this collector")
         if _sanitize_region(existing.primary_location or "") != _sanitize_region(region):
             raise RuntimeError(f"Storage account '{name}' already exists in a different region")
@@ -149,10 +194,11 @@ class RegionManager:
                 self.credential, self.subscription_id
             )
             for acct in client.storage_accounts.list_by_resource_group(resource_group):
-                tags = acct.tags or {}
-                if tags.get("managed-by") == "s247-diag-logs" and tags.get("purpose") == "diag-logs-regional":
-                    if acct.primary_location:
-                        candidates.setdefault(acct.primary_location.lower(), []).append(acct.name)
+                if not acct.primary_location or not is_own_account(
+                        acct.name, acct.tags, REGIONAL_PURPOSE, acct.primary_location, suffix):
+                    continue  # another collector's, or not ours at all
+                self._adopt(client, resource_group, acct)
+                candidates.setdefault(acct.primary_location.lower(), []).append(acct.name)
             for region, names in candidates.items():
                 try:
                     own = _storage_account_name(region, suffix) if suffix else ""
@@ -173,6 +219,18 @@ class RegionManager:
                 f"Failed to list storage accounts in '{resource_group}': {e}"
             )
         return region_map
+
+    def _adopt(self, client, resource_group: str, acct) -> None:
+        """Record this collector on an own account created before the tag."""
+        me = collector_id()
+        tags = dict(acct.tags or {})
+        if not me or tags.get(COLLECTOR_TAG):
+            return
+        tags[COLLECTOR_TAG] = me
+        try:
+            client.storage_accounts.update(resource_group, acct.name, {"tags": tags})
+        except Exception as e:
+            logger.warning("Could not tag storage account %s with its collector: %s", acct.name, type(e).__name__)
 
     def get_subscription_name(self, subscription_id: str) -> str:
         """Resolve a subscription's display name (as shown in the Azure portal).
@@ -209,9 +267,8 @@ class RegionManager:
         try:
             client = StorageManagementClient(self.credential, self.subscription_id)
             for acct in client.storage_accounts.list_by_resource_group(resource_group):
-                tags = acct.tags or {}
-                if tags.get("managed-by") == "s247-diag-logs" and \
-                        tags.get("purpose") == TENANT_STORAGE_PURPOSE:
+                if is_own_account(acct.name, acct.tags, TENANT_STORAGE_PURPOSE, acct.primary_location or ""):
+                    self._adopt(client, resource_group, acct)
                     sa_id = (
                         f"/subscriptions/{self.subscription_id}/resourceGroups/{resource_group}"
                         f"/providers/Microsoft.Storage/storageAccounts/{acct.name}"
@@ -255,6 +312,7 @@ class RegionManager:
                     "tags": {
                         "managed-by": "s247-diag-logs",
                         "purpose": TENANT_STORAGE_PURPOSE,
+                        COLLECTOR_TAG: collector_id(),
                     },
                 },
             )
@@ -343,8 +401,9 @@ class RegionManager:
                     },
                     "tags": {
                         "managed-by": "s247-diag-logs",
-                        "purpose": "diag-logs-regional",
+                        "purpose": REGIONAL_PURPOSE,
                         "region": region,
+                        COLLECTOR_TAG: collector_id(),
                     },
                 },
             )

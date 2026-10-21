@@ -144,10 +144,13 @@ def _process_all_regions():
 
     storage_mgmt = StorageManagementClient(credential, subscription_id)
     regional_accounts = []
+    from shared.region_manager import is_own_account
     for acct in storage_mgmt.storage_accounts.list_by_resource_group(resource_group):
-        tags = acct.tags or {}
-        if tags.get("managed-by") == "s247-diag-logs" and \
-                tags.get("purpose") in ("diag-logs-regional", "diag-logs-tenant"):
+        purpose = (acct.tags or {}).get("purpose", "")
+        # Only this collector's accounts: another collector sharing the group
+        # sends with its own Device Key.
+        if purpose in ("diag-logs-regional", "diag-logs-tenant") and \
+                is_own_account(acct.name, acct.tags, purpose, acct.primary_location or ""):
             regional_accounts.append(acct)
 
     if not regional_accounts:

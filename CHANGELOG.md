@@ -36,6 +36,17 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
   when the new version confirms on its first run (`update_state` in
   `/api/status`).
 
+- Storage accounts carry an `s247-collector` tag naming the collector that
+  created them. Collectors sharing a resource group no longer read, adopt or
+  delete each other's accounts; accounts created before the tag are
+  recognised by the name this collector generates, and tagged on the next scan.
+- A diagnostic setting with this collector's name that sends somewhere other
+  than the collector's own resource group is someone else's: it is never
+  overwritten or deleted.
+- Regional storage names no longer cut a short suffix off in long region names
+  (`switzerlandnorth` + `alpha` / `beta` gave the same name); names created by
+  earlier versions are still recognised.
+
 ### Fixed
 - Saving an include-tag exclusion (e.g. `env=prod`) removed the diagnostic
   settings of every configured resource, including the ones carrying the tag.
