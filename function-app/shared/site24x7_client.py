@@ -163,16 +163,21 @@ class CircuitBreaker:
             pass
 
     def record_success(self):
-        prev = self.state
+        prev_state, prev_failures = self.state, self.failure_count
         self.failure_count = 0
         self.state = "closed"
-        if prev != "closed":
+        if prev_state != "closed":
             logger.info("Circuit breaker CLOSED — S247 recovered")
+        if prev_state != "closed" or prev_failures:
             self._save_state()
 
     def record_failure(self):
         self.failure_count += 1
         self.last_failure_time = time.time()
+        if self.failure_count < self.failure_threshold or self.state == "open":
+            # Saved every time: a run with fewer failures than the threshold
+            # would otherwise start the next run from zero, and never trip.
+            self._save_state()
         if self.failure_count >= self.failure_threshold and self.state != "open":
             self.state = "open"
             logger.warning(
@@ -616,6 +621,8 @@ class Site24x7Client:
 
     # ─── Log Upload (from log_sender.py) ─────────────────────────────────
 
+    last_unparsed = 0
+
     def post_logs(self, source_config_b64: str, log_events: List[Dict]) -> bool:
         """Parse and POST logs to Site24x7 using the log_sender.py flow.
 
@@ -673,6 +680,8 @@ class Site24x7Client:
             parsed_lines, log_size = _json_log_parser(
                 log_events, config, masking_config, hashing_config, derived_fields
             )
+            # Reported to the processor as dropped (they will never be sent).
+            self.last_unparsed = _json_log_parser.unparsed
 
             if not parsed_lines:
                 logger.info("No parsed lines to upload after filtering")
@@ -758,13 +767,15 @@ def _parse_iso_timestamp(datetime_string) -> Optional[datetime.datetime]:
 def _get_timestamp(datetime_string: str, format_string: str) -> int:
     """Epoch millis, or 0 when the value cannot be parsed (caller must not send 0)."""
     try:
-        try:
-            datetime_data = datetime.datetime.strptime(
-                datetime_string[:26], format_string
-            )
-        except (TypeError, ValueError):
-            datetime_data = _parse_iso_timestamp(datetime_string)
-            if datetime_data is None:
+        # ISO 8601 first, with its offset: cutting the string to 26 characters
+        # for strptime dropped "+05:30" and read local time as UTC.
+        datetime_data = _parse_iso_timestamp(datetime_string)
+        if datetime_data is None:
+            try:
+                datetime_data = datetime.datetime.strptime(
+                    datetime_string[:26], format_string
+                )
+            except (TypeError, ValueError):
                 return 0
         timestamp = (
             calendar.timegm(datetime_data.utctimetuple()) * 1000
@@ -911,9 +922,13 @@ def _json_log_parser(
     hashing_config: Optional[Dict],
     derived_fields: Optional[Dict],
 ) -> Tuple[List[Dict], int]:
-    """Parse raw Azure diagnostic log events using jsonPath config."""
+    """Parse raw Azure diagnostic log events using jsonPath config.
+
+    Events that cannot be parsed are counted in ``_json_log_parser.unparsed``
+    of the last call (they are skipped: a retry cannot fix them)."""
     log_size = 0
     parsed_lines = []
+    _json_log_parser.unparsed = 0
     date_format = config.get("dateFormat", "%Y-%m-%dT%H:%M:%S.%f")
     date_field = config.get("dateField", "time")
     # The log source in AppLogs is this collector's Function App, so the logs
@@ -970,6 +985,7 @@ def _json_log_parser(
         except Exception as e:
             # Never log the record itself: it is customer data, not yet masked.
             logger.warning("Unable to parse event (%s)", type(e).__name__)
+            _json_log_parser.unparsed += 1
 
     return parsed_lines, log_size
 

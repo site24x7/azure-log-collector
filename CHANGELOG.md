@@ -47,6 +47,17 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
   (`switzerlandnorth` + `alpha` / `beta` gave the same name); names created by
   earlier versions are still recognised.
 
+- Log pipeline: uploads go in order and stop at the first failed batch, and
+  append blobs checkpoint exactly past what was sent, so a partial failure no
+  longer re-sends records that arrived; uploads also stop at the run's deadline
+  and are capped at about 4 MB per batch. A quiet block blob (no change for
+  90 minutes) has its last block read too (it used to be lost); a backlog over
+  50 MB is read in bounded steps instead of stalling; oversized blobs and
+  blocks are recorded and skipped. Records that cannot be parsed count as
+  dropped. Checkpoint clean-up survives the merge on save; circuit-breaker
+  failures are saved between runs; timestamps with an offset (`+05:30`) are no
+  longer read as UTC.
+
 ### Fixed
 - Saving an include-tag exclusion (e.g. `env=prod`) removed the diagnostic
   settings of every configured resource, including the ones carrying the tag.

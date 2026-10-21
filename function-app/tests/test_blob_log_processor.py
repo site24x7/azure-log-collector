@@ -1,5 +1,6 @@
 """Tests for BlobLogProcessor block-list checkpointing and merge logic."""
 
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -568,3 +569,110 @@ def test_unreadable_disabled_list_skips_the_run(monkeypatch):
     with patch("BlobLogProcessor.DefaultAzureCredential") as cred:
         _process_all_regions()
     cred.assert_not_called()   # stopped before touching any storage account
+
+
+class TestReliabilityFixes:
+    KEY = "s247diagtest/insights-logs-test/PT1H.json"
+
+    def test_quiet_block_blob_is_read_to_the_last_block(self, proc_env):
+        payloads = [b'{"a":1}\n', b'{"a":2}\n', b'{"a":3}\n']
+        old = datetime.now(timezone.utc) - timedelta(hours=3)
+        calls, cps = _patched_run(proc_env, [("PT1H.json", payloads, old)])
+        assert sorted(r["a"] for r in calls[0].args[1]) == [1, 2, 3]
+        assert cps[self.KEY]["next_block"] == 3
+
+    def test_large_backlog_is_read_in_bounded_steps(self, proc_env, monkeypatch):
+        import BlobLogProcessor
+        payloads = [b'{"a":1}\n', b'{"a":2}\n', b'{"a":3}\n', b'{"a":4}\n']
+        monkeypatch.setattr(BlobLogProcessor, "MAX_READ_BYTES", len(payloads[0]) * 2)
+        old = datetime.now(timezone.utc) - timedelta(hours=3)
+        calls, cps = _patched_run(proc_env, [("PT1H.json", payloads, old)])
+        assert sorted(r["a"] for r in calls[0].args[1]) == [1, 2]     # first step only
+        assert cps[self.KEY]["next_block"] == 2
+        calls, cps = _patched_run(proc_env, [("PT1H.json", payloads, old)], initial_checkpoints=cps)
+        assert sorted(r["a"] for r in calls[0].args[1]) == [3, 4]
+        assert cps[self.KEY]["next_block"] == 4
+
+    def test_partial_append_upload_resends_only_what_failed(self, proc_env, monkeypatch):
+        import BlobLogProcessor
+        monkeypatch.setattr(BlobLogProcessor, "MAX_RECORDS_PER_BATCH", 1)
+        blocks = [b'{"a":1}\n', b'{"a":2}\n', b'{"a":3}\n']
+        lm = datetime(2026, 10, 14, tzinfo=timezone.utc)
+        results = iter([True, False])
+
+        with patch("shared.site24x7_client.Site24x7Client") as client_cls:
+            client_cls.return_value.post_logs.side_effect = lambda cfg, batch: next(results, True)
+            client_cls.return_value.last_unparsed = 0
+            calls, saved = _patched_run_with_client(proc_env, [("b.json", blocks, lm)], client_cls.return_value)
+        assert [c.args[1] for c in calls] == [[{"a": 1}], [{"a": 2}]]   # stopped at the failure
+        # Exactly past the first record (the reader skips the newline that follows next time).
+        assert saved[self.KEY.replace("PT1H.json", "b.json")]["next_byte"] == len(blocks[0].rstrip())
+
+    def test_deadline_stops_uploads_and_keeps_them_for_later(self):
+        from BlobLogProcessor import _upload_in_order
+        client = MagicMock()
+        stats = {"uploaded": 0, "general": 0, "dropped": 0, "retrying": 0, "batches_sent": 0,
+                 "error_blobs": [], "deadline": 0}
+        assert _upload_in_order(client, "cfg", [{"a": 1}], False, stats, "a", "c", "b") == 0
+        client.post_logs.assert_not_called()
+        assert stats["retrying"] == 1 and stats["time_budget_exhausted"] is True
+
+    def test_batches_are_capped_by_size_too(self, monkeypatch):
+        import BlobLogProcessor
+        monkeypatch.setattr(BlobLogProcessor, "MAX_BATCH_BYTES", 30)
+        records = [{"m": "x" * 10} for _ in range(5)]
+        assert [len(b) for b in BlobLogProcessor._batches(records)] == [1, 1, 1, 1, 1]
+
+    def test_unparseable_events_count_as_dropped(self):
+        from BlobLogProcessor import _upload_in_order
+        client = MagicMock()
+        client.post_logs.return_value = True
+        client.last_unparsed = 2
+        stats = {"uploaded": 0, "general": 0, "dropped": 0, "retrying": 0, "batches_sent": 0, "error_blobs": []}
+        _upload_in_order(client, "cfg", [{"a": 1}, {"a": 2}, {"a": 3}], False, stats, "a", "c", "b")
+        assert (stats["uploaded"], stats["dropped"], stats["retrying"]) == (1, 2, 0)
+
+    def test_checkpoint_gc_survives_the_merge(self, monkeypatch):
+        import BlobLogProcessor
+        stale = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+        remote = {"old/blob": {"next_block": 3, "last_seen": stale}}
+        blob_client = MagicMock()
+        service = MagicMock()
+        service.get_container_client.return_value.get_blob_client.return_value = blob_client
+        monkeypatch.setattr(BlobLogProcessor.BlobServiceClient, "from_connection_string", lambda c: service)
+        monkeypatch.setattr(BlobLogProcessor, "_load_checkpoints_with_etag", lambda c: (remote, "etag"))
+        BlobLogProcessor._save_checkpoints("conn", {"new/blob": {"next_block": 1, "last_seen": _now_iso()}})
+        written = json.loads(blob_client.upload_blob.call_args.args[0])
+        assert "old/blob" not in written and "new/blob" in written
+
+
+def _patched_run_with_client(proc_env, blob_specs, client):
+    with patch("shared.site24x7_client.Site24x7Client", return_value=client):
+        return _patched_run_append(proc_env, blob_specs, client)
+
+
+def _patched_run_append(proc_env, blob_specs, client):
+    """_patched_run for append blobs with a caller-supplied Site24x7 client."""
+    fake_blobs = []
+    for name, payloads, lm in blob_specs:
+        _, _, fbc = _build_blob(payloads)
+        fbc.blob_type = "AppendBlob"
+        fake_blobs.append((name, fbc, lm))
+    fake_service = MagicMock()
+    fake_service.list_containers.return_value = [{"name": "insights-logs-test"}]
+    fake_service.get_container_client.return_value = _FakeContainerClient(fake_blobs)
+    sa = SimpleNamespace(name="s247diagtest", primary_location="eastus",
+                         tags={"managed-by": "s247-diag-logs", "purpose": "diag-logs-regional"})
+    mgmt = MagicMock()
+    mgmt.storage_accounts.list_by_resource_group.return_value = [sa]
+    mgmt.storage_accounts.list_keys.return_value = SimpleNamespace(keys=[SimpleNamespace(value="key")])
+    saved = {}
+    with patch("BlobLogProcessor.DefaultAzureCredential"), \
+         patch("BlobLogProcessor.StorageManagementClient", return_value=mgmt), \
+         patch("BlobLogProcessor.BlobServiceClient.from_connection_string", return_value=fake_service), \
+         patch("BlobLogProcessor._save_checkpoints", side_effect=lambda c, cps: saved.update(cps)), \
+         patch("BlobLogProcessor._load_checkpoints", return_value={}), \
+         patch("shared.config_store.get_all_logtype_configs", return_value={"S247_test": {"x": 1}}), \
+         patch("shared.config_store.clear_cache"):
+        _process_all_regions()
+    return client.post_logs.call_args_list, saved

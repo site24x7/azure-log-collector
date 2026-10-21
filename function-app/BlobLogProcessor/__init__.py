@@ -54,6 +54,10 @@ TIME_BUDGET_RESERVE_SEC = 60
 BACKLOG_WARN_THRESHOLD = 500
 # Skip incremental reads larger than this to prevent OOM/timeout (50 MB)
 MAX_READ_BYTES = 50 * 1024 * 1024
+# A block blob not modified for this long is complete: its last block is read too.
+BLOCK_BLOB_QUIET_MINUTES = 90
+# Upper bound on one upload's uncompressed records, whatever their count.
+MAX_BATCH_BYTES = 4 * 1024 * 1024
 # Entra ID categories: switched off in their own state, not the disabled list.
 _ENTRA_NORMALIZED = frozenset(get_entra_normalized_categories())
 
@@ -173,6 +177,8 @@ def _process_all_regions():
         "time_budget_exhausted": False, "error_blobs": [],
     }
     run_start = time.monotonic()
+    # Uploads stop at this point so the run ends (and saves checkpoints) in time.
+    total_stats["deadline"] = run_start + 600 - TIME_BUDGET_RESERVE_SEC
 
     for acct in regional_accounts:
         acct_name = acct.name
@@ -309,8 +315,9 @@ def _process_all_regions():
                                         break
                                     consumed += step
                             else:
-                                data, records, consumed, skipped = _read_append_records(
-                                    blob_client, offset, min(size - offset, MAX_READ_BYTES))
+                                data, records, consumed, skipped, boundaries = _read_append_records(
+                                    blob_client, offset, min(size - offset, MAX_READ_BYTES),
+                                    with_boundaries=True)
                                 total_stats["bytes_read"] += len(data)
                                 if skipped:
                                     total_stats["dropped"] += skipped
@@ -321,9 +328,19 @@ def _process_all_regions():
                                     })
                             if records:
                                 total_stats["processed"] += len(records)
-                                if not _upload_records(client, source_config_b64, records,
-                                                       using_general, total_stats,
-                                                       acct_name, cname, blob.name):
+                                sent = _upload_in_order(client, source_config_b64, records,
+                                                        using_general, total_stats,
+                                                        acct_name, cname, blob.name)
+                                if sent < len(records):
+                                    # Advance exactly past the envelopes that were fully sent,
+                                    # so nothing already delivered is sent again.
+                                    done = max([b for n, b in boundaries if n <= sent], default=0)
+                                    if done:
+                                        checkpoints[cp_key] = {
+                                            "next_block": -1, "next_byte": offset + done,
+                                            "append_created": generation, "last_seen": _now_iso(),
+                                            "last_modified": cur_lm,
+                                        }
                                     continue
                             checkpoints[cp_key] = {
                                 "next_block": -1, "next_byte": offset + consumed,
@@ -347,6 +364,17 @@ def _process_all_regions():
                                 checkpoints[cp_key] = dict(cp_entry, last_seen=_now_iso())
                                 continue
 
+                            if (blob.size or 0) > MAX_READ_BYTES:
+                                # Too big to read whole; recorded and skipped so it does
+                                # not stall the run on every poll.
+                                total_stats["dropped"] += 1
+                                total_stats["error_blobs"].append({
+                                    "account": acct_name, "container": cname, "blob": blob.name,
+                                    "error": f"Blob too large to read whole: {(blob.size or 0)/(1024*1024):.1f} MB",
+                                })
+                                checkpoints[cp_key] = {"next_block": -1, "last_seen": _now_iso(),
+                                                       "last_modified": cur_lm}
+                                continue
                             data, records = _full_read_records(blob_client)
                             total_stats["bytes_read"] += len(data)
                             if records:
@@ -371,8 +399,13 @@ def _process_all_regions():
                             continue
 
                         n_committed = len(committed)
-                        # Always skip the last committed block (Azure may still be appending to it)
-                        upper = max(0, n_committed - 1)
+                        # Skip the last committed block while Azure may still append to it;
+                        # once the blob has been quiet long enough it is complete, and the
+                        # last block is read too (else it was lost when retention removed it).
+                        quiet = bool(blob.last_modified) and (
+                            datetime.now(timezone.utc) - blob.last_modified
+                            > timedelta(minutes=BLOCK_BLOB_QUIET_MINUTES))
+                        upper = n_committed if quiet else max(0, n_committed - 1)
 
                         if next_block >= upper:
                             # Nothing new to read yet (or only the in-flight tail block exists)
@@ -384,30 +417,29 @@ def _process_all_regions():
                             }
                             continue
 
-                        # Compute byte range to read
-                        start_byte = sum(b.size for b in committed[:next_block])
-                        end_byte = sum(b.size for b in committed[:upper])
-                        length = end_byte - start_byte
-                        if length <= 0:
-                            checkpoints[cp_key] = {
-                                "next_block": upper,
-                                "last_seen": _now_iso(),
-                            }
-                            continue
-                        if length > MAX_READ_BYTES:
+                        # Read whole blocks up to MAX_READ_BYTES this run; the rest
+                        # follows on the next runs (a large backlog no longer stalls).
+                        end_block, length = next_block, 0
+                        while end_block < upper and length + committed[end_block].size <= MAX_READ_BYTES:
+                            length += committed[end_block].size
+                            end_block += 1
+                        if end_block == next_block:
+                            # One block larger than the limit: recorded and skipped.
                             logger.warning(
-                                "BlobLogProcessor: Skipping oversized incremental read for %s/%s "
-                                "(%.1f MB > %.0f MB) — checkpoint not advanced",
-                                cname, blob.name, length / (1024 * 1024),
-                                MAX_READ_BYTES / (1024 * 1024),
+                                "BlobLogProcessor: Skipping one oversized block of %s/%s (%.1f MB)",
+                                cname, blob.name, committed[next_block].size / (1024 * 1024),
                             )
                             total_stats["dropped"] += 1
                             total_stats["error_blobs"].append({
-                                "account": acct_name, "container": cname,
-                                "blob": blob.name,
-                                "error": f"Oversized read: {length/(1024*1024):.1f} MB",
+                                "account": acct_name, "container": cname, "blob": blob.name,
+                                "error": f"Oversized block: {committed[next_block].size/(1024*1024):.1f} MB",
                             })
+                            checkpoints[cp_key] = {"next_block": next_block + 1, "last_seen": _now_iso()}
                             continue
+                        if end_block < upper:
+                            total_stats["blobs_with_unread"] += 1
+                        upper = end_block
+                        start_byte = sum(b.size for b in committed[:next_block])
 
                         stream = blob_client.download_blob(offset=start_byte, length=length)
                         data = stream.readall()
@@ -575,7 +607,7 @@ def _full_read_records(blob_client):
     return data, _parse_records(data)
 
 
-def _read_append_records(blob_client, offset, length):
+def _read_append_records(blob_client, offset, length, with_boundaries=False):
     """Read complete JSON records only; leave an incomplete tail for the next poll.
 
     Returns ``(data, records, consumed_bytes, skipped_lines)``. Azure writes
@@ -583,13 +615,18 @@ def _read_append_records(blob_client, offset, length):
     by a newline is malformed, not incomplete: it is skipped and counted rather
     than blocking every record after it. Invalid UTF-8 bytes are carried as
     surrogate escapes so byte offsets stay exact.
+
+    ``with_boundaries`` adds a fifth item: ``(records_so_far, bytes_consumed)``
+    after each complete envelope, so a caller can checkpoint exactly past the
+    records it managed to send.
     """
     if length <= 0:
-        return b"", [], 0, 0
+        return (b"", [], 0, 0, []) if with_boundaries else (b"", [], 0, 0)
     data = blob_client.download_blob(offset=offset, length=length).readall()
     text = codecs.getincrementaldecoder("utf-8")("surrogateescape").decode(data, final=False)
     decoder = json.JSONDecoder()
     records = []
+    boundaries = []
     skipped = 0
     cursor = 0
     while cursor < len(text):
@@ -619,6 +656,10 @@ def _read_append_records(blob_client, offset, length):
         elif isinstance(payload, list):
             records.extend(payload)
         cursor = end
+        if with_boundaries:
+            boundaries.append((len(records), _utf8_len(text[:cursor])))
+    if with_boundaries:
+        return data, records, _utf8_len(text[:cursor]), skipped, boundaries
     return data, records, _utf8_len(text[:cursor]), skipped
 
 
@@ -626,28 +667,60 @@ def _utf8_len(text: str) -> int:
     return len(text.encode("utf-8", "surrogateescape"))
 
 
-def _upload_records(client, source_config_b64, records, using_general,
-                     stats, acct_name, container, blob_name) -> bool:
-    """Upload ``records`` in batches; mutate stats accordingly. Returns True iff
-    every batch succeeded."""
-    all_ok = True
-    for batch_start in range(0, len(records), MAX_RECORDS_PER_BATCH):
-        batch = records[batch_start:batch_start + MAX_RECORDS_PER_BATCH]
+def _batches(records):
+    """Consecutive batches of at most MAX_RECORDS_PER_BATCH records and about
+    MAX_BATCH_BYTES of JSON each (a single larger record goes alone)."""
+    batch, size = [], 0
+    for record in records:
+        record_size = len(json.dumps(record, default=str))
+        if batch and (len(batch) >= MAX_RECORDS_PER_BATCH or size + record_size > MAX_BATCH_BYTES):
+            yield batch
+            batch, size = [], 0
+        batch.append(record)
+        size += record_size
+    if batch:
+        yield batch
+
+
+def _upload_in_order(client, source_config_b64, records, using_general,
+                     stats, acct_name, container, blob_name) -> int:
+    """Upload ``records`` in order and return how many leading records were sent.
+
+    Stops at the first failed batch, or when the run's deadline has passed:
+    later batches are not sent ahead of it, so a caller that checkpoints past
+    exactly the sent records re-sends nothing that already arrived. The rest
+    count as retrying. Records that could not be parsed are counted as dropped
+    (a retry cannot fix them)."""
+    sent = 0
+    for batch in _batches(records):
+        if time.monotonic() > stats.get("deadline", float("inf")):
+            stats["time_budget_exhausted"] = True
+            break
         success = client.post_logs(source_config_b64, batch)
         stats["batches_sent"] += 1
-        if success:
-            stats["uploaded"] += len(batch)
-            if using_general:
-                stats["general"] += len(batch)
-        else:
-            # The caller leaves the checkpoint where it was, so these are re-sent next run.
-            stats["retrying"] += len(batch)
+        unparsed = getattr(client, "last_unparsed", 0) if success else 0
+        unparsed = unparsed if isinstance(unparsed, int) else 0
+        if not success:
             stats["error_blobs"].append({
                 "account": acct_name, "container": container,
                 "blob": blob_name, "error": "post_logs failed",
             })
-            all_ok = False
-    return all_ok
+            break
+        stats["uploaded"] += len(batch) - unparsed
+        stats["dropped"] += unparsed
+        if using_general:
+            stats["general"] += len(batch) - unparsed
+        sent += len(batch)
+    # Not sent this run; the checkpoint keeps them for the next one.
+    stats["retrying"] += len(records) - sent
+    return sent
+
+
+def _upload_records(client, source_config_b64, records, using_general,
+                     stats, acct_name, container, blob_name) -> bool:
+    """Upload all of ``records``; True only if every one was sent."""
+    return _upload_in_order(client, source_config_b64, records, using_general,
+                            stats, acct_name, container, blob_name) == len(records)
 
 
 def _gc_checkpoints(checkpoints: dict, ttl_days: int = CHECKPOINT_TTL_DAYS) -> dict:
@@ -725,7 +798,9 @@ def _save_checkpoints(conn_str: str, checkpoints: dict) -> None:
 
         local = dict(checkpoints)
         existing, etag = _load_checkpoints_with_etag(conn_str)
-        merged = _merge_checkpoints(existing, local)
+        # GC again after the merge: the remote copy still holds entries the local
+        # GC dropped, and merging would otherwise bring them back for good.
+        merged = _gc_checkpoints(_merge_checkpoints(existing, local))
 
         for attempt in range(5):
             try:
@@ -746,7 +821,7 @@ def _save_checkpoints(conn_str: str, checkpoints: dict) -> None:
                 if ("ConditionNotMet" in msg or "BlobAlreadyExists" in msg
                         or "412" in msg or "409" in msg):
                     existing, etag = _load_checkpoints_with_etag(conn_str)
-                    merged = _merge_checkpoints(existing, local)
+                    merged = _gc_checkpoints(_merge_checkpoints(existing, local))
                     time.sleep(0.05 * (attempt + 1))
                     continue
                 raise

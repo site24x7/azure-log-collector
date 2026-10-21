@@ -121,3 +121,24 @@ def test_broken_masking_or_hashing_rule_withholds_the_field():
     line = {"secret": "hunter2"}
     _apply_hashing(line, {"secret": {"regex": broken}})
     assert "hunter2" not in line["secret"] and len(line["secret"]) == 64
+
+
+def test_timestamp_offset_is_honoured():
+    from shared.site24x7_client import _get_timestamp
+    utc = _get_timestamp("2026-01-01T04:30:00.123456Z", "%Y-%m-%dT%H:%M:%S.%f")
+    ist = _get_timestamp("2026-01-01T10:00:00.123456+05:30", "%Y-%m-%dT%H:%M:%S.%f")
+    assert utc == ist != 0
+    assert _get_timestamp("01/01/2026 04:30:00", "%m/%d/%Y %H:%M:%S") == utc - 123
+
+
+def test_circuit_breaker_failures_below_threshold_are_saved():
+    from shared.site24x7_client import CircuitBreaker
+    with patch.object(CircuitBreaker, "_load_state"), patch.object(CircuitBreaker, "_save_state") as save:
+        breaker = CircuitBreaker(failure_threshold=8)
+        breaker.record_failure()
+        breaker.record_failure()
+        assert save.call_count == 2
+        breaker.record_success()
+        assert save.call_count == 3        # the reset is saved too
+        breaker.record_success()
+        assert save.call_count == 3        # nothing changed: no write
