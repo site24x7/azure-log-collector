@@ -32,6 +32,41 @@ def _update_phase(phase_num, progress=None, extra=None):
         pass  # never let a progress update abort the scan
 
 
+def _finish_review_scan(all_resources, active_resources, ignored_count,
+                        catalog_error, phase_timings, elapsed):
+    """End a read-only scan: record what collecting would configure."""
+    from shared.config_store import save_scan_state
+    regions = {r.get("location", "").lower() for r in active_resources if r.get("location")}
+    types = {r.get("type", "").lower() for r in active_resources if r.get("type")}
+    s247_errors = []
+    if catalog_error:
+        s247_errors.append({"phase": "catalog", "message": catalog_error["message"],
+                            "http_status": catalog_error.get("http_status")})
+    scan_state = {
+        "last_scan_time": datetime.now(timezone.utc).isoformat(),
+        "total_resources": len(all_resources),
+        "active_resources": len(active_resources),
+        "ignored_resources": ignored_count,
+        "review_pending": True,
+        "planned_regions": len(regions),
+        "planned_resource_types": len(types),
+        "s247_reachable": not catalog_error,
+        "s247_errors": s247_errors,
+        "errors": 0,
+        "phase_timings": phase_timings,
+        "total_duration": round(elapsed, 1),
+        "in_progress": False,
+    }
+    save_scan_state(scan_state)
+    logging.info(
+        "DiagSettingsManager: Review scan — %d resources in %d regions would be configured; "
+        "waiting for an admin to start collecting", len(active_resources), len(regions),
+    )
+    return {"review_pending": True, "total_resources": len(all_resources),
+            "active_resources": len(active_resources), "ignored_resources": ignored_count,
+            "planned_regions": len(regions), "planned_resource_types": len(types), "errors": 0}
+
+
 def _save_early_scan_state(all_resources, active_resources, ignored_count):
     """Merge discovery progress without replacing the scan lock or prior results."""
     from shared.config_store import update_scan_state
@@ -94,6 +129,7 @@ def run_scan():
         save_scan_state,
         save_category_resource_types,
         clear_cache,
+        is_collection_active,
     )
 
     """Core scan logic: discover resources, create log types in Site24x7,
@@ -198,6 +234,13 @@ def run_scan():
 
     # Publish discovery counts while preserving the previous completed scan and lock
     _save_early_scan_state(all_resources, active_resources, ignored_count)
+
+    # Review mode (new deployments): report what would be configured and stop
+    # before anything is created — no storage accounts, Site24x7 log types or
+    # diagnostic settings until an admin starts collecting.
+    if not is_collection_active():
+        return _finish_review_scan(all_resources, active_resources, ignored_count,
+                                   catalog_error, phase_timings, _elapsed())
 
     # Build a set of active resource IDs for cleanup
     active_resource_ids = {r.get("id", "") for r in active_resources}
@@ -928,6 +971,7 @@ def run_scan():
         "entra_target_storage_account_id": entra_target_sa.get("id", ""),
         "entra_target_storage_account_name": entra_target_sa.get("name", ""),
         "entra_target_subscription_name": entra_target_sub_name,
+        "review_pending": False,
         "in_progress": False,
     }
     # The scan state blob is the record of the last scan. Never write an app

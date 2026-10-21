@@ -101,6 +101,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             "subscription_ids": subscription_ids,
             "general_logtype_enabled": general_enabled,
             "processing_enabled": processing_enabled,
+            "review_pending": _review_pending(),
             "monitor_pipeline_resources": monitor_pipeline,
             "auto_scan_enabled": auto_scan,
             "safe_delete_days": safe_delete_days,
@@ -221,3 +222,12 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             mimetype="application/json",
             status_code=500,
         )
+
+
+def _review_pending() -> bool:
+    """New deployments only discover resources until an admin starts collecting."""
+    try:
+        from shared.config_store import is_collection_active
+        return not is_collection_active()
+    except Exception:
+        return False

@@ -88,7 +88,7 @@ def get_function_key(resource_id: str) -> Optional[str]:
 
 def build_status_summary() -> Dict:
     """Read-only status shown to every Site24x7 user; contains no secrets."""
-    from shared.config_store import get_scan_state, get_configured_resources
+    from shared.config_store import get_scan_state, get_configured_resources, is_collection_active
     from shared.debug_logger import get_processing_stats
 
     scan = get_scan_state() or {}
@@ -113,6 +113,11 @@ def build_status_summary() -> Dict:
         # The recent counts cover these runs; the oldest one's time says since when.
         "recent_since": runs[-1].get("timestamp", "") if runs else "",
         "reported_at": datetime.now(timezone.utc).isoformat(),
+        # New deployments wait for an admin to start collecting; until then
+        # scans only report what they would configure.
+        "review_pending": not is_collection_active(),
+        "planned_regions": int(scan.get("planned_regions", 0) or 0),
+        "planned_resource_types": int(scan.get("planned_resource_types", 0) or 0),
     }
     subscriptions = []
     for raw in os.environ.get("SUBSCRIPTION_IDS", "").split(","):
@@ -124,7 +129,6 @@ def build_status_summary() -> Dict:
             subscriptions.append(subscription)
     summary["subscription_ids"] = subscriptions[:50]
     summary["subscriptions_truncated"] = len(subscriptions) > 50
-    _add_subscription_names(summary, _subscription_names(summary["subscription_ids"]))
     if "regions_count" in scan:
         summary["regions_count"] = scan["regions_count"]
     try:
@@ -133,6 +137,8 @@ def build_status_summary() -> Dict:
             summary["configured_resources"] = len(configured)
     except Exception:
         pass  # absence of this count must not block registration
+    # Last: names fill only what the other fields leave of the status budget.
+    _add_subscription_names(summary, _subscription_names(summary["subscription_ids"]))
     return summary
 
 

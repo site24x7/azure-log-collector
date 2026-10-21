@@ -37,6 +37,17 @@
         "description": "Enable the general catch-all log type for unsupported categories."
       }
     },
+    "startCollectingAtOnce": {
+      "type": "string",
+      "defaultValue": "false",
+      "allowedValues": [
+        "true",
+        "false"
+      ],
+      "metadata": {
+        "description": "false (recommended): the collector only discovers your resources until an admin reviews the exclusions and log categories in Site24x7 and starts collecting. true: it sets up storage, log types and diagnostic settings on every resource right after deployment."
+      }
+    },
     "resourceGroupName": {
       "type": "string",
       "defaultValue": "",
@@ -123,6 +134,9 @@
           "generalLogTypeEnabled": {
             "value": "[parameters('generalLogTypeEnabled')]"
           },
+          "startCollectingAtOnce": {
+            "value": "[parameters('startCollectingAtOnce')]"
+          },
           "site24x7Domain": {
             "value": "[parameters('site24x7Domain')]"
           },
@@ -165,6 +179,9 @@
               "type": "securestring"
             },
             "generalLogTypeEnabled": {
+              "type": "string"
+            },
+            "startCollectingAtOnce": {
               "type": "string"
             },
             "site24x7Domain": {
@@ -319,6 +336,10 @@
                     {
                       "name": "TIMER_SCHEDULE",
                       "value": "0 0 */6 * * *"
+                    },
+                    {
+                      "name": "REVIEW_BEFORE_COLLECTING",
+                      "value": "[if(equals(parameters('startCollectingAtOnce'), 'true'), 'false', 'true')]"
                     },
                     {
                       "name": "RESOURCE_GROUP_NAME",

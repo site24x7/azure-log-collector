@@ -9,6 +9,16 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 
 ## [1.0.1-beta10] — 2026-10-21
 
+### Added
+- Review before collecting. A new deployment only discovers resources and
+  reports what it would configure (resources, regions, resource types); it
+  creates no storage accounts, Site24x7 log types or diagnostic settings until
+  an admin reviews the exclusions and log categories and starts collecting
+  (Site24x7 page, or the dashboard's Start Collecting button;
+  `POST /api/start-collecting`). The approval is stored in a blob, so it does
+  not restart the app. The template parameter `startCollectingAtOnce=true`
+  skips the review; collectors installed before this version keep collecting.
+
 ### Fixed
 - Saving an include-tag exclusion (e.g. `env=prod`) removed the diagnostic
   settings of every configured resource, including the ones carrying the tag.

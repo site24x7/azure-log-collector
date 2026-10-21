@@ -25,6 +25,7 @@ CONFIGURED_RESOURCES_BLOB = "configured-resources.json"
 CATEGORY_RESOURCE_TYPES_BLOB = "category-resource-types.json"
 SCAN_STATE_BLOB = "scan-state.json"
 ENTRA_STATE_BLOB = "entra-logtypes.json"
+COLLECTION_APPROVAL_BLOB = "collection-approval.json"
 
 # Sentinel for negative caching (config does not exist in blob)
 _MISSING = object()
@@ -568,6 +569,38 @@ def clear_cache():
 # ------------------------------------------------------------------
 # Scan state (blob-backed, not app settings)
 # ------------------------------------------------------------------
+
+# ─── Review before collecting (new deployments) ──────────────────────────────
+
+
+def is_collection_active() -> bool:
+    """Whether scans may change Azure and Site24x7.
+
+    New deployments set REVIEW_BEFORE_COLLECTING=true: their scans only
+    discover and report until an admin starts collecting (approve_collection).
+    Installs without the setting collect as before. When the approval cannot
+    be read, scans stay read-only.
+    """
+    if os.environ.get("REVIEW_BEFORE_COLLECTING", "").strip().lower() != "true":
+        return True
+    try:
+        raw = _read_blob(COLLECTION_APPROVAL_BLOB, strict=True)
+        return bool(raw) and json.loads(raw).get("approved") is True
+    except Exception as e:
+        logger.warning("Collection approval unreadable (%s) — staying read-only", type(e).__name__)
+        return False
+
+
+def approve_collection(source: str) -> bool:
+    """Record that an admin started collecting. Stored in a blob, not an app
+    setting, so approving does not restart the Function App."""
+    from datetime import datetime, timezone
+    return _write_blob(COLLECTION_APPROVAL_BLOB, json.dumps({
+        "approved": True,
+        "approved_at": datetime.now(timezone.utc).isoformat(),
+        "source": source,
+    }))
+
 
 def save_scan_state(state: Dict) -> bool:
     """Save scan state (last scan time, stats) to blob storage.
