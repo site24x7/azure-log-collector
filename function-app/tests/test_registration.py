@@ -60,15 +60,87 @@ def test_outside_azure_registration_is_skipped(monkeypatch):
     assert registration.build_registration() is None
 
 
-def test_list_keys_uses_the_app_resource_and_reads_default_key():
-    resp = MagicMock(ok=True)
-    resp.json.return_value = {"functionKeys": {"default": SECRET}}
-    with patch("azure.identity.DefaultAzureCredential") as cred, \
-         patch.object(registration.requests, "post", return_value=resp) as post:
-        cred.return_value.get_token.return_value = MagicMock(token="arm-token")
-        assert registration.get_function_key(SITE_ID) == SECRET
-    url = post.call_args.args[0]
-    assert url.startswith(f"https://management.azure.com{SITE_ID}/host/default/listKeys?")
+class _FakeArm:
+    """Function keys per function, as ARM serves them."""
+
+    def __init__(self, keys):
+        self.keys = keys            # function -> {key name: value}
+        self.calls = []
+
+    def request(self, method, url, headers=None, json=None, timeout=None, allow_redirects=True):
+        self.calls.append((method, url))
+        function = url.split("/functions/")[1].split("/")[0]
+        resp = MagicMock(ok=True)
+        if method == "POST":
+            resp.json.return_value = dict(self.keys.get(function, {}))
+        elif method == "PUT":
+            self.keys.setdefault(function, {})[registration.SITE24X7_KEY_NAME] = json["properties"]["value"]
+        elif method == "DELETE":
+            self.keys.get(function, {}).pop(registration.SITE24X7_KEY_NAME, None)
+        return resp
+
+
+def _with_arm(fake):
+    cred = patch("azure.identity.DefaultAzureCredential")
+    return cred, patch.object(registration.requests, "request", side_effect=fake.request)
+
+
+def test_site24x7_gets_its_own_function_key_not_a_host_key():
+    fake = _FakeArm({f: {"default": "customer-key"} for f in registration.SITE24X7_FUNCTIONS})
+    cred, req = _with_arm(fake)
+    with cred as c, req:
+        c.return_value.get_token.return_value = MagicMock(token="arm-token")
+        key = registration.get_function_key(SITE_ID)
+    assert key and key != "customer-key"
+    assert all(fake.keys[f][registration.SITE24X7_KEY_NAME] == key for f in registration.SITE24X7_FUNCTIONS)
+    assert not any("/host/" in url for _, url in fake.calls)
+    assert "Dashboard" not in registration.SITE24X7_FUNCTIONS and "GetDebugInfo" not in registration.SITE24X7_FUNCTIONS
+    assert all(url.startswith(f"https://management.azure.com{SITE_ID}/functions/") for _, url in fake.calls)
+
+
+def test_existing_uniform_key_is_reused_without_writes():
+    fake = _FakeArm({f: {registration.SITE24X7_KEY_NAME: "s247-k"} for f in registration.SITE24X7_FUNCTIONS})
+    cred, req = _with_arm(fake)
+    with cred as c, req:
+        c.return_value.get_token.return_value = MagicMock(token="t")
+        assert registration.get_function_key(SITE_ID) == "s247-k"
+    assert {m for m, _ in fake.calls} == {"POST"}
+
+
+def test_key_rotated_on_one_function_is_reset_everywhere():
+    keys = {f: {registration.SITE24X7_KEY_NAME: "old"} for f in registration.SITE24X7_FUNCTIONS}
+    keys["TriggerScan"][registration.SITE24X7_KEY_NAME] = "rotated"
+    fake = _FakeArm(keys)
+    cred, req = _with_arm(fake)
+    with cred as c, req:
+        c.return_value.get_token.return_value = MagicMock(token="t")
+        key = registration.get_function_key(SITE_ID)
+    assert key not in ("old", "rotated")
+    assert {fake.keys[f][registration.SITE24X7_KEY_NAME] for f in registration.SITE24X7_FUNCTIONS} == {key}
+
+
+def test_excluded_functions_lose_the_site24x7_key(monkeypatch):
+    monkeypatch.setenv("SITE24X7_KEY_EXCLUDE", "RemoveDiagSettings, checkupdate")
+    fake = _FakeArm({f: {registration.SITE24X7_KEY_NAME: "s247-k"} for f in registration.SITE24X7_FUNCTIONS})
+    cred, req = _with_arm(fake)
+    with cred as c, req:
+        c.return_value.get_token.return_value = MagicMock(token="t")
+        registration.get_function_key(SITE_ID)
+    # Revoked by overwriting (the resource group lock refuses deletes)
+    assert fake.keys["RemoveDiagSettings"][registration.SITE24X7_KEY_NAME] != "s247-k"
+    assert fake.keys["CheckUpdate"][registration.SITE24X7_KEY_NAME] != "s247-k"
+    assert fake.keys["GetStatus"][registration.SITE24X7_KEY_NAME] == "s247-k"
+    assert not any(m == "DELETE" for m, _ in fake.calls)
+
+
+def test_excluding_everything_gives_site24x7_no_key(monkeypatch):
+    monkeypatch.setenv("SITE24X7_KEY_EXCLUDE", "*")
+    fake = _FakeArm({f: {registration.SITE24X7_KEY_NAME: "s247-k"} for f in registration.SITE24X7_FUNCTIONS})
+    cred, req = _with_arm(fake)
+    with cred as c, req:
+        c.return_value.get_token.return_value = MagicMock(token="t")
+        assert registration.get_function_key(SITE_ID) is None
+    assert all(fake.keys[f][registration.SITE24X7_KEY_NAME] != "s247-k" for f in registration.SITE24X7_FUNCTIONS)
 
 
 def test_keys_go_in_the_post_body_not_the_url(azure_env):

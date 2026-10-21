@@ -12,13 +12,14 @@ only in the POST body and are never logged.
 
 import hashlib
 import json
+import secrets
 import logging
 import os
 import re
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import requests
 
@@ -68,22 +69,87 @@ def _site_resource_id() -> str:
             f"/providers/Microsoft.Web/sites/{func_app_name}")
 
 
+# The functions Site24x7 calls. Site24x7 gets its own function key, named
+# "site24x7", on these only: never a host key, so it cannot open the dashboard
+# or debug data, and the customer can revoke it without touching their keys.
+SITE24X7_FUNCTIONS = (
+    "GetStatus", "TriggerScan", "StopProcessing", "StartCollecting",
+    "GetIgnoreList", "UpdateIgnoreList", "GetDisabledLogTypes", "UpdateDisabledLogTypes",
+    "UpdateEntraLogTypes", "UpdateGeneralLogType", "UpdateSettings",
+    "GetConfiguredResources", "CheckUpdate", "RemoveDiagSettings",
+)
+SITE24X7_KEY_NAME = "site24x7"
+
+
+def site24x7_functions() -> List[str]:
+    """SITE24X7_FUNCTIONS minus any the customer listed in SITE24X7_KEY_EXCLUDE
+    (e.g. "RemoveDiagSettings,CheckUpdate" keeps those actions out of Site24x7;
+    "*" gives Site24x7 no key at all, and the collector then stops reporting)."""
+    raw = os.environ.get("SITE24X7_KEY_EXCLUDE", "")
+    excluded = {f.strip().lower() for f in raw.split(",") if f.strip()}
+    if "*" in excluded:
+        return []
+    return [f for f in SITE24X7_FUNCTIONS if f.lower() not in excluded]
+
+
+def _arm(method: str, url: str, token: str, body: Optional[Dict] = None):
+    headers = {"Authorization": f"Bearer {token}"}
+    if body is None:
+        headers["Content-Length"] = "0"
+    return requests.request(method, f"{_ARM}{url}?api-version={_ARM_API_VERSION}",
+                            headers=headers, json=body, timeout=30, allow_redirects=False)
+
+
 def get_function_key(resource_id: str) -> Optional[str]:
-    """The app's ``default`` function key, via its managed identity (RG Contributor)."""
+    """The key Site24x7 uses: the same "site24x7" function key on every function
+    in site24x7_functions(), created (or re-created after a rotation that left
+    the functions with different values) through the managed identity (RG
+    Contributor). On functions the customer excluded the key is overwritten
+    with a value nobody holds (the resource group lock forbids deleting keys).
+    Returns None when it cannot be read or set, or when every function is excluded."""
     from azure.identity import DefaultAzureCredential
 
-    token = DefaultAzureCredential().get_token(f"{_ARM}/.default")
-    resp = requests.post(
-        f"{_ARM}{resource_id}/host/default/listKeys?api-version={_ARM_API_VERSION}",
-        headers={"Authorization": f"Bearer {token.token}", "Content-Length": "0"},
-        timeout=30,
-    )
-    if not resp.ok:
-        _record("warning", f"Could not read the function key (ARM listKeys HTTP {resp.status_code})",
-                {"stage": "listKeys", "http_status": resp.status_code,
-                 "hint": "the app's managed identity needs Contributor on its resource group"})
+    token = DefaultAzureCredential().get_token(f"{_ARM}/.default").token
+    wanted = site24x7_functions()
+    for function in SITE24X7_FUNCTIONS:
+        if function not in wanted:
+            _revoke(resource_id, function, token)
+    if not wanted:
         return None
-    return (resp.json().get("functionKeys") or {}).get("default") or None
+    values = {}
+    for function in wanted:
+        resp = _arm("POST", f"{resource_id}/functions/{function}/listkeys", token)
+        if not resp.ok:
+            _record("warning", f"Could not read the Site24x7 function key (ARM listkeys HTTP {resp.status_code})",
+                    {"stage": "listKeys", "function": function, "http_status": resp.status_code,
+                     "hint": "the app's managed identity needs Contributor on its resource group"})
+            return None
+        keys = resp.json() or {}
+        values[function] = keys.get(SITE24X7_KEY_NAME) if isinstance(keys, dict) else None
+    distinct = {v for v in values.values() if v}
+    key = distinct.pop() if len(distinct) == 1 and all(values.values()) else None
+    if not key:
+        # Missing somewhere, or rotated on some functions only: one new value for all.
+        key = secrets.token_urlsafe(40)
+        for function in wanted:
+            resp = _arm("PUT", f"{resource_id}/functions/{function}/keys/{SITE24X7_KEY_NAME}", token,
+                        {"properties": {"name": SITE24X7_KEY_NAME, "value": key}})
+            if not resp.ok:
+                _record("warning", f"Could not set the Site24x7 function key (ARM HTTP {resp.status_code})",
+                        {"stage": "setKey", "function": function, "http_status": resp.status_code})
+                return None
+        logger.info("Registration: Site24x7 function key set on %d functions", len(wanted))
+    return key
+
+
+def _revoke(resource_id: str, function: str, token: str) -> None:
+    """Take Site24x7's key away from one function: overwrite it with a random
+    value nobody holds (a delete is refused while the resource group is locked)."""
+    resp = _arm("POST", f"{resource_id}/functions/{function}/listkeys", token)
+    keys = resp.json() if resp.ok else {}
+    if isinstance(keys, dict) and keys.get(SITE24X7_KEY_NAME):
+        _arm("PUT", f"{resource_id}/functions/{function}/keys/{SITE24X7_KEY_NAME}", token,
+             {"properties": {"name": SITE24X7_KEY_NAME, "value": secrets.token_urlsafe(40)}})
 
 
 def build_status_summary() -> Dict:
