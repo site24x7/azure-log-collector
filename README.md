@@ -127,8 +127,13 @@ bash setup.sh
 
 This takes 5–10 minutes and provisions:
 - Resource group, storage account, Function App
-- Managed Identity with Reader + Monitoring Contributor roles
+- Managed Identity with Reader + Monitoring Contributor (monitored subscriptions) and
+  Contributor (the collector's own resource group)
 - Initial resource scan and diagnostic settings configuration
+
+Deployments from the ARM template start in **review mode**: the collector only discovers
+resources until an admin reviews the exclusions and log categories in Site24x7 and clicks
+**Start Collecting**. Set the template parameter `startCollectingAtOnce=true` to skip that.
 
 At the end, you'll see the **Dashboard URL** — open it in your browser.
 
@@ -163,7 +168,11 @@ cd azure-log-collector/setup
 bash teardown.sh
 ```
 
-Removes resource locks, cleans up diagnostic settings, then deletes the resource group.
+Works only on the deployment's subscription and a resource group tagged
+`managed-by=s247-diag-logs`: removes its locks and the identity's subscription role
+assignments, then deletes the resource group. Add `--clean-diag-settings` to also remove this
+collector's diagnostic setting from resources where it sends to this deployment's storage
+(or use **Remove Diagnostic Settings** in Site24x7 / the dashboard first).
 
 ## Cost Estimate
 
@@ -223,8 +232,8 @@ The Function App can self-update from GitHub Releases.
 | Setting | Default | Purpose |
 |---|---|---|
 | `UPDATE_CHANNEL` | `stable` | `stable` refuses any alpha/beta/rc; `prerelease` accepts them. Use `prerelease` in test environments. |
-| `PINNED_VERSION` | *(unset)* | If set (e.g. `1.2.3`), AutoUpdater only deploys this exact version. Use for freezing prod or rolling back. |
-| `SKIP_AUTO_UPDATE` | `false` | `true` disables AutoUpdater entirely — emergency switch, no redeploy needed. |
+| `PINNED_VERSION` | *(unset)* | If set (e.g. `1.2.3`), only that version is deployed, and only while it is the latest release (older releases are not fetched). |
+| `SKIP_AUTO_UPDATE` | `false` | `true` applies no update at all, automatic or manual — emergency switch, no redeploy needed. |
 | `MIN_RELEASE_AGE_MINUTES` | `60` | Refuses releases younger than N minutes. Gives you a grace window to delete a bad release before it propagates. |
 
 ### Separating alpha/beta from customer builds
@@ -236,15 +245,20 @@ Check GitHub's "Set as a pre-release" box when creating alpha/beta tags. With de
 
 ### Rollback
 
-1. Delete or un-publish the bad release on GitHub (or mark it a pre-release).
-2. Tag a new release with the previous known-good content, OR set `PINNED_VERSION=<known-good>` on prod.
-3. Next AutoUpdater run reconciles to the pinned/latest-stable version.
+1. Delete or un-publish the bad release on GitHub (or mark it a pre-release), so the previous
+   stable release is the latest again.
+2. Or release the known-good content as a new version (a released version's package is never
+   replaced).
+3. A collector that cannot start after a bad update cannot update itself: point
+   `WEBSITE_RUN_FROM_PACKAGE` back at the previous package URL in the Azure portal.
 
 Every AutoUpdater run writes audit events (`auto_update_run`, `auto_update_health_check`) visible via the debug-logs endpoint.
 
 ## Security
 
-The collector runs entirely inside your Azure tenant, uses Managed Identity (no stored credentials), has least-privilege RBAC, and is open-source.
+The collector runs inside your Azure tenant: its managed identity for ARM, storage account keys for
+its own storage, and your Site24x7 Device Key. Site24x7 holds the Function App's host key so
+admins can run the collector's actions from Site24x7.
 
 See **[docs/security-overview.md](docs/security-overview.md)** for a customer-facing security brief covering: trust boundary, RBAC, data path & residency, self-update controls, logging & auditability, uninstall, and answers to common security questions.
 

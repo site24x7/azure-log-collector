@@ -1,227 +1,250 @@
 # Security Overview — Azure Diagnostic Logs Collector
 
-**Audience:** Customer security, compliance, and platform teams evaluating the Function App before deployment into their Azure tenant.
+**Audience:** Customer security, compliance and platform teams evaluating the collector before deploying it into their Azure tenant.
 
-**One-line summary:** The collector runs entirely inside your Azure subscription, uses Managed Identity (no stored Azure credentials), has least-privilege roles scoped to read-only + diagnostic-settings management, and is open-source so every byte it runs is auditable.
+**Summary:** The collector is an Azure Function App that runs in your subscription. It uses its managed identity for Azure Resource Manager (ARM), storage account keys for reading the logs it buffers, and your Site24x7 Device Key for Site24x7. It creates diagnostic settings, regional storage accounts and Site24x7 log types. On a new deployment it changes nothing until an admin starts collecting. This document states what it can do and what it holds, including the open items in section 12.
 
 ---
 
-## 1. Trust Boundary
+## 1. Trust boundary and outbound traffic
 
 ```
-┌────────────────────── Your Azure tenant ───────────────────────┐
-│                                                                 │
-│   ┌──────────────────────┐       ┌──────────────────────┐      │
-│   │  Azure resources     │──►──► │  Diagnostic settings │      │
-│   │  (VMs, AKS, SQL …)   │       │  (managed by us)     │      │
-│   └──────────────────────┘       └──────────┬───────────┘      │
-│                                              │ logs             │
-│                                              ▼                  │
-│   ┌──────────────────────┐       ┌──────────────────────┐      │
-│   │  Function App        │◄───── │  Storage Accounts    │      │
-│   │  (this project)      │       │  (per-region, ours)  │      │
-│   └──────────┬───────────┘       └──────────────────────┘      │
-│              │ outbound HTTPS                                   │
-└──────────────┼──────────────────────────────────────────────────┘
-               │
-               ▼
-   logc.site24x7.<dc>    ← the ONLY external endpoint the app contacts
-   plus.site24x7.<dc>       with your data.
+┌──────────────────────────── Your Azure tenant ────────────────────────────┐
+│  Azure resources ──diagnostic settings──► regional storage accounts       │
+│                                            (created by the collector)     │
+│                                                    │ read                 │
+│                                                    ▼                      │
+│                                  Function App (this project) ─────────────┼──► Site24x7
+└───────────────────────────────────────────────────────────────────────────┘    (HTTPS)
 ```
 
-**Nothing in your environment phones home anywhere else.** The only outbound destinations are:
+The Function App makes outbound HTTPS calls only:
 
-| Endpoint | Purpose | Protocol |
+| Destination | Purpose |
+|---|---|
+| `plus.site24x7.<dc>` (`/applog/*`) | Log type catalog and creation, collector registration |
+| `logc.site24x7.<dc>` (`/upload`) | Sending log records |
+| `management.azure.com` | ARM: list resources, manage diagnostic settings, storage accounts, locks, own app settings, function keys |
+| `*.blob/queue/table.core.windows.net` | The collector's own storage (state, queues) and the regional log storage accounts |
+| Managed identity endpoint (local to the Function App) | Azure access tokens |
+| `api.github.com`, `github.com`, `objects.githubusercontent.com`, `raw.githubusercontent.com` | Update checks and update packages, only when `UPDATE_CHECK_URL` is set (the template sets it to this repository) |
+| `<function-app>.azurewebsites.net/api/health` | Health check after an update (its own endpoint) |
+
+`<dc>` is the Site24x7 data center chosen at deployment: `com` (US), `in`, `eu`, `net.au`, `cn` or `jp`.
+
+**Requests that carry the Device Key** (Site24x7 API calls, registration and uploads) go over HTTPS only and refuse HTTP redirects. A redirect is reported as an error and never followed, so the key is never sent to another host.
+
+The Site24x7 addresses come from the `SITE24X7_BASE_URL` app setting. The upload host can be overridden with `SITE24X7_UPLOAD_DOMAIN`, for testing. Whoever can change app settings can therefore redirect where logs and the key are sent; that requires Contributor on the Function App.
+
+---
+
+## 2. Identities and credentials
+
+| Credential | Where it is | Used for |
 |---|---|---|
-| `plus.site24x7.<dc>/applog/*` | Create log types, fetch config | HTTPS |
-| `logc.site24x7.<dc>/upload/*` | Ship your log data | HTTPS |
-| `management.azure.com` | Azure ARM API (stays inside Azure) | HTTPS |
-| `api.github.com/repos/.../releases` | Check for updates (optional, disableable) | HTTPS |
+| System-assigned managed identity | Azure-managed | All ARM calls |
+| `AzureWebJobsStorage` / `WEBSITE_CONTENTAZUREFILECONNECTIONSTRING` | App settings (connection strings with the account key of the collector's own storage account) | Functions runtime, the collector's state, scan queue |
+| Regional storage account keys | Read at run time through ARM `listKeys` (Contributor on the collector's resource group), held in memory only | Reading the buffered log blobs |
+| Site24x7 Device Key | App setting `SITE24X7_API_KEY` (encrypted at rest by Azure) | Authenticating to Site24x7. It is not stored with the saved log type configurations, and it is never written to logs. |
+| Function App default **host** key | Azure-managed | Authorizes every HTTP endpoint of the collector (section 7). **It is sent to Site24x7** at registration (section 6). |
 
-You can add firewall / NSG rules allow-listing exactly these hosts.
+**Rotation**
+- **Device Key:** update `SITE24X7_API_KEY`. Uploads always use the current setting.
+- **Host key:** rotate in the Azure portal. The collector re-reads its key from ARM on its first processing run after a restart and every 15 minutes, and re-registers with Site24x7 when the key has changed.
+- **Storage account keys:** rotate the collector's own account and update the two connection strings. Regional account keys are read fresh on every run.
 
----
-
-## 2. Identity & Credentials
-
-### What the app has
-- **System-Assigned Managed Identity.** No Azure credentials are ever stored in code, config, or app settings. Azure mints short-lived tokens on demand.
-- **One Site24x7 device key** (stored as an Azure app setting, encrypted at rest by Azure). Used to authenticate to the Site24x7 AppLogs API.
-
-### What we never have
-- No customer secrets leave your tenant.
-- No service principal passwords or certificates.
-- No network credentials.
-- No long-lived Azure keys.
-
-### Key rotation
-- **Site24x7 device key:** update the `SITE24X7_API_KEY` app setting and Function App picks it up on the next invocation. `post_logs()` overrides the per-blob snapshot at runtime so rotation is instant.
-- **Function keys** (for the management UI): rotate any time via Azure Portal or `az functionapp keys set`.
-- **Managed Identity:** managed by Azure; no action needed.
+The deployment template writes no key to its outputs. `dashboardUrl` is the address without a key.
 
 ---
 
-## 3. Least-Privilege RBAC
-
-The ARM template grants the Function App's Managed Identity **exactly three** roles — nothing more:
+## 3. Roles granted to the managed identity
 
 | Role | Scope | Why |
 |---|---|---|
-| `Reader` (`acdd72a7-3385-48ef-bd42-f606fba81ae7`) | Subscription | List resources so we know what to enable diagnostics on |
-| `Monitoring Contributor` (`749f88d5-cbae-40b8-bcfc-e573ddc772fa`) | Subscription | Create/update `Microsoft.Insights/diagnosticSettings` on resources |
-| `Contributor` (`b24988ac-6180-42a0-ab88-20f7382dd24c`) | **Resource group only** (the collector's own group, `s247-diag-logs-<suffix>-rg` or `s247-diag-logs-rg`) | Manage the app's own storage accounts + self-update (`zipdeploy`) |
+| Reader | Each monitored subscription | List resources and their log categories |
+| Monitoring Contributor | Each monitored subscription | Create, update and delete diagnostic settings |
+| Contributor | The collector's own resource group (`s247-diag-logs-<suffix>-rg`, or `s247-diag-logs-rg`) | Regional storage accounts and their locks, the Function App's own app settings, host key and code deployment (self-update) |
 
-**What this explicitly does NOT grant:**
-- No Owner, no `Microsoft.Authorization/*` (cannot change RBAC)
-- No Key Vault access
-- No access to data-plane secrets on any other resource
-- No Contributor on your workload subscriptions — Contributor is scoped to our own RG
+It has no Owner role and no `Microsoft.Authorization/roleAssignments` write. Its Contributor role covers its own resource group only.
 
-A resource-group **CanNotDelete lock** is applied at deployment so a misconfigured script cannot accidentally delete the storage accounts holding buffered logs.
+Monitoring Contributor covers diagnostic settings on every resource in the subscription, so a compromised collector could change or remove diagnostic settings it did not create. The collector itself only touches settings named for this collector (`s247-diag-logs-<suffix>`). It removes the older shared name `s247-diag-logs` only when that setting sends to this collector's own storage account.
+
+**Locks:** the resource group gets a CanNotDelete lock at deployment, and each regional storage account gets its own lock. The collector removes an account's lock only to delete an account it no longer needs (section 5).
 
 ---
 
-## 4. Data Path & Residency
+## 4. Review before collecting
 
-- **Ingest:** Azure resources stream logs into Storage Accounts provisioned **per-region inside your subscription**.
-- **Buffer:** Logs sit in those storage accounts until the collector processes and ships them.
-- **Egress:** Logs leave your tenant **only** over HTTPS to `logc.site24x7.<dc>` (where `<dc>` is the Site24x7 data center you chose — US / EU / IN / AU / CN).
-- **No intermediate store.** We do not stage your data in our infrastructure before Site24x7.
-- **TLS 1.2+ everywhere** (Azure Functions + Storage + Site24x7 all enforce).
+A new deployment starts in review mode (`REVIEW_BEFORE_COLLECTING=true`; the template parameter `startCollectingAtOnce` defaults to `false`).
 
-### Data-center pinning
-Site24x7 data centers are geographically distinct. Picking `www.site24x7.eu` at deploy time means logs are routed to Site24x7's EU DC and never touch other regions.
+**Until an admin starts collecting**, scans only:
+- discover resources;
+- apply the exclusions;
+- report what they would set up: the number of resources, regions and resource types.
+
+They create no storage accounts, Site24x7 log types or diagnostic settings, and remove nothing.
+
+**Starting collection:** an admin reviews the exclusions and log categories on the Site24x7 page, then clicks **Start Collecting** (`POST /api/start-collecting`). The approval is stored in the collector's storage. If it can't be read, scans stay read-only.
+
+Collectors installed before this feature, and deployments with `startCollectingAtOnce=true`, collect without review.
 
 ---
 
-## 5. Self-Update — The Most Scrutinised Part
+## 5. What the collector changes in your tenant
 
-Because this Function App can update itself, we've built it to be **verifiable and controllable by you**, not us.
+Once collecting, every scan (every 6 hours, and on demand) does the following:
+- **Diagnostic settings:** creates or updates this collector's diagnostic setting on each resource that is not excluded, sending the resource's log categories to the regional storage account.
+- **Storage accounts:** creates one storage account per region that has resources.
+  - It applies a lifecycle rule that deletes blobs after `BLOB_RETENTION_DAYS`, 7 by default.
+  - Public blob access is off and TLS 1.2 is the minimum.
+- **Clean-up:** removes this collector's setting from resources that became excluded or were deleted.
+- **Unused storage:** deletes a regional storage account no longer needed. It skips that if the account holds logs newer than `SAFE_DELETE_MAX_AGE_DAYS`, 7 by default.
+- **Site24x7:** creates the Site24x7 log types for new categories.
 
-### Defense-in-depth pipeline
-Before any new version is deployed, AutoUpdater runs:
+**Safeguards**
+- If resource discovery is incomplete (a subscription could not be listed, or a check failed), the scan removes nothing that run: no settings and no storage.
+- A scan that can't read the exclusion list stops.
 
-1. **Opt-in channel filter** — by default (`UPDATE_CHANNEL=stable`), any alpha/beta/rc build is **refused**, even if GitHub is pointed at it by mistake.
-2. **Pre-deploy package validation** (`validate_zip_package()`):
-   - Archive integrity check
-   - `ast.parse()` on every `.py` file — syntax errors refused
-   - `json.loads()` on every `.json` file — malformed config refused
-   - Required files must be present (`host.json`, `VERSION`, …)
-3. **Age gate** — releases younger than 60 minutes (configurable) are deferred, giving you and us time to pull a bad release.
-4. **Audit events** — every update run writes an `auto_update_run` event; every deploy writes an `auto_update_health_check` event pinging `/api/health` on the new build. Both queryable via App Insights / the debug bundle.
+**Admin actions**
+- They can change app settings, which restarts the Function App: processing on or off, automatic scans, general log type, own-resource collection, storage protection days.
+- They can remove all of this collector's diagnostic settings. This also turns automatic scans off first.
 
-### Customer-controlled switches (no redeploy needed)
+---
+
+## 6. What Site24x7 holds and can do
+
+The collector registers with Site24x7 after every scan, on restart, and when its key changes. It sends:
+- its Function App name, address, resource ID, subscription, resource group and region;
+- its version and a status summary;
+- its default **host key**.
+
+Site24x7 stores the key encrypted. With it, Site24x7 admins can run the collector's actions from the Site24x7 page (scan, pause and resume, exclusions, log categories, Entra ID log types, settings, update, remove all, start collecting).
+
+Each of those actions is:
+- available to Site24x7 Super Admins and Admins only;
+- built by Site24x7's server from validated fields; the browser never sends a URL or a raw request body;
+- audited in Site24x7.
+
+The key never reaches the browser.
+
+**Implication:** someone who obtained the stored host key could call every collector endpoint, including settings changes, Remove All and applying an update. Site24x7 checks at registration that the key is accepted by the Function App itself. If that is not acceptable for your environment, see the open items in section 12.
+
+---
+
+## 7. HTTP endpoints
+
+All 18 HTTP functions use `authLevel: function`. Each needs a valid function or host key, and there is no anonymous endpoint (including `/api/health`). They are: dashboard, status, health, debug, scan, start-collecting, processing, settings, ignore-list (get and put), disabled-logtypes (get and post), general-logtype (get and put), entra-logtypes, configured-resources, check-update, remove-diagnostic-settings.
+
+**Input checks**
+- Request bodies must be JSON objects.
+- On/off values must be real JSON booleans, and numbers must be integers in range.
+- Settings come from a fixed allowlist.
+- Exclusion lists are checked by type and size: at most 1,000 entries of up to 500 characters, with no `null` values.
+- Log category and Entra category names are checked against known values.
+
+**Dashboard**
+- The page is opened with the key in the address (`?code=`). It immediately removes the key from the address bar and history, keeps it in session storage for that tab, and sends it to the API in the `x-functions-key` header, never in a URL.
+- It sets `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, a Content Security Policy and no-cache headers.
+- It HTML-escapes every value it displays, and handler arguments are passed as escaped JavaScript string literals.
+- In Site24x7 it is offered to closed-beta admins only and will be removed once all actions are on the Site24x7 page.
+
+**Rate limits:** there is no application-level rate limit on the collector's endpoints. Site24x7 limits its own calls (20 actions per user per 5 minutes).
+
+---
+
+## 8. Data handling
+
+- **Buffering:** logs are buffered in the regional storage accounts until they are sent.
+  - The collector never deletes blobs.
+  - The lifecycle rule deletes them after `BLOB_RETENTION_DAYS`, whether or not they were sent.
+  - If Site24x7 can't be reached for longer than that, the oldest logs are lost.
+- **Retries:** failed uploads are retried on the next run, every 2 minutes.
+- **What is sent:** only the fields the Site24x7 log type defines are taken from each record.
+  - Masking, hashing and derived fields from the log type configuration are applied before sending.
+  - Masking and hashing fail closed: if a rule cannot be applied, the whole field is withheld.
+  - The Function App name is added as the log source (`s247agentuid`), and the event time as `_zl_timestamp`.
+- **Disabled categories** are not sent, including through the general log type. If the list of disabled categories can't be read, the run is skipped, and the logs wait for the next run.
+- **Logging:** unparseable records are counted but never written to the collector's logs.
+- **Encryption:** data is sent over TLS 1.2 or later. Storage is encrypted at rest by Azure.
+
+---
+
+## 9. Self-update
+
+Updates come from the GitHub releases of `UPDATE_CHECK_URL`, which the template sets to this repository.
+
+**Before deploying a release, the updater checks:**
+- the channel: pre-releases are refused unless `UPDATE_CHANNEL=prerelease`;
+- the age: releases younger than `MIN_RELEASE_AGE_MINUTES` (60) are skipped;
+- the package host must belong to the configured repository, over HTTPS;
+- the package's SHA-256 must match the release's `version.json` (`REQUIRE_PACKAGE_SHA256`, on by default);
+- the zip: archive integrity, every `.py` file parses, every `.json` file is valid, and the required files are present;
+- the package's `VERSION` must equal the version the release advertises, so an older package can't pass the downgrade check.
+
+Every run and post-update health check is recorded as an event.
+
+**Release builds**
+- Releases are built by GitHub Actions from the tagged commit.
+- The workflow validates the version first and pins its actions to commit SHAs.
+- It refuses to replace the package of a version that is already released.
+
+**Controls**
 
 | App setting | Effect |
 |---|---|
-| `SKIP_AUTO_UPDATE=true` | Turns AutoUpdater off completely. You control when to update. |
-| `PINNED_VERSION=1.2.3` | Only version 1.2.3 is ever deployed. Change it to roll forward/back. |
-| `UPDATE_CHECK_URL=` *(unset)* | Skip update checks entirely. |
-| `UPDATE_CHANNEL=stable` | Default. Pre-releases refused. |
+| `SKIP_AUTO_UPDATE=true` | No automatic or manual update is applied. |
+| `UPDATE_CHECK_URL` unset | No update checks at all. |
+| `UPDATE_CHANNEL=stable` | The default: pre-releases are refused. |
+| `PINNED_VERSION=x.y.z` | Deploys only that version, and only while it is the latest release. It does not fetch older releases. |
 
-### "I want to approve every update manually"
-Set `SKIP_AUTO_UPDATE=true`. Invoke `POST /api/check-update` from your CI when you want to update; it returns release notes and a package URL. Only call the `/api/apply-update` endpoint when approved. (Available in v1.x.)
+**Manual update:** `GET /api/check-update` reports what is available, and `POST /api/check-update?apply=1` applies it. Site24x7 admins can do the same from the collector's Settings tab.
 
-### Source & supply chain
-- Every byte that runs is on GitHub: `github.com/site24x7/azure-log-collector`.
-- Releases are built by GitHub Actions from a tagged commit; the workflow is in the repo (`.github/workflows/release-function-app.yml`).
-- You can pin `UPDATE_CHECK_URL` to **your fork** and only release updates after your own review/signing.
-- You can `diff` the running zip against the tagged commit anytime — nothing is obfuscated or minified.
+**Known gaps** (section 12): Azure downloads the package again from its URL after the collector has verified it, and a failed update is not rolled back automatically.
 
 ---
 
-## 6. Management Plane Security
+## 10. Audit and troubleshooting data
 
-The Function App exposes a small HTTP API for the dashboard (dashboard config, ignore-list, debug bundle).
-
-- **Authentication:** Azure Functions `authLevel=function`. Every call requires a function key (Azure-managed, rotatable).
-- **Authorization:** Each endpoint validates key scope and origin.
-- **Input validation:** All request bodies are length-capped, type-checked, and sanitized before use.
-- **No anonymous endpoints** other than `/api/health` (returns static "ok" — no data).
-- **CSRF:** Same-origin policy + function key required; no session cookies.
-- **Rate limiting:** Built-in Azure Functions throttling on Consumption plan. Premium/Dedicated customers can layer APIM / Front Door rate limits.
+- **Application Insights** receives the Function App's logs, if it is configured.
+- **Collector events:** admin actions are recorded in the collector's event log (`log_audit`), along with scans, update runs and health checks. These records live in the collector's own storage account, keep only the most recent events and can be changed by anyone who can write to that account, so they are **not tamper-evident**. Use Application Insights or Site24x7's audit log for a protected trail.
+- **Site24x7:** records an audit entry for every action an admin runs from the Site24x7 page.
+- **Debug bundle:** the dashboard can export one, with secrets redacted. Clearing debug events takes a POST.
 
 ---
 
-## 7. Data Handling by the Code Itself
+## 11. Uninstall
 
-- **Least retention:** Processed blobs are deleted within `SAFE_DELETE_MAX_AGE_DAYS` (default 7). Unprocessed / unconfigured blobs are aged out after `STALE_BLOB_MAX_AGE_DAYS`.
-- **No disk writes** outside Azure Storage and Azure Functions' own temp directory (cleared between invocations on Consumption plan).
-- **PII:** The collector does not inspect log content semantically. It parses JSON boundaries and forwards verbatim. Whatever Azure Diagnostic Settings emits is what Site24x7 receives.
-- **Redaction:** If you need redaction before egress, run the collector on the Premium plan with a VNet-integrated egress proxy that masks fields. (The architecture supports it; we can help you configure.)
-
----
-
-## 8. Logging, Auditability & Forensics
-
-- **Application Insights** captures every invocation, exception, and custom audit event, inside your tenant.
-- **Audit events** we emit: `auto_update_run`, `auto_update_health_check`, `log_audit` (all admin actions), `scan_started/scan_completed`, `config_changed`, `deprovision_attempted`, and per-blob `processing_result`.
-- **Debug bundle export** — one click in the dashboard produces a JSON snapshot of all config + recent events, for compliance audits.
-- **Tamper-evidence:** Audit events are written with conditional ETag writes — concurrent runs can't silently overwrite each other. (See `shared/debug_logger.py`.)
+- **Remove the collector's settings first:** **Remove Diagnostic Settings** on the collector's Settings tab in Site24x7 (or the dashboard) removes this collector's diagnostic settings and turns automatic scans off.
+- **Then run `setup/teardown.sh [--clean-diag-settings]`:**
+  - It works only on the deployment's subscription and on a resource group tagged `managed-by=s247-diag-logs`.
+  - It removes that group's locks, the managed identity's subscription role assignments, and the group itself, which holds the Function App, the regional storage accounts and their buffered logs.
+  - With `--clean-diag-settings`, it also removes this collector's diagnostic setting from resources where it sends to this deployment's storage.
+- **Deleting the resource group directly** does not remove diagnostic settings on your resources (they live on those resources) or the subscription-scope role assignments. Remove those separately.
+- **In Site24x7:** delete the collector registration and the log types separately.
 
 ---
 
-## 9. Uninstall / Data-Destruction
+## 12. Known limits and open items
 
-Run `setup/teardown.sh` or:
-
-```bash
-az group delete --name <collector-resource-group> --yes
-az role assignment delete --assignee <function-mi-principal-id>
-```
-
-This removes:
-- The Function App
-- All regional storage accounts (and all buffered logs)
-- All diagnostic settings the collector created on your resources
-- All RBAC assignments
-
-**No residue anywhere in your tenant**, and we retain nothing.
-
----
-
-## 10. Known Limits & What We Need From You
-
-Things we do not do (by design, and why):
-
-| Not done | Rationale | Workaround |
+| Item | Status | Mitigation |
 |---|---|---|
-| No Key Vault integration for the Site24x7 API key | Keeps deployment a single-step ARM template; Azure app settings are already encrypted at rest | If policy requires Key Vault, add a Key Vault reference (`@Microsoft.KeyVault(SecretUri=…)`) in app settings; works transparently |
-| No Private Endpoints by default | Consumption plan doesn't support them | Upgrade to Premium plan + set `WEBSITE_VNET_ROUTE_ALL=1`; allow `logc.site24x7.*` through egress firewall |
-| No customer-managed encryption keys (CMK) on storage | Not all Azure regions support it uniformly | Enable CMK on the managed storage accounts post-deploy; the app doesn't read/write encryption settings |
-| No mTLS to Site24x7 | Site24x7 uses API-key auth over TLS | Not applicable — TLS 1.2+ is enforced on both sides |
+| Site24x7 holds the default host key, which authorizes every collector endpoint (section 6) | Open | Admin-only, server-side actions; key verified at registration; encrypted at rest. A narrower key per action set is planned. |
+| After verifying an update, the updater points `WEBSITE_RUN_FROM_PACKAGE` at the package URL, and Azure downloads it again | Open | The packages branch is written only by the release workflow, which refuses to replace a released version. Planned: deploy the verified bytes from the collector's own storage. |
+| A failed update is not rolled back automatically | Open | Health check after the update; set `PINNED_VERSION` or `SKIP_AUTO_UPDATE`. |
+| Masking and filter patterns come from Site24x7 and run with Python's backtracking regular expressions | Accepted | Patterns are defined by Site24x7, not by log content. A pathological pattern could slow processing. |
+| Two collectors sharing one resource group (`resourceGroupName` override) can read each other's regional storage | Open | Each deployment gets its own resource group by default. Don't point two collectors at one group. |
+| No Key Vault, Private Endpoint or customer-managed key by default | By design (Consumption plan, single template) | Key Vault references in app settings work for `SITE24X7_API_KEY`. A Premium plan with virtual network integration supports private networking. |
+| Dependencies are pinned by version range, without hashes | Open | Releases build from `requirements.txt` in CI. A hashed lock file is planned. |
 
 ---
 
-## 11. Response to Common Security Questions
+## 13. Common questions
 
 | Question | Answer |
 |---|---|
-| "Can it read data from outside its resource group?" | Read *inventory* (resource list + diagnostic settings) across the subscription, yes — that's how it knows what to collect. **Data-plane access is zero** — it never reads VM disks, SQL tables, Storage blobs of your resources, etc. |
-| "Can it write / modify / delete my resources?" | Only `Microsoft.Insights/diagnosticSettings`, and only on resources you told it to manage. Contributor is scoped to its **own** RG. |
-| "Can it elevate privileges?" | No. `Microsoft.Authorization/*` is not in any granted role. |
-| "What happens if the GitHub repo is compromised?" | Multiple barriers: (1) pre-deploy validation refuses malformed packages, (2) the age gate delays adoption 60 min, (3) you can set `SKIP_AUTO_UPDATE=true` any time, (4) you can pin a known-good version, (5) you can fork the repo and use your fork. |
-| "What happens if Site24x7 is breached?" | The worst-case damage is an attacker with your device key could inject garbage logs into your Site24x7 tenant. They cannot reach back into your Azure tenant — outbound-only flow, no inbound. Rotate the device key via Site24x7 portal. |
-| "Is the code open-source / auditable?" | Yes. MIT-style internal license. Complete source on GitHub including CI, tests (260+), and release scripts. No binary blobs. |
-| "How big is the attack surface?" | ~3000 LOC of Python + 4 HTTP endpoints behind function keys + one timer-driven update check. No inbound network path other than Azure's own authenticated control plane. |
-| "Can you prove what's deployed matches what's on GitHub?" | Every deploy is a zip built by GitHub Actions from a tagged commit. You can download the release artifact, `unzip -l` it, and compare against the source tree at that tag. |
-
----
-
-## 12. Compliance Notes
-
-The architecture is consistent with:
-- **SOC 2 Type II** — audit trail via App Insights + conditional-write audit events.
-- **ISO 27001** — separation of duties (MI has no permission to alter RBAC); data-at-rest encryption; data-in-transit TLS 1.2+.
-- **HIPAA / PCI** — recommend running on **Azure Premium plan** with VNet integration and Private Endpoints; enable Key Vault references for the device key; enable CMK on storage.
-- **Data residency** — logs never leave the Site24x7 data center you pick at deploy time.
-
-For SOC 2 / ISO audits we can provide: architecture document, this security overview, RBAC matrix, deployment evidence, and a signed attestation of the SDLC (tests, code review, release process).
-
----
-
-## 13. Contact
-
-- Security concerns / responsible disclosure: *(your security contact)*
-- Repo: `github.com/site24x7/azure-log-collector`
-- Issue tracker: GitHub Issues on the same repo
+| Can it read data outside its own resource group? | It reads the resource inventory and log categories of the monitored subscriptions, and the log blobs in its own regional storage accounts. It does not read data of your other resources (disks, databases, other storage accounts). |
+| Can it change my resources? | It manages diagnostic settings on resources in the monitored subscriptions (only its own, as described in section 3). It creates and deletes storage accounts in its own resource group, and writes its own app settings. It does nothing until an admin starts collecting (section 4). |
+| Can it change permissions? | No. It has no role-assignment rights. |
+| What if the GitHub repository were compromised? | An attacker would need to publish a release that passes the update gates (section 9) and wait for the age gate. You can turn updates off (`SKIP_AUTO_UPDATE=true`) or point `UPDATE_CHECK_URL` at your own fork. |
+| What if Site24x7 were compromised? | With the Device Key, an attacker could send logs into your Site24x7 account. With the stored host key (section 6), they could call the collector's endpoints, for example change settings or remove diagnostic settings. They cannot reach your other Azure resources: the collector's identity is limited as described in section 3. |
+| Can I check what is deployed? | Each release zip is built by GitHub Actions from a tagged commit, with its SHA-256 in `version.json`. Compare the running package with the tag. |
