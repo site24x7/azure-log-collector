@@ -19,6 +19,15 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
   not restart the app. The template parameter `startCollectingAtOnce=true`
   skips the review; collectors installed before this version keep collecting.
 
+- Site24x7 now gets its own function key, `site24x7`, on just the endpoints it
+  calls, instead of the Function App's default host key. It no longer opens
+  the dashboard or debug data, and the customer's own keys are independent of
+  it. `SITE24X7_KEY_EXCLUDE` keeps chosen functions (e.g.
+  `RemoveDiagSettings,CheckUpdate`) out of Site24x7's reach; `*` gives
+  Site24x7 no key (and the collector stops reporting). Because the resource
+  group lock forbids deleting keys, an excluded function's key is overwritten
+  with a value nobody holds.
+
 ### Fixed
 - Saving an include-tag exclusion (e.g. `env=prod`) removed the diagnostic
   settings of every configured resource, including the ones carrying the tag.
