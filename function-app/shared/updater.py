@@ -26,7 +26,7 @@ import re
 import tempfile
 import time
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -468,6 +468,75 @@ def _post_deploy_health_check(func_app_name: str, checks: int = 3,
     return {"healthy": False, "checks": results, "url": url}
 
 
+# Verified packages are staged in the collector's own storage account, and the
+# app runs from that copy: Azure then loads exactly the bytes that were checked,
+# never the release URL again (it could change between the check and the load).
+PACKAGE_CONTAINER = "s247-packages"
+# The read-only link the app runs from; a new update replaces it.
+PACKAGE_LINK_DAYS = 3650
+UPDATE_STATE_BLOB = "update-state.json"
+
+
+def _stage_verified_package(zip_path: str, version: str, sha256: str) -> str:
+    """Upload the verified zip and return a read-only HTTPS link to it."""
+    from azure.core.exceptions import ResourceExistsError
+    from azure.storage.blob import BlobSasPermissions, BlobServiceClient, generate_blob_sas
+
+    service = BlobServiceClient.from_connection_string(os.environ["AzureWebJobsStorage"])
+    container = service.get_container_client(PACKAGE_CONTAINER)
+    try:
+        container.create_container()
+    except ResourceExistsError:
+        pass
+    name = f"{(version or 'unknown').lstrip('v')}-{sha256[:16]}.zip"
+    blob = container.get_blob_client(name)
+    with open(zip_path, "rb") as f:
+        blob.upload_blob(f, overwrite=True)
+    sas = generate_blob_sas(
+        account_name=service.account_name, container_name=PACKAGE_CONTAINER, blob_name=name,
+        account_key=service.credential.account_key, permission=BlobSasPermissions(read=True),
+        expiry=datetime.now(timezone.utc) + timedelta(days=PACKAGE_LINK_DAYS), protocol="https",
+    )
+    return f"{blob.url}?{sas}"
+
+
+def _save_update_state(state: Dict) -> None:
+    try:
+        from shared.config_store import _write_blob
+        _write_blob(UPDATE_STATE_BLOB, json.dumps(state, indent=2))
+    except Exception as e:
+        logger.warning("Could not record the update state: %s", type(e).__name__)
+
+
+def get_update_state() -> Dict:
+    """The last update this collector submitted and whether the new version has
+    confirmed it is running (``confirmed_at``)."""
+    try:
+        from shared.config_store import _read_blob
+        raw = _read_blob(UPDATE_STATE_BLOB)
+        return json.loads(raw) if raw else {}
+    except Exception:
+        return {}
+
+
+_confirmation_checked = False
+
+
+def confirm_running_version() -> None:
+    """Called by the new version on its first processing run: an update counts
+    as done only once the new code actually runs. Checked once per worker."""
+    global _confirmation_checked
+    if _confirmation_checked:
+        return
+    _confirmation_checked = True
+    state = get_update_state()
+    if state.get("pending_version") and not state.get("confirmed_at") and \
+            (get_local_version() or "").lstrip("v") == str(state["pending_version"]).lstrip("v"):
+        state["confirmed_at"] = datetime.now(timezone.utc).isoformat()
+        _save_update_state(state)
+        logger.info("Update to %s confirmed: the new version is running", state["pending_version"])
+
+
 def deploy_update(package_url: str, expected_sha256: Optional[str] = None,
                   expected_version: Optional[str] = None) -> Dict:
     """Download the package and deploy it to this Function App.
@@ -573,12 +642,24 @@ def deploy_update(package_url: str, expected_sha256: Optional[str] = None,
             logger.info(
                 "Run-from-package (URL) mode detected — updating WEBSITE_RUN_FROM_PACKAGE"
             )
+            # Run from our own copy of the verified bytes, not the release URL.
+            staged_url = _stage_verified_package(
+                tmp_path, expected_version or "", expected_sha256 or _sha256_of_file(tmp_path))
+            properties = dict(settings_resp.json().get("properties", {}))
+            # Keep the previous package so an admin can go back to it.
+            properties["S247_PREVIOUS_PACKAGE"] = current_pkg_url
+            properties["WEBSITE_RUN_FROM_PACKAGE"] = staged_url
+            _save_update_state({
+                "pending_version": expected_version or "",
+                "previous_version": get_local_version() or "",
+                "submitted_at": datetime.now(timezone.utc).isoformat(),
+            })
             patch_resp = requests.patch(
                 f"{site_base}/config/appsettings?api-version=2023-01-01",
                 headers={**auth_headers, "Content-Type": "application/json"},
-                json={"properties": {**settings_resp.json().get("properties", {}),
-                                     "WEBSITE_RUN_FROM_PACKAGE": package_url}},
+                json={"properties": properties},
                 timeout=60,
+                allow_redirects=False,
             )
             if not patch_resp.ok:
                 error_msg = patch_resp.text[:500]
@@ -602,8 +683,10 @@ def deploy_update(package_url: str, expected_sha256: Optional[str] = None,
                     "worker recycle",
                     restart_resp.status_code,
                 )
-            logger.info("Update deployed successfully (run-from-package URL swap)")
-            return {"success": True, "status_code": patch_resp.status_code, "mode": "run-from-package"}
+            # Submitted, not yet done: the new version confirms itself on its first run.
+            logger.info("Update submitted (run-from-package from the verified copy)")
+            return {"success": True, "status_code": patch_resp.status_code, "mode": "run-from-package",
+                    "submitted": True, "confirmed": False}
 
         # Fallback: zipdeploy (dev / Oryx build mode) — reuse the already
         # downloaded + integrity-verified package; don't fetch it twice.

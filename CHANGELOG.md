@@ -28,6 +28,14 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
   group lock forbids deleting keys, an excluded function's key is overwritten
   with a value nobody holds.
 
+- Updates run from the collector's own copy of the verified package (a
+  read-only link to a blob in its storage account), so Azure loads exactly the
+  bytes whose SHA-256, structure and version were checked; before, Azure
+  downloaded the release URL again after the check. The previous package
+  address is kept in `S247_PREVIOUS_PACKAGE`, and an update counts as done only
+  when the new version confirms on its first run (`update_state` in
+  `/api/status`).
+
 ### Fixed
 - Saving an include-tag exclusion (e.g. `env=prod`) removed the diagnostic
   settings of every configured resource, including the ones carrying the tag.

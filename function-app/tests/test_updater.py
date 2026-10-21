@@ -723,3 +723,70 @@ def test_package_version_must_match_the_advertised_version(tmp_path):
     ok_match, _ = validate_zip_package(str(pkg), expected_version="1.0.0")
     ok_other, reason = validate_zip_package(str(pkg), expected_version="2.0.0")
     assert (ok_match, ok_other) == (ok_any, False) and "does not match" in reason
+
+
+def test_update_runs_from_the_verified_copy_and_keeps_the_previous_package(monkeypatch, tmp_path):
+    """Azure must load the bytes that were checked, not re-download the release URL."""
+    import shared.updater as up
+    pkg = tmp_path / "pkg.zip"
+    pkg.write_bytes(b"verified-bytes")
+    settings = MagicMock(ok=True)
+    settings.json.return_value = {"properties": {"WEBSITE_RUN_FROM_PACKAGE": "https://raw.githubusercontent.com/x/old.zip",
+                                                 "OTHER": "1"}}
+    patched = MagicMock(ok=True, status_code=200)
+    monkeypatch.setenv("WEBSITE_SITE_NAME", "app")
+    monkeypatch.setenv("SUBSCRIPTION_IDS", "sub")
+    monkeypatch.setenv("REQUIRE_PACKAGE_SHA256", "false")
+    with patch.object(up, "_package_url_trusted", return_value=(True, "")), \
+         patch.object(up.requests, "get") as get, \
+         patch.object(up, "validate_zip_package", return_value=(True, "")), \
+         patch.object(up, "DefaultAzureCredential"), \
+         patch.object(up.requests, "post", return_value=settings), \
+         patch.object(up.requests, "patch", return_value=patched) as patch_call, \
+         patch.object(up, "_stage_verified_package", return_value="https://own.blob.core.windows.net/s247-packages/2.0.0-x.zip?sig") as stage, \
+         patch.object(up, "_save_update_state") as save_state, \
+         patch.object(up, "get_local_version", return_value="1.0.0"):
+        get.return_value.iter_content.return_value = [b"verified-bytes"]
+        result = up.deploy_update("https://github.com/site24x7/azure-log-collector/releases/download/v2.0.0/s247-function-app.zip",
+                                  expected_version="2.0.0")
+    assert result["success"] and result["submitted"] and not result["confirmed"]
+    stage.assert_called_once()
+    props = patch_call.call_args.kwargs["json"]["properties"]
+    assert props["WEBSITE_RUN_FROM_PACKAGE"].startswith("https://own.blob.core.windows.net/s247-packages/")
+    assert props["S247_PREVIOUS_PACKAGE"] == "https://raw.githubusercontent.com/x/old.zip"
+    assert props["OTHER"] == "1"
+    assert save_state.call_args.args[0]["pending_version"] == "2.0.0"
+
+
+def test_new_version_confirms_the_update_once(monkeypatch):
+    import shared.updater as up
+    monkeypatch.setattr(up, "_confirmation_checked", False)
+    with patch.object(up, "get_update_state", return_value={"pending_version": "2.0.0"}), \
+         patch.object(up, "get_local_version", return_value="2.0.0"), \
+         patch.object(up, "_save_update_state") as save:
+        up.confirm_running_version()
+        up.confirm_running_version()
+    assert save.call_count == 1 and save.call_args.args[0]["confirmed_at"]
+
+
+def test_old_version_does_not_confirm(monkeypatch):
+    import shared.updater as up
+    monkeypatch.setattr(up, "_confirmation_checked", False)
+    with patch.object(up, "get_update_state", return_value={"pending_version": "2.0.0"}), \
+         patch.object(up, "get_local_version", return_value="1.0.0"), \
+         patch.object(up, "_save_update_state") as save:
+        up.confirm_running_version()
+    save.assert_not_called()
+
+
+def test_staged_package_link_is_read_only_https(monkeypatch, tmp_path):
+    import shared.updater as up
+    pkg = tmp_path / "pkg.zip"
+    pkg.write_bytes(b"zip")
+    monkeypatch.setenv("AzureWebJobsStorage", "DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=a2V5;EndpointSuffix=core.windows.net")
+    with patch("azure.storage.blob.BlobClient.upload_blob") as upload, \
+         patch("azure.storage.blob.ContainerClient.create_container"):
+        link = up._stage_verified_package(str(pkg), "2.0.0", "ab" * 32)
+    upload.assert_called_once()
+    assert link.startswith("https://acct.blob.core.windows.net/s247-packages/2.0.0-abababababababab.zip?")
+    assert "sp=r&" in link and "spr=https" in link

@@ -102,6 +102,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             "general_logtype_enabled": general_enabled,
             "processing_enabled": processing_enabled,
             "review_pending": _review_pending(),
+            "update_state": _update_state(),
             "monitor_pipeline_resources": monitor_pipeline,
             "auto_scan_enabled": auto_scan,
             "safe_delete_days": safe_delete_days,
@@ -231,3 +232,13 @@ def _review_pending() -> bool:
         return not is_collection_active()
     except Exception:
         return False
+
+
+def _update_state() -> dict:
+    """The last update submitted, and whether the new version confirmed it runs."""
+    try:
+        from shared.updater import get_update_state
+        state = get_update_state()
+        return {k: state.get(k, "") for k in ("pending_version", "previous_version", "submitted_at", "confirmed_at")}
+    except Exception:
+        return {}

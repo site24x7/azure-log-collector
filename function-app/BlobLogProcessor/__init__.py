@@ -70,6 +70,11 @@ def main(timer: func.TimerRequest) -> None:
         sync_registration()
     except Exception as e:
         logger.warning("BlobLogProcessor: registration check failed: %s", type(e).__name__)
+    try:
+        from shared.updater import confirm_running_version
+        confirm_running_version()
+    except Exception as e:
+        logger.warning("BlobLogProcessor: update confirmation failed: %s", type(e).__name__)
 
     processing_enabled = os.environ.get("PROCESSING_ENABLED", "true").lower() == "true"
     if not processing_enabled:
