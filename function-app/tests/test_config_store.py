@@ -165,12 +165,20 @@ class TestDisabledLogTypes:
 
     @patch("shared.config_store._rmw_blob")
     def test_disable_already_disabled(self, mock_rmw):
-        mock_rmw.return_value = None  # simulates abort (already present)
+        # The stored list already has it: mutate aborts, nothing is written.
+        mock_rmw.side_effect = lambda path, mutate, **kw: mutate(["AuditLogs"])
         # Still returns True — idempotent
         assert config_store.disable_log_type("auditlogs") is True
-        # Verify mutate returns None for already-disabled
-        mutate = mock_rmw.call_args.args[1]
-        assert mutate(["AuditLogs"]) is None
+
+    @patch("shared.config_store._rmw_blob")
+    def test_disable_reports_a_failed_write(self, mock_rmw):
+        mock_rmw.return_value = None  # mutate wanted a write, the write failed
+        assert config_store.disable_log_type("auditlogs") is False
+
+    @patch("shared.config_store._rmw_blob")
+    def test_enable_reports_a_failed_write(self, mock_rmw):
+        mock_rmw.return_value = None
+        assert config_store.enable_log_type("AuditLogs") is False
 
     @patch("shared.config_store._rmw_blob")
     def test_enable_log_type(self, mock_rmw):
@@ -218,11 +226,14 @@ class TestConfiguredResources:
 
     @patch("shared.config_store._rmw_blob")
     def test_unmark_resource_not_tracked(self, mock_rmw):
-        mock_rmw.return_value = None  # abort
+        mock_rmw.side_effect = lambda path, mutate, **kw: mutate({})  # not tracked: abort
         config_store._cache["configured_resources"] = {}
         assert config_store.unmark_resource_configured("/nonexistent") is True
-        mutate = mock_rmw.call_args.args[1]
-        assert mutate({}) is None
+
+    @patch("shared.config_store._rmw_blob")
+    def test_unmark_reports_a_failed_write(self, mock_rmw):
+        mock_rmw.return_value = None
+        assert config_store.unmark_resource_configured("/subscriptions/s/x") is False
 
 
 # ─── Cache ───────────────────────────────────────────────────────────────────

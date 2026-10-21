@@ -378,33 +378,38 @@ def save_disabled_log_types(disabled: List[str]) -> bool:
 
 def disable_log_type(category: str) -> bool:
     """Add a category to the disabled list (concurrency-safe)."""
+    noop = []
+
     def mutate(current):
         disabled = current if isinstance(current, list) else []
         if category.lower() in [d.lower() for d in disabled]:
+            noop.append(True)
             return None  # already present — abort write
         return disabled + [category]
 
     result = _rmw_blob(DISABLED_TYPES_BLOB, mutate, default=[])
     if result is not None:
         _cache["disabled_types"] = result
-        return True
-    # None may mean abort-no-op (already present) OR failure. Check cache.
-    return True
+    # None is either "already disabled" (fine) or a failed write.
+    return result is not None or bool(noop)
 
 
 def enable_log_type(category: str) -> bool:
     """Remove a category from the disabled list (concurrency-safe)."""
+    noop = []
+
     def mutate(current):
         disabled = current if isinstance(current, list) else []
         updated = [d for d in disabled if d.lower() != category.lower()]
         if len(updated) == len(disabled):
+            noop.append(True)
             return None  # not present — abort
         return updated
 
     result = _rmw_blob(DISABLED_TYPES_BLOB, mutate, default=[])
     if result is not None:
         _cache["disabled_types"] = result
-    return True
+    return result is not None or bool(noop)
 
 
 def is_log_type_disabled(category: str) -> bool:
@@ -523,9 +528,12 @@ def mark_resource_configured(
 
 def unmark_resource_configured(resource_id: str) -> bool:
     """Remove a resource from the configured tracking (concurrency-safe RMW)."""
+    noop = []
+
     def mutate(current):
         configured = current if isinstance(current, dict) else {}
         if resource_id not in configured:
+            noop.append(True)
             return None  # not present — abort
         configured = dict(configured)
         del configured[resource_id]
@@ -534,7 +542,7 @@ def unmark_resource_configured(resource_id: str) -> bool:
     result = _rmw_blob(CONFIGURED_RESOURCES_BLOB, mutate, default={})
     if result is not None:
         _cache["configured_resources"] = result
-    return True
+    return result is not None or bool(noop)
 
 
 def clear_cache():

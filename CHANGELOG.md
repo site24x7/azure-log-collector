@@ -9,6 +9,31 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 
 ## [1.0.1-beta10] — 2026-10-21
 
+### Fixed
+- Saving an include-tag exclusion (e.g. `env=prod`) removed the diagnostic
+  settings of every configured resource, including the ones carrying the tag.
+  Only rules decided by the resource ID (resource IDs, subscriptions, resource
+  groups) now remove settings at once; location, type and tag changes queue a
+  scan, which has each resource's details.
+- Exclusion lists set to `null` were accepted and made every later scan fail;
+  they are now rejected, and the filter tolerates them.
+- A scan that cannot read the exclusion list stops instead of treating it as
+  empty (which configured excluded resources).
+- `{"enabled": "false"}` turned processing / the general log type on; these
+  toggles and the settings endpoint now require real JSON booleans and
+  integers.
+- Saves that failed were reported as successful: disabling / enabling log
+  categories, exclusion updates and their clean-up now report the failure, and
+  a setting that could not be removed keeps its record.
+- Disabling a log category no longer rewrites tracking for resources that still
+  have other categories, so re-enabling it needs no rediscovery.
+- Remove All refuses while a scan runs, turns automatic scans off before
+  removing anything (and stops if that fails), counts failed lookups as errors,
+  and clears only the records of settings confirmed gone.
+- A disabled Entra ID category was still sent through the general log type;
+  it is now skipped (and Entra categories wait for the next run when their
+  state cannot be read).
+
 ### Changed
 - An upload that fails (Site24x7 unreachable, timeout, rejected request) now
   counts as **retrying**, not dropped: the collector keeps its read position and

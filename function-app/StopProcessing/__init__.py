@@ -31,10 +31,11 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             status_code=400,
         )
 
-    enabled = body.get("enabled")
-    if enabled is None:
+    # A JSON boolean only: "false" (a non-empty string) would turn processing on.
+    enabled = body.get("enabled") if isinstance(body, dict) else None
+    if not isinstance(enabled, bool):
         return func.HttpResponse(
-            json.dumps({"error": "Missing 'enabled' field (true/false)"}),
+            json.dumps({"error": "'enabled' must be true or false"}),
             mimetype="application/json",
             status_code=400,
         )

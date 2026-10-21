@@ -154,8 +154,9 @@ def run_scan():
     _log_event("info", "DiagSettingsManager",
                f"Phase 1 done: {len(supported_types)} types in {_time.monotonic()-phase_start:.1f}s")
 
-    # Load ignore list
-    ignore_list = load_ignore_list()
+    # Load ignore list. A read failure stops the scan: an empty list would
+    # configure resources the user excluded.
+    ignore_list = load_ignore_list(strict=True)
     configured_resources = get_configured_resources()
 
     # ── Phase 2: Discover resources ──

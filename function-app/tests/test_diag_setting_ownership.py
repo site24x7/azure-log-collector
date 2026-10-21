@@ -21,7 +21,7 @@ def mgr(monkeypatch):
     monkeypatch.setenv("DIAG_STORAGE_SUFFIX", "oct14")
     m = AzureManager.__new__(AzureManager)
     m.settings = {}  # name -> storage account id on RES
-    m.get_diagnostic_setting = lambda rid, name=None: (
+    m.get_diagnostic_setting = lambda rid, name=None, raise_errors=False: (
         {"storage_account_id": m.settings[name or collector_setting_name()]}
         if (name or collector_setting_name()) in m.settings else None)
     def delete(rid, name=None):

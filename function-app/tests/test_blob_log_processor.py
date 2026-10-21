@@ -536,3 +536,19 @@ class TestUploadFailureIsRetryNotDrop:
         stats = self._stats()
         assert _upload_records(client, "cfg", [{"n": 1}], False, stats, "acct", "c", "b.json")
         assert (stats["uploaded"], stats["retrying"], stats["dropped"]) == (1, 0, 0)
+
+
+class TestDisabledEntraCategories:
+    """A disabled Entra category must not reach Site24x7 through the general log type."""
+
+    def test_disabled_entra_categories_are_listed(self):
+        from BlobLogProcessor import _disabled_entra_categories
+        states = {"signinlogs": {"enabled": False}, "auditlogs": {"enabled": True},
+                  "notentra": {"enabled": False}}
+        with patch("shared.config_store.get_entra_logtype_states", return_value=states):
+            assert _disabled_entra_categories() == {"signinlogs"}
+
+    def test_unreadable_state_means_unknown(self):
+        from BlobLogProcessor import _disabled_entra_categories
+        with patch("shared.config_store.get_entra_logtype_states", side_effect=RuntimeError("down")):
+            assert _disabled_entra_categories() is None

@@ -37,6 +37,8 @@ from azure.identity import DefaultAzureCredential
 from azure.storage.blob import BlobServiceClient
 from azure.mgmt.storage import StorageManagementClient
 
+from shared.entra_config import get_entra_normalized_categories
+
 logger = logging.getLogger(__name__)
 
 CHECKPOINT_CONTAINER = "s247-checkpoints"
@@ -52,6 +54,8 @@ TIME_BUDGET_RESERVE_SEC = 60
 BACKLOG_WARN_THRESHOLD = 500
 # Skip incremental reads larger than this to prevent OOM/timeout (50 MB)
 MAX_READ_BYTES = 50 * 1024 * 1024
+# Entra ID categories: switched off in their own state, not the disabled list.
+_ENTRA_NORMALIZED = frozenset(get_entra_normalized_categories())
 
 
 def main(timer: func.TimerRequest) -> None:
@@ -84,6 +88,20 @@ def main(timer: func.TimerRequest) -> None:
             pass
 
 
+def _disabled_entra_categories():
+    """Normalized Entra categories switched off on the dashboard, or None when
+    their state cannot be read (then every Entra category is skipped for this
+    run; its blobs stay and are read next run)."""
+    from shared.config_store import get_entra_logtype_states
+    try:
+        states = get_entra_logtype_states(strict=True)
+    except Exception as e:
+        logger.warning("BlobLogProcessor: Entra log type state unreadable (%s)", type(e).__name__)
+        return None
+    return {name for name, state in states.items()
+            if name in _ENTRA_NORMALIZED and state.get("enabled") is False}
+
+
 def _process_all_regions():
     from shared.config_store import get_all_logtype_configs, clear_cache, is_log_type_disabled
     from shared.site24x7_client import Site24x7Client
@@ -101,6 +119,7 @@ def _process_all_regions():
         return
 
     all_configs = get_all_logtype_configs()
+    disabled_entra = _disabled_entra_categories()
     general_config_b64 = os.environ.get("S247_GENERAL_LOGTYPE", "")
     general_enabled = os.environ.get("GENERAL_LOGTYPE_ENABLED", "false").lower() == "true"
 
@@ -164,6 +183,16 @@ def _process_all_regions():
                 # what makes disabling effective for sources we don't configure
                 # (Entra ID / subscription logs), where we can't stop the logs
                 # being written; we just skip forwarding them to Site24x7.
+                # Entra categories are switched off in their own state (the
+                # general log type fallback below would otherwise still send them).
+                if category_normalized in _ENTRA_NORMALIZED and (
+                        disabled_entra is None or category_normalized in disabled_entra):
+                    logger.info(
+                        "BlobLogProcessor: Entra log type '%s' is disabled or its state is "
+                        "unreadable — skipping container %s (account: %s)",
+                        category_normalized, cname, acct_name,
+                    )
+                    continue
                 if is_log_type_disabled(category_normalized):
                     logger.info(
                         "BlobLogProcessor: Log type '%s' is disabled — skipping "

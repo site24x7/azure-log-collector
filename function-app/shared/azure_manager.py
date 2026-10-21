@@ -152,12 +152,13 @@ class AzureManager:
     # ------------------------------------------------------------------
 
     def get_diagnostic_setting(
-        self, resource_id: str, setting_name: Optional[str] = None
+        self, resource_id: str, setting_name: Optional[str] = None, raise_errors: bool = False
     ) -> Optional[Dict]:
         """Check if a diagnostic setting exists on a resource.
 
         Returns a dict with the setting details including enabled categories,
-        or ``None`` if not found.
+        or ``None`` if not found. With ``raise_errors`` a failed lookup (other
+        than "not found") raises instead of looking like "no setting".
         """
         setting_name = setting_name or collector_setting_name()
         sub_id = _extract_subscription_id(resource_id)
@@ -192,6 +193,8 @@ class AzureManager:
                 logger.error(
                     f"Error checking diagnostic setting on {resource_id}: {e}"
                 )
+                if raise_errors:
+                    raise
             return None
 
     def create_diagnostic_setting(
@@ -391,7 +394,8 @@ class AzureManager:
         """
         from shared.storage_names import regional_storage_name
 
-        summary: Dict[str, Any] = {"removed": 0, "skipped": 0, "errors": 0, "details": []}
+        summary: Dict[str, Any] = {"removed": 0, "skipped": 0, "errors": 0, "unresolved": 0,
+                                   "details": [], "resolved_ids": []}
         suffix = os.environ.get("DIAG_STORAGE_SUFFIX", "").strip().lower()
         seed = os.environ.get("DIAG_SEED_REGION", "")
         all_resources = self.get_all_resources(subscription_ids)
@@ -400,7 +404,7 @@ class AzureManager:
             resource_id = resource.get("id", "")
             try:
                 removed = False
-                if self.get_diagnostic_setting(resource_id):
+                if self.get_diagnostic_setting(resource_id, raise_errors=True):
                     removed = self.delete_diagnostic_setting(resource_id)
                     if not removed:
                         summary["errors"] += 1
@@ -419,6 +423,8 @@ class AzureManager:
                     summary["details"].append({"id": resource_id, "status": "error"})
                     continue
                 removed = removed or bool(legacy)
+                # Removed now or confirmed absent: its tracking record can go.
+                summary["resolved_ids"].append(resource_id)
                 if removed:
                     summary["removed"] += 1
                     summary["details"].append({"id": resource_id, "status": "removed"})
@@ -428,9 +434,15 @@ class AzureManager:
                 summary["errors"] += 1
                 summary["details"].append({"id": resource_id, "status": "error", "message": str(e)})
 
+        # Tracked resources the discovery did not return (deleted, or discovery
+        # was incomplete): their setting state is unknown, keep their records.
+        discovered = {r.get("id", "") for r in all_resources}
+        summary["unresolved"] = sum(1 for rid in (records or {}) if rid not in discovered)
+
         logger.info(
             f"Bulk diagnostic settings removal: removed={summary['removed']}, "
-            f"skipped={summary['skipped']}, errors={summary['errors']}"
+            f"skipped={summary['skipped']}, errors={summary['errors']}, "
+            f"unresolved={summary['unresolved']}"
         )
         return summary
 
