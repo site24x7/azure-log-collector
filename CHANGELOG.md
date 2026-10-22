@@ -20,6 +20,11 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
   the Device Key, a data center list, Yes/No choices, and only the regions that
   offer Flex Consumption. The Site24x7 page opens the portal with it for
   releases from 1.0.1-beta13 on.
+- Application Insights stores its data in a Log Analytics workspace the
+  template creates in the collector's own resource group
+  (`s247-diag-func-<suffix>-logs`: 30-day retention, 1 GB daily cap). Before,
+  Azure created a workspace with no cap in a separate `ai_..._managed` resource
+  group, which deleting the collector's group left behind.
 
 ## [1.0.1-beta12] — 2026-10-22
 

@@ -78,7 +78,8 @@
     "functionZipUrl": "https://github.com/site24x7/azure-log-collector/releases/download/v1.0.1-beta13/released-package.zip",
     "readerRoleId": "acdd72a7-3385-48ef-bd42-f606fba81ae7",
     "monitoringContributorRoleId": "749f88d5-cbae-40b8-bcfc-e573ddc772fa",
-    "deploymentContainerName": "[concat('app-package-', take(variables('functionAppName'), 50))]"
+    "deploymentContainerName": "[concat('app-package-', take(variables('functionAppName'), 50))]",
+    "logWorkspaceName": "[concat('s247-diag-func-', variables('uniqueSuffix'), '-logs')]"
   },
   "resources": [
     {
@@ -236,6 +237,9 @@
           },
           "deploymentContainerName": {
             "value": "[variables('deploymentContainerName')]"
+          },
+          "logWorkspaceName": {
+            "value": "[variables('logWorkspaceName')]"
           }
         },
         "template": {
@@ -285,6 +289,9 @@
               "type": "string"
             },
             "deploymentContainerName": {
+              "type": "string"
+            },
+            "logWorkspaceName": {
               "type": "string"
             }
           },
@@ -350,17 +357,40 @@
               }
             },
             {
+              "type": "Microsoft.OperationalInsights/workspaces",
+              "apiVersion": "2022-10-01",
+              "name": "[parameters('logWorkspaceName')]",
+              "location": "[parameters('location')]",
+              "properties": {
+                "sku": {
+                  "name": "PerGB2018"
+                },
+                "retentionInDays": 30,
+                "workspaceCapping": {
+                  "dailyQuotaGb": 1
+                }
+              },
+              "tags": {
+                "managed-by": "s247-diag-logs"
+              }
+            },
+            {
               "type": "Microsoft.Insights/components",
               "apiVersion": "2020-02-02",
               "name": "[parameters('appInsightsName')]",
               "location": "[parameters('location')]",
               "kind": "web",
               "properties": {
-                "Application_Type": "web"
+                "Application_Type": "web",
+                "WorkspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('logWorkspaceName'))]",
+                "IngestionMode": "LogAnalytics"
               },
               "tags": {
                 "managed-by": "s247-diag-logs"
-              }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('logWorkspaceName'))]"
+              ]
             },
             {
               "type": "Microsoft.Web/serverfarms",

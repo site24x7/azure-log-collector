@@ -266,3 +266,15 @@ def test_portal_form_matches_the_template():
     for name in ('confirmAfterDiscovery', 'generalLogTypeEnabled'):
         values = {o['value'] for o in fields[name]['constraints']['allowedValues']}
         assert values == set(template['parameters'][name]['allowedValues'])
+
+
+def test_application_insights_uses_the_collectors_own_workspace():
+    # Without a workspace Azure creates one in a separate ai_..._managed resource
+    # group, with no daily cap, that deleting the collector's group leaves behind.
+    _, nested = _nested_resources()
+    ws = next(r for r in nested if r['type'] == 'Microsoft.OperationalInsights/workspaces')
+    ai = next(r for r in nested if r['type'] == 'Microsoft.Insights/components')
+    assert ws['properties']['workspaceCapping']['dailyQuotaGb'] == 1
+    assert ws['properties']['retentionInDays'] == 30
+    assert ai['properties']['WorkspaceResourceId'] == "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('logWorkspaceName'))]"
+    assert ai['dependsOn'] == [ai['properties']['WorkspaceResourceId']]
