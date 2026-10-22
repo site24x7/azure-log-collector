@@ -20,6 +20,10 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
   the Device Key, a data center list, Yes/No choices, and only the regions that
   offer Flex Consumption. The Site24x7 page opens the portal with it for
   releases from 1.0.1-beta13 on.
+- Log types are shown with Azure's own category names (`DeveloperPortalAuditLogs`
+  rather than the catalog's `developerportalauditlogs`): scans save the names
+  they see in `category-names.json`, and `GET /api/disabled-logtypes` returns
+  them as `category`.
 - Application Insights stores its data in a Log Analytics workspace the
   template creates in the collector's own resource group
   (`s247-diag-func-<suffix>-logs`: 30-day retention, 1 GB daily cap). Before,

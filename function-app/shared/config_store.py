@@ -23,6 +23,8 @@ SUPPORTED_TYPES_BLOB = "azure-log-types.json"
 DISABLED_TYPES_BLOB = "disabled-logtypes.json"
 CONFIGURED_RESOURCES_BLOB = "configured-resources.json"
 CATEGORY_RESOURCE_TYPES_BLOB = "category-resource-types.json"
+# Azure's own spelling of each category (DeveloperPortalAuditLogs), by normalized key.
+CATEGORY_NAMES_BLOB = "category-names.json"
 SCAN_STATE_BLOB = "scan-state.json"
 ENTRA_STATE_BLOB = "entra-logtypes.json"
 COLLECTION_APPROVAL_BLOB = "collection-approval.json"
@@ -528,6 +530,26 @@ def get_category_resource_types() -> Dict:
 def save_category_resource_types(mapping: Dict) -> bool:
     """Save category → resource_types mapping to blob."""
     return _write_blob(CATEGORY_RESOURCE_TYPES_BLOB, json.dumps(mapping, indent=2))
+
+
+def get_category_names() -> Dict[str, str]:
+    """Azure's spelling of each log category seen in scans, by normalized key."""
+    data = _read_blob(CATEGORY_NAMES_BLOB)
+    if data:
+        try:
+            names = json.loads(data)
+            if isinstance(names, dict):
+                return {str(k): str(v) for k, v in names.items()}
+        except json.JSONDecodeError:
+            logger.error("Failed to parse %s", CATEGORY_NAMES_BLOB)
+    return {}
+
+
+def save_category_names(names: Dict[str, str]) -> bool:
+    """Add newly seen category names; names learned in earlier scans are kept."""
+    merged = get_category_names()
+    merged.update({k: v for k, v in names.items() if k and v})
+    return _write_blob(CATEGORY_NAMES_BLOB, json.dumps(merged, indent=2, sort_keys=True))
 
 
 def mark_resource_configured(

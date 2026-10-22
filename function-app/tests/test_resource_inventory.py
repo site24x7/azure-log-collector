@@ -71,3 +71,27 @@ def test_sdk_request_logging_is_kept_to_warnings():
     import shared  # noqa: F401  (sets the levels on import)
     assert logging.getLogger("azure").getEffectiveLevel() >= logging.WARNING
     assert logging.getLogger("azure.core.pipeline.policies.http_logging_policy").getEffectiveLevel() >= logging.WARNING
+
+
+def test_category_names_are_merged_across_scans():
+    stored = {"gatewaylogs": "GatewayLogs"}
+    written = {}
+    with patch.object(config_store, "_read_blob", return_value=json.dumps(stored)), \
+         patch.object(config_store, "_write_blob", side_effect=lambda p, d: written.update({p: json.loads(d)}) or True):
+        config_store.save_category_names({"functionapplogs": "FunctionAppLogs", "": "x"})
+    assert written[config_store.CATEGORY_NAMES_BLOB] == {"gatewaylogs": "GatewayLogs", "functionapplogs": "FunctionAppLogs"}
+
+
+def test_log_types_view_uses_azure_category_names():
+    import GetDisabledLogTypes
+    catalog = {"developerportalauditlogs": {"display_name": "APIM portal", "logtype": "developerportalauditlogs",
+                                            "log_categories": ["developerportalauditlogs"]},
+               "gatewaylogs": {"display_name": "APIM", "logtype": "gatewaylogs", "log_categories": ["gatewaylogs"]}}
+    req = func.HttpRequest(method="GET", url="/api/disabled-logtypes", body=b"", headers={})
+    with patch("shared.config_store.get_disabled_log_types", return_value=[]), \
+         patch("shared.config_store.get_supported_log_types", return_value=catalog), \
+         patch("shared.config_store.get_category_resource_types", return_value={}), \
+         patch("shared.config_store.get_category_names", return_value={"developerportalauditlogs": "DeveloperPortalAuditLogs"}):
+        body = json.loads(GetDisabledLogTypes.main(req).get_body())
+    names = {t["category_key"]: t["category"] for t in body["supported_types"]}
+    assert names == {"developerportalauditlogs": "DeveloperPortalAuditLogs", "gatewaylogs": "gatewaylogs"}

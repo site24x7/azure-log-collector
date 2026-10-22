@@ -135,6 +135,7 @@ def run_scan():
         save_configured_resources,
         save_scan_state,
         save_category_resource_types,
+        save_category_names,
         clear_cache,
         is_collection_active,
         get_resource_inventory,
@@ -414,10 +415,12 @@ def run_scan():
     # Persist category → resource_types mapping from ALL discovered resources
     # (used by dashboard to show which Azure resource types produce each category)
     _cat_rt_map = {}
+    _cat_names = {}
     for rtype, cats in _category_cache_by_type.items():
         for cat in cats:
             cat_norm = cat.replace("-", "").replace("_", "").lower()
             _cat_rt_map.setdefault(cat_norm, set()).add(rtype)
+            _cat_names.setdefault(cat_norm, cat)
     # Also include categories from already-configured resources
     for res_id, info in configured_resources.items():
         parts = res_id.split("/providers/")
@@ -427,6 +430,7 @@ def run_scan():
             for cat in info.get("categories", []):
                 cat_norm = cat.replace("-", "").replace("_", "").lower()
                 _cat_rt_map.setdefault(cat_norm, set()).add(rtype)
+                _cat_names.setdefault(cat_norm, cat)
     # Deduplicate resource types by case (keep longest variant per lowercase key)
     for cat_norm in _cat_rt_map:
         by_lower = {}
@@ -437,6 +441,8 @@ def run_scan():
         _cat_rt_map[cat_norm] = set(by_lower.values())
     # Convert sets to sorted lists and save
     save_category_resource_types({k: sorted(v) for k, v in _cat_rt_map.items()})
+    # The Site24x7 catalog spells categories in lower case; keep Azure's names for display.
+    save_category_names(_cat_names)
 
     # ── Phase 4c: Map categories to resources ──
     for resource in active_resources:
