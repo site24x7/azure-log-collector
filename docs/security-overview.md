@@ -79,7 +79,7 @@ Monitoring Contributor covers diagnostic settings on every resource in the subsc
 
 ## 4. Review before collecting
 
-A new deployment starts in review mode (`REVIEW_BEFORE_COLLECTING=true`; the template parameter `startCollectingAtOnce` defaults to `false`).
+A new deployment starts in review mode (`REVIEW_BEFORE_COLLECTING=true`; the template parameter `confirmAfterDiscovery` defaults to `true`).
 
 **Until an admin starts collecting**, scans only:
 - discover resources;
@@ -90,7 +90,7 @@ They create no storage accounts, Site24x7 log types or diagnostic settings, and 
 
 **Starting collection:** an admin reviews the exclusions and log categories on the Site24x7 page, then clicks **Start Collecting** (`POST /api/start-collecting`). The approval is stored in the collector's storage. If it can't be read, scans stay read-only.
 
-Collectors installed before this feature, and deployments with `startCollectingAtOnce=true`, collect without review.
+Collectors installed before this feature, and deployments with `confirmAfterDiscovery=false`, collect without review.
 
 ---
 

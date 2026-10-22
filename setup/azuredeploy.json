@@ -28,24 +28,24 @@
     },
     "generalLogTypeEnabled": {
       "type": "string",
-      "defaultValue": "true",
-      "allowedValues": [
-        "true",
-        "false"
-      ],
-      "metadata": {
-        "description": "Enable the general catch-all log type for unsupported categories."
-      }
-    },
-    "startCollectingAtOnce": {
-      "type": "string",
       "defaultValue": "false",
       "allowedValues": [
         "true",
         "false"
       ],
       "metadata": {
-        "description": "false (recommended): the collector only discovers your resources until an admin reviews the exclusions and log categories in Site24x7 and starts collecting. true: it sets up storage, log types and diagnostic settings on every resource right after deployment."
+        "description": "true: logs from categories that have no Site24x7 log type are sent to a general log type. false (default): they are skipped. You can change this later in Site24x7."
+      }
+    },
+    "confirmAfterDiscovery": {
+      "type": "string",
+      "defaultValue": "true",
+      "allowedValues": [
+        "true",
+        "false"
+      ],
+      "metadata": {
+        "description": "true (recommended): after its first resource scan, the collector waits for an admin to confirm in Site24x7 before it sets up storage, log types and diagnostic settings. false: it sets them up right away."
       }
     },
     "resourceGroupName": {
@@ -53,7 +53,7 @@
       "defaultValue": "",
       "maxLength": 90,
       "metadata": {
-        "description": "Optional resource group for this collector. Leave empty to use s247-diag-logs-<suffix>-rg when a suffix is set, or s247-diag-logs-rg without one. To redeploy an existing collector in place, enter the resource group it already uses."
+        "description": "Optional. The resource group for the collector. Leave empty to use s247-diag-logs-SUFFIX-rg, where SUFFIX is the deployment suffix (s247-diag-logs-rg without a suffix). To update an existing collector, enter the resource group it uses."
       }
     },
     "deploymentSuffix": {
@@ -61,7 +61,7 @@
       "defaultValue": "",
       "maxLength": 13,
       "metadata": {
-        "description": "Optional suffix of letters and digits (1\u201313 characters). Upper case is lowered and dashes, underscores, dots and spaces are removed, e.g. -Oct14 becomes oct14; the deployment outputs show the value used. Leave empty to retain existing deployment names. For a fresh install with a name collision, choose a new 12\u201313 character suffix and reuse it for all updates. Changing this on a live deployment creates different resources. Each suffix gets its own resource group (s247-diag-logs-<suffix>-rg), so collectors do not share one."
+        "description": "Optional. Added to the names of the collector's resources, so that more than one collector can run in a subscription. Use letters and digits; other characters and spaces are removed (for example, -Oct14 becomes oct14)."
       }
     }
   },
@@ -75,7 +75,7 @@
     "seedStorageName": "[if(greater(length(variables('uniqueSuffix')), 6), concat('s247dr', variables('uniqueSuffix')), take(concat('s247diag', replace(replace(deployment().location, ' ', ''), '-', ''), variables('uniqueSuffix')), 24))]",
     "hostingPlanName": "[concat('s247-diag-func-', variables('uniqueSuffix'), '-plan')]",
     "appInsightsName": "[concat('s247-diag-func-', variables('uniqueSuffix'), '-ai')]",
-    "functionZipUrl": "https://github.com/site24x7/azure-log-collector/releases/download/v1.0.1-beta12/released-package.zip",
+    "functionZipUrl": "https://github.com/site24x7/azure-log-collector/releases/download/v1.0.1-beta13/released-package.zip",
     "readerRoleId": "acdd72a7-3385-48ef-bd42-f606fba81ae7",
     "monitoringContributorRoleId": "749f88d5-cbae-40b8-bcfc-e573ddc772fa",
     "deploymentContainerName": "[concat('app-package-', take(variables('functionAppName'), 50))]"
@@ -222,8 +222,8 @@
           "generalLogTypeEnabled": {
             "value": "[parameters('generalLogTypeEnabled')]"
           },
-          "startCollectingAtOnce": {
-            "value": "[parameters('startCollectingAtOnce')]"
+          "confirmAfterDiscovery": {
+            "value": "[parameters('confirmAfterDiscovery')]"
           },
           "site24x7Domain": {
             "value": "[parameters('site24x7Domain')]"
@@ -272,7 +272,7 @@
             "generalLogTypeEnabled": {
               "type": "string"
             },
-            "startCollectingAtOnce": {
+            "confirmAfterDiscovery": {
               "type": "string"
             },
             "site24x7Domain": {
@@ -457,7 +457,7 @@
                     },
                     {
                       "name": "REVIEW_BEFORE_COLLECTING",
-                      "value": "[if(equals(parameters('startCollectingAtOnce'), 'true'), 'false', 'true')]"
+                      "value": "[parameters('confirmAfterDiscovery')]"
                     },
                     {
                       "name": "RESOURCE_GROUP_NAME",

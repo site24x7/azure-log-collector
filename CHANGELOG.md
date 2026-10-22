@@ -7,6 +7,15 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.0.1-beta13] — 2026-10-22
+
+### Changed
+- Deployment form: `startCollectingAtOnce` is now `confirmAfterDiscovery`
+  (default `true`: after the first resource scan, the collector waits for an
+  admin to confirm in Site24x7). `generalLogTypeEnabled` defaults to `false`.
+  The resource group and suffix descriptions are shorter, start with
+  "Optional", and use no angle brackets (the portal showed them as `&lt;`).
+
 ## [1.0.1-beta12] — 2026-10-22
 
 ### Changed

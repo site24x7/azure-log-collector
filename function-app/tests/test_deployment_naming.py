@@ -230,3 +230,17 @@ def test_resource_group_is_per_suffix_with_an_override(resource_group_name, suff
     assert _rg_name(resource_group_name, suffix) == expected
     template = json.loads((ROOT / 'setup/azuredeploy.json').read_text())
     assert template['parameters']['resourceGroupName']['defaultValue'] == ''
+
+
+def test_deployment_form_defaults_and_texts():
+    template, nested = _nested_resources()
+    params = template['parameters']
+    # The portal escapes angle brackets in descriptions, so they would show as &lt; &gt;.
+    assert not any('<' in p['metadata']['description'] or '>' in p['metadata']['description'] for p in params.values())
+    assert params['confirmAfterDiscovery']['defaultValue'] == 'true'
+    assert params['generalLogTypeEnabled']['defaultValue'] == 'false'
+    for optional in ('resourceGroupName', 'deploymentSuffix'):
+        assert params[optional]['metadata']['description'].startswith('Optional.')
+    site = next(r for r in nested if r['type'] == 'Microsoft.Web/sites')
+    settings = {s['name']: s['value'] for s in site['properties']['siteConfig']['appSettings']}
+    assert settings['REVIEW_BEFORE_COLLECTING'] == "[parameters('confirmAfterDiscovery')]"
