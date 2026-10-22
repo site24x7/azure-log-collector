@@ -15,6 +15,11 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
   admin to confirm in Site24x7). `generalLogTypeEnabled` defaults to `false`.
   The resource group and suffix descriptions are shorter, start with
   "Optional", and use no angle brackets (the portal showed them as `&lt;`).
+- A portal form (`setup/createUiDefinition.json`): labelled fields ("Resource
+  group name (optional)", "Deployment suffix (optional)"), a password box for
+  the Device Key, a data center list, Yes/No choices, and only the regions that
+  offer Flex Consumption. The Site24x7 page opens the portal with it for
+  releases from 1.0.1-beta13 on.
 
 ## [1.0.1-beta12] — 2026-10-22
 

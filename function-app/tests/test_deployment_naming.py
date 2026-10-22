@@ -244,3 +244,25 @@ def test_deployment_form_defaults_and_texts():
     site = next(r for r in nested if r['type'] == 'Microsoft.Web/sites')
     settings = {s['name']: s['value'] for s in site['properties']['siteConfig']['appSettings']}
     assert settings['REVIEW_BEFORE_COLLECTING'] == "[parameters('confirmAfterDiscovery')]"
+
+
+def test_portal_form_matches_the_template():
+    # setup/createUiDefinition.json gives the portal fields their labels ("... (optional)").
+    template, _ = _nested_resources()
+    ui = json.loads((ROOT / 'setup/createUiDefinition.json').read_text())['parameters']
+    outputs = ui['outputs']
+    assert set(outputs) - {'location'} == set(template['parameters'])
+    assert outputs['location'] == '[location()]'
+    fields = {f['name']: f for f in ui['basics']}
+    assert set(fields) == set(template['parameters'])
+    assert fields['resourceGroupName']['label'] == 'Resource group name (optional)'
+    assert fields['deploymentSuffix']['label'] == 'Deployment suffix (optional)'
+    assert fields['site24x7DeviceKey']['type'] == 'Microsoft.Common.PasswordBox'
+    # The form offers only the regions the template accepts, and the template's choices.
+    check = next(r for r in template['resources'] if r['name'].startswith("[concat('s247-diag-logs-region-check-'"))
+    assert ui['config']['basics']['location']['allowedValues'] == check['properties']['template']['parameters']['location']['allowedValues']
+    domains = [o['value'] for o in fields['site24x7Domain']['constraints']['allowedValues']]
+    assert domains == template['parameters']['site24x7Domain']['allowedValues']
+    for name in ('confirmAfterDiscovery', 'generalLogTypeEnabled'):
+        values = {o['value'] for o in fields[name]['constraints']['allowedValues']}
+        assert values == set(template['parameters'][name]['allowedValues'])
