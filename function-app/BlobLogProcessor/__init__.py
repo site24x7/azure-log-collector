@@ -295,12 +295,15 @@ def _process_all_regions():
                             created = getattr(blob, "creation_time", None)
                             generation = created.isoformat() if isinstance(created, datetime) else ""
                             offset = int(cp_entry.get("next_byte", 0))
+                            # A recreated or shrunk blob starts over: neither the old offset nor
+                            # the records counted inside its envelope apply to the new content.
+                            restarted = False
                             if (generation and cp_entry.get("append_created")
                                     and generation != cp_entry["append_created"]):
-                                offset = 0
+                                offset, restarted = 0, True
                             size = int(blob.size)
                             if offset > size:
-                                offset = 0
+                                offset, restarted = 0, True
                             cur_lm = blob.last_modified.isoformat() if blob.last_modified else ""
                             # Upgrade unchanged legacy full-read checkpoints without redelivery.
                             legacy_done = ("next_byte" not in cp_entry
@@ -334,7 +337,7 @@ def _process_all_regions():
                             if records:
                                 # Records of the first envelope an earlier run already handled
                                 # (appended bytes never change, so they are the same records).
-                                skip = _resume_skip(cp_entry, "next_byte", offset, len(records))
+                                skip = 0 if restarted else _resume_skip(cp_entry, "next_byte", offset, len(records))
                                 total_stats["processed"] += len(records) - skip
                                 sent = skip + _upload_in_order(client, source_config_b64, records[skip:],
                                                                using_general, total_stats,
@@ -941,9 +944,11 @@ def _merge_checkpoints(remote, local) -> dict:
 
     Each value is a dict ``{"next_block": int, "last_seen": iso, ...}``. On conflict
     the entry that got further wins **as a whole** (see ``_progress``), so a more
-    advanced run never regresses and its resume fields stay together; when the kinds
-    differ the local (newer) view wins. ``last_seen`` is the latest of both (so GC
-    works correctly).
+    advanced run never regresses and its resume fields stay together. When the kinds
+    differ (a blob seen as full-read by one run and as append by another), progress
+    is not comparable and the entry a run processed most recently (latest
+    ``last_seen``) wins: a stale entry the local run only carried along cannot
+    replace a newer one. ``last_seen`` is the latest of both (so GC works correctly).
 
     For backwards compatibility, legacy string values (old per-account ISO
     timestamps) are dropped — a fresh per-blob checkpoint will be built on the
@@ -964,7 +969,10 @@ def _merge_checkpoints(remote, local) -> dict:
                 merged[k] = dict(v)
                 continue
             old, new = _progress(prev), _progress(v)
-            winner = prev if old[0] == new[0] and old > new else v
+            if old[0] == new[0]:
+                winner = prev if old > new else v
+            else:
+                winner = prev if str(prev.get("last_seen", "")) > str(v.get("last_seen", "")) else v
             out = dict(winner)
             out["last_seen"] = max(str(prev.get("last_seen", "")), str(v.get("last_seen", "")))
             merged[k] = out

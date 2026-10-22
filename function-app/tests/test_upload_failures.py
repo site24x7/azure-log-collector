@@ -349,3 +349,25 @@ def test_upload_timeout_is_capped_to_the_time_left(client):
     with patch("shared.site24x7_client._KEYED_OPENER.open", return_value=ok) as opener:
         assert client.post_logs(CONFIG, EVENTS) is True
     assert opener.call_args.kwargs["timeout"] <= 30
+
+
+# ─── Re-review findings (Codex, af5cce4) ─────────────────────────────────────
+
+def test_recreated_append_blob_ignores_the_old_skip(proc_env, monkeypatch):
+    monkeypatch.setattr(BlobLogProcessor, "MAX_RECORDS_PER_BATCH", 1)
+    lm = datetime(2026, 10, 22, tzinfo=timezone.utc)
+    old = {KEY: {"next_block": -1, "next_byte": 0, "skip_records": 1,
+                 "append_created": "2023-01-01T00:00:00+00:00", "last_seen": "2026-10-21T00:00:00+00:00"}}
+    client = _ScriptedClient([])
+    saved, _ = _run(proc_env, _append_blob([b'{"fresh":1}\n']), client, lm, checkpoints=old)
+    assert client.calls == [[{"fresh": 1}]]              # the new blob's first record is sent
+    assert "skip_records" not in saved[KEY]
+
+
+def test_cross_kind_merge_keeps_the_most_recently_processed_entry():
+    merge = BlobLogProcessor._merge_checkpoints
+    remote = {"k": {"next_block": -1, "next_byte": 50, "append_created": "g2", "last_seen": "2026-10-23T01:00:00"}}
+    stale_local = {"k": {"next_block": -1, "last_modified": "v1", "last_seen": "2026-10-22T00:00:00"}}
+    assert merge(remote, stale_local)["k"]["next_byte"] == 50          # stale carried-along entry loses
+    newer_local = {"k": {"next_block": -1, "last_modified": "v3", "last_seen": "2026-10-23T02:00:00"}}
+    assert "next_byte" not in merge(remote, newer_local)["k"]           # newer processing wins
