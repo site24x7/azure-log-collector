@@ -26,16 +26,16 @@ when it is absent from your subscription. Repeating the same deployment or
 changing its deployment name does not change the default subscription-derived
 suffix.
 
-For existing deployments, leave `optionalDeploymentSuffix` empty to preserve legacy
+For existing deployments, leave `deploymentSuffix` empty to preserve legacy
 names, or keep the exact suffix previously chosen. For a **fresh installation**,
-set `optionalDeploymentSuffix` in the Azure template parameters to a new 12–13 character
+set `deploymentSuffix` in the Azure template parameters to a new 12–13 character
 lowercase alphanumeric value. The resolved suffix is included in deployment
 Outputs; save it and reuse it for updates. Shell setup uses `DEPLOYMENT_SUFFIX`
 in `config.env` for the same purpose. Do not change a live collector's suffix,
 location, or deployment method as an upgrade. Each suffix gets its own resource
 group, `s247-diag-logs-<suffix>-rg`; installs without a suffix keep
 `s247-diag-logs-rg`. To redeploy an existing collector in place, set the
-`optionalResourceGroupName` parameter to the group it already uses.
+`resourceGroupName` parameter to the group it already uses.
 
 Check an explicit ARM suffix before deployment (Azure CLI login required):
 

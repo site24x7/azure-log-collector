@@ -13,10 +13,8 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 - Deployment form: `startCollectingAtOnce` is now `confirmAfterDiscovery`
   (default `true`: after the first resource scan, the collector waits for an
   admin to confirm in Site24x7). `generalLogTypeEnabled` defaults to `false`.
-  `resourceGroupName` and `deploymentSuffix` are now `optionalResourceGroupName`
-  and `optionalDeploymentSuffix`, so the portal labels them "Optional ...";
-  their descriptions are shorter and use no angle brackets (the portal showed
-  them as `&lt;`).
+  The resource group and suffix descriptions are shorter, start with
+  "Optional", and use no angle brackets (the portal showed them as `&lt;`).
 
 ## [1.0.1-beta12] — 2026-10-22
 

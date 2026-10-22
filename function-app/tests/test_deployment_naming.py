@@ -88,12 +88,12 @@ def test_template_strips_separators_from_deployment_suffix():
     # must become "oct14" for every derived name, including DIAG_STORAGE_SUFFIX.
     variables = json.loads((ROOT / 'setup/azuredeploy.json').read_text())['variables']
     clean = variables['cleanSuffix']
-    assert "toLower(trim(parameters('optionalDeploymentSuffix')))" in clean
+    assert "toLower(trim(parameters('deploymentSuffix')))" in clean
     for separator in ("'-'", "'_'", "'.'", "' '"):
         assert f"{separator}, '')" in clean
     assert variables['uniqueSuffix'].startswith("[if(empty(variables('cleanSuffix'))")
     assert variables['uniqueSuffix'].endswith(", variables('cleanSuffix'))]")
-    assert "parameters('optionalDeploymentSuffix')" not in variables['uniqueSuffix']
+    assert "parameters('deploymentSuffix')" not in variables['uniqueSuffix']
 
 
 # Settings the Flex Consumption plan rejects or ignores (Microsoft: "Flex
@@ -135,7 +135,7 @@ def test_template_runs_on_flex_consumption():
                      and 'deploymentContainerName' in r['name'])
     assert any('deploymentContainerName' in d for d in site['dependsOn'])
     assert container['properties']['publicAccess'] == 'None'
-    assert template['parameters']['optionalDeploymentSuffix']['defaultValue'] == ''
+    assert template['parameters']['deploymentSuffix']['defaultValue'] == ''
 
 
 def test_template_installs_the_prebuilt_package_from_its_release():
@@ -213,7 +213,7 @@ def _rg_name(resource_group_name, suffix):
     """Evaluate the template's rgName expression for the given parameters."""
     variables = json.loads((ROOT / 'setup/azuredeploy.json').read_text())['variables']
     expr = variables['rgName']
-    assert expr == ("[if(not(empty(trim(parameters('optionalResourceGroupName')))), trim(parameters('optionalResourceGroupName')), "
+    assert expr == ("[if(not(empty(trim(parameters('resourceGroupName')))), trim(parameters('resourceGroupName')), "
                     "if(empty(variables('cleanSuffix')), 's247-diag-logs-rg', concat('s247-diag-logs-', variables('cleanSuffix'), '-rg')))]")
     clean = suffix.strip().lower().replace('-', '').replace('_', '').replace('.', '').replace(' ', '')
     if resource_group_name.strip():
@@ -229,7 +229,7 @@ def _rg_name(resource_group_name, suffix):
 def test_resource_group_is_per_suffix_with_an_override(resource_group_name, suffix, expected):
     assert _rg_name(resource_group_name, suffix) == expected
     template = json.loads((ROOT / 'setup/azuredeploy.json').read_text())
-    assert template['parameters']['optionalResourceGroupName']['defaultValue'] == ''
+    assert template['parameters']['resourceGroupName']['defaultValue'] == ''
 
 
 def test_deployment_form_defaults_and_texts():
@@ -239,9 +239,8 @@ def test_deployment_form_defaults_and_texts():
     assert not any('<' in p['metadata']['description'] or '>' in p['metadata']['description'] for p in params.values())
     assert params['confirmAfterDiscovery']['defaultValue'] == 'true'
     assert params['generalLogTypeEnabled']['defaultValue'] == 'false'
-    # The portal labels a field from its parameter name, so these read "Optional ...".
-    assert {'optionalResourceGroupName', 'optionalDeploymentSuffix'} <= params.keys()
-    assert not {'resourceGroupName', 'deploymentSuffix'} & params.keys()
+    for optional in ('resourceGroupName', 'deploymentSuffix'):
+        assert params[optional]['metadata']['description'].startswith('Optional.')
     site = next(r for r in nested if r['type'] == 'Microsoft.Web/sites')
     settings = {s['name']: s['value'] for s in site['properties']['siteConfig']['appSettings']}
     assert settings['REVIEW_BEFORE_COLLECTING'] == "[parameters('confirmAfterDiscovery')]"

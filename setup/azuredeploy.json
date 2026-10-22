@@ -48,26 +48,26 @@
         "description": "true (recommended): after its first resource scan, the collector waits for an admin to confirm in Site24x7 before it sets up storage, log types and diagnostic settings. false: it sets them up right away."
       }
     },
-    "optionalResourceGroupName": {
+    "resourceGroupName": {
       "type": "string",
       "defaultValue": "",
       "maxLength": 90,
       "metadata": {
-        "description": "The resource group for the collector. Leave empty to use s247-diag-logs-SUFFIX-rg, where SUFFIX is the deployment suffix (s247-diag-logs-rg without a suffix). To update an existing collector, enter the resource group it uses."
+        "description": "Optional. The resource group for the collector. Leave empty to use s247-diag-logs-SUFFIX-rg, where SUFFIX is the deployment suffix (s247-diag-logs-rg without a suffix). To update an existing collector, enter the resource group it uses."
       }
     },
-    "optionalDeploymentSuffix": {
+    "deploymentSuffix": {
       "type": "string",
       "defaultValue": "",
       "maxLength": 13,
       "metadata": {
-        "description": "Added to the names of the collector's resources, so that more than one collector can run in a subscription. Use letters and digits; other characters and spaces are removed (for example, -Oct14 becomes oct14)."
+        "description": "Optional. Added to the names of the collector's resources, so that more than one collector can run in a subscription. Use letters and digits; other characters and spaces are removed (for example, -Oct14 becomes oct14)."
       }
     }
   },
   "variables": {
-    "rgName": "[if(not(empty(trim(parameters('optionalResourceGroupName')))), trim(parameters('optionalResourceGroupName')), if(empty(variables('cleanSuffix')), 's247-diag-logs-rg', concat('s247-diag-logs-', variables('cleanSuffix'), '-rg')))]",
-    "cleanSuffix": "[replace(replace(replace(replace(toLower(trim(parameters('optionalDeploymentSuffix'))), '-', ''), '_', ''), '.', ''), ' ', '')]",
+    "rgName": "[if(not(empty(trim(parameters('resourceGroupName')))), trim(parameters('resourceGroupName')), if(empty(variables('cleanSuffix')), 's247-diag-logs-rg', concat('s247-diag-logs-', variables('cleanSuffix'), '-rg')))]",
+    "cleanSuffix": "[replace(replace(replace(replace(toLower(trim(parameters('deploymentSuffix'))), '-', ''), '_', ''), '.', ''), ' ', '')]",
     "uniqueSuffix": "[if(empty(variables('cleanSuffix')), substring(uniqueString(subscription().id, 's247-diag-logs'), 0, 6), variables('cleanSuffix'))]",
     "storageAccountName": "[concat('s247diag', variables('uniqueSuffix'))]",
     "functionAppName": "[concat('s247-diag-func-', variables('uniqueSuffix'))]",

@@ -29,7 +29,7 @@ def check_names(suffix, region, resource_group, subscription=None, run=subproces
                         "-o", "json", "--only-show-errors"], capture_output=True, text=True)
         if existing.returncode != 0:
             raise RuntimeError(f"{name} is globally unavailable or ownership cannot be verified. "
-                               "For a fresh install choose another optionalDeploymentSuffix; "
+                               "For a fresh install choose another deploymentSuffix; "
                                "keep the existing suffix for upgrades.")
         account = json.loads(existing.stdout)
         if account.get("tags", {}).get("managed-by") != "s247-diag-logs":
