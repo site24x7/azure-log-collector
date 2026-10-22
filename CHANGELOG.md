@@ -7,7 +7,7 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
-## [1.0.1-beta14] — unreleased
+## [1.0.1-beta14] — 2026-10-23
 
 ### Changed
 - A portal form (`setup/createUiDefinition.json`): labelled fields ("Resource
