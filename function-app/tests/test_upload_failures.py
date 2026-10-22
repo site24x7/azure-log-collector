@@ -234,3 +234,118 @@ def test_oversized_part_is_counted_apart_from_records(proc_env, monkeypatch):
     old = datetime.now(timezone.utc) - timedelta(hours=3)
     _, stats = _run(proc_env, _blob([b'{"a":1}\n', b'{"a":2}\n']), _ScriptedClient([]), old)
     assert stats["skipped_parts"] == 1 and stats["dropped"] == 0
+
+
+# ─── Review findings (Codex, 348227f) ────────────────────────────────────────
+
+def test_matching_counts_across_a_split_record_are_not_a_boundary(proc_env, monkeypatch):
+    """Whole range = 2 records; blocks parsed alone also give 2, but different ones."""
+    monkeypatch.setattr(BlobLogProcessor, "MAX_RECORDS_PER_BATCH", 1)
+    old = datetime.now(timezone.utc) - timedelta(hours=3)
+    payloads = [b'{"records":[\n{"id":1},\n{"id":2,"nested":\n', b'{"x":3}\n}\n]}']
+    first = _ScriptedClient([(True, 0), (False, 0)])
+    saved, _ = _run(proc_env, _blob(payloads), first, old)
+    assert first.calls == [[{"id": 1}], [{"id": 2, "nested": {"x": 3}}]]
+    assert KEY not in saved                              # no boundary: the range is retried whole
+    second = _ScriptedClient([])
+    _run(proc_env, _blob(payloads), second, old)
+    assert {"id": 2, "nested": {"x": 3}} in [r for c in second.calls for r in c]   # not lost
+
+
+def test_resume_inside_a_partly_sent_block(proc_env, monkeypatch):
+    monkeypatch.setattr(BlobLogProcessor, "MAX_RECORDS_PER_BATCH", 1)
+    old = datetime.now(timezone.utc) - timedelta(hours=3)
+    payloads = [b'{"a":1}\n{"a":2}\n{"a":3}\n']          # one block, three records
+    saved, _ = _run(proc_env, _blob(payloads), _ScriptedClient([(True, 0), (False, 0)]), old)
+    assert saved[KEY] == {"next_block": 0, "skip_records": 1, "last_seen": saved[KEY]["last_seen"]}
+    second = _ScriptedClient([])
+    saved, _ = _run(proc_env, _blob(payloads), second, old, checkpoints=saved)
+    assert second.calls == [[{"a": 2}], [{"a": 3}]]      # {"a": 1} is not sent again
+    assert saved[KEY]["next_block"] == 1 and "skip_records" not in saved[KEY]
+
+
+def _append_blob(payloads):
+    blob = _blob(payloads)
+    blob.blob_type = "AppendBlob"
+    return blob
+
+
+def test_resume_inside_a_partly_sent_append_envelope(proc_env, monkeypatch):
+    monkeypatch.setattr(BlobLogProcessor, "MAX_RECORDS_PER_BATCH", 1)
+    lm = datetime(2026, 10, 22, tzinfo=timezone.utc)
+    payloads = [b'{"records":[{"a":1},{"a":2},{"a":3}]}\n']
+    saved, _ = _run(proc_env, _append_blob(payloads), _ScriptedClient([(True, 0), (False, 0)]), lm)
+    assert saved[KEY]["next_byte"] == 0 and saved[KEY]["skip_records"] == 1
+    second = _ScriptedClient([])
+    saved, _ = _run(proc_env, _append_blob(payloads), second, lm, checkpoints=saved)
+    assert second.calls == [[{"a": 2}], [{"a": 3}]]
+    assert saved[KEY]["next_byte"] == len(payloads[0]) and "skip_records" not in saved[KEY]
+
+
+def test_skip_is_ignored_when_the_position_moved(proc_env, monkeypatch):
+    monkeypatch.setattr(BlobLogProcessor, "MAX_RECORDS_PER_BATCH", 1)
+    old = datetime.now(timezone.utc) - timedelta(hours=3)
+    stale = {KEY: {"next_block": 1, "skip_records": 1, "last_seen": "2026-10-22T00:00:00+00:00"}}
+    client = _ScriptedClient([])
+    _run(proc_env, _blob([b'{"a":1}\n', b'{"a":2}\n{"a":3}\n']), client, old, checkpoints=stale)
+    assert client.calls == [[{"a": 3}]]                  # skip applies to block 1 only
+
+
+class TestProgressMerge:
+    """Concurrent saves keep the entry that got further, with its resume fields."""
+
+    merge = staticmethod(BlobLogProcessor._merge_checkpoints)
+
+    def test_single_shot_progress_keeps_the_larger_count(self):
+        remote = {"k": {"partial_modified": "v1", "sent_records": 1, "last_seen": "a"}}
+        local = {"k": {"partial_modified": "v1", "sent_records": 2, "last_seen": "b"}}
+        assert self.merge(remote, local)["k"]["sent_records"] == 2
+        assert self.merge(local, remote)["k"]["sent_records"] == 2
+
+    def test_single_shot_completion_beats_partial_progress(self):
+        partial = {"k": {"partial_modified": "v1", "sent_records": 2, "last_seen": "a"}}
+        done = {"k": {"next_block": -1, "last_modified": "v1", "last_seen": "b"}}
+        for remote, local in ((partial, done), (done, partial)):
+            merged = self.merge(remote, local)["k"]
+            assert merged["next_block"] == -1 and merged["last_modified"] == "v1"
+            assert "sent_records" not in merged
+
+    def test_newer_version_beats_older_completion(self):
+        done_v1 = {"k": {"next_block": -1, "last_modified": "2026-10-21", "last_seen": "a"}}
+        partial_v2 = {"k": {"partial_modified": "2026-10-22", "sent_records": 1, "last_seen": "b"}}
+        assert self.merge(done_v1, partial_v2)["k"]["partial_modified"] == "2026-10-22"
+
+    def test_block_skip_travels_with_its_block(self):
+        remote = {"k": {"next_block": 2, "last_seen": "a"}}
+        local = {"k": {"next_block": 2, "skip_records": 3, "last_seen": "b"}}
+        assert self.merge(remote, local)["k"] == {"next_block": 2, "skip_records": 3, "last_seen": "b"}
+        further = {"k": {"next_block": 3, "last_seen": "c"}}
+        assert self.merge(local, further)["k"] == {"next_block": 3, "last_seen": "c"}
+
+    def test_append_progress_inside_an_envelope(self):
+        remote = {"k": {"next_byte": 10, "skip_records": 1, "append_created": "g", "last_seen": "a"}}
+        local = {"k": {"next_byte": 10, "skip_records": 4, "append_created": "g", "last_seen": "b"}}
+        assert self.merge(remote, local)["k"]["skip_records"] == 4
+        assert self.merge(local, remote)["k"]["skip_records"] == 4
+
+
+# ─── Requests never run past the run's deadline ──────────────────────────────
+
+def test_no_upload_starts_too_close_to_the_deadline(client):
+    import time
+    client.upload_deadline = time.monotonic() + 1
+    with patch("shared.site24x7_client._KEYED_OPENER.open") as opener:
+        assert client.post_logs(CONFIG, EVENTS) is False
+    opener.assert_not_called()
+    client.circuit_breaker.record_failure.assert_not_called()
+    assert client.last_rejected == 0                     # retried next run
+
+
+def test_upload_timeout_is_capped_to_the_time_left(client):
+    import time
+    client.upload_deadline = time.monotonic() + 30
+    ok = MagicMock(status=200)
+    ok.getheaders.return_value = []
+    with patch("shared.site24x7_client._KEYED_OPENER.open", return_value=ok) as opener:
+        assert client.post_logs(CONFIG, EVENTS) is True
+    assert opener.call_args.kwargs["timeout"] <= 30

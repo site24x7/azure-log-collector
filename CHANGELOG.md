@@ -34,9 +34,15 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
   alike, and the status now reports it (`upload_refused`).
 - A broken log-type configuration no longer trips the circuit breaker; only
   that blob waits.
-- Block blobs advance past every block whose records were all sent, and
-  single-shot blobs remember how many records were sent, so a failed batch no
-  longer makes earlier batches arrive twice.
+- A failed batch no longer makes earlier records arrive twice: checkpoints
+  record the exact position past what was handled, inside a block or an
+  append envelope too (`skip_records`), and single-shot blobs remember how
+  many records of that version were sent. Block positions are used only when
+  every block parses on its own into exactly the records of the whole range.
+- Concurrent checkpoint saves merge by whole-entry progress, so a resume
+  position is never mixed with an older one.
+- An upload never runs past the run's deadline: each request's timeout is
+  capped to the time left, and none starts with less than 5 seconds left.
 - `dropped` counts records only. Blobs and blocks too large to read are
   counted as `skipped_parts` (status: `recent_skipped_parts`).
 

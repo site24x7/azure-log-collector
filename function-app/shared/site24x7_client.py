@@ -40,6 +40,10 @@ _KEYED_OPENER = urllib.request.build_opener(_NoRedirect())
 # Site24x7 refused the payload itself; resending the same records cannot succeed.
 # 413 is split by the caller first; 401/403 (Device Key) are retried, as every upload fails alike.
 REJECTED_UPLOAD_STATUSES = frozenset({400, 404, 413, 415, 422})
+# A log upload never waits longer than this, nor past the run's deadline.
+UPLOAD_TIMEOUT_SEC = 120
+# Below this much time left in the run, an upload is not started.
+MIN_UPLOAD_SEC = 5
 
 
 def _require_https(url: str) -> str:
@@ -630,6 +634,8 @@ class Site24x7Client:
     last_rejected = 0
     # True once Site24x7 refused the Device Key (401/403) during this client's lifetime.
     upload_refused = False
+    # time.monotonic() after which no upload may still be running (set by the processor).
+    upload_deadline: Optional[float] = None
 
     def post_logs(self, source_config_b64: str, log_events: List[Dict]) -> bool:
         """Parse and POST logs to Site24x7 using the log_sender.py flow.
@@ -703,10 +709,19 @@ class Site24x7Client:
             self._report_upload_failure(e, len(log_events), "configuration")
             return False
 
+        timeout = UPLOAD_TIMEOUT_SEC
+        if self.upload_deadline is not None:
+            remaining = self.upload_deadline - time.monotonic()
+            if remaining < MIN_UPLOAD_SEC:
+                # Too little time left to finish: retried next run, not counted against Site24x7.
+                logger.info("Run deadline reached — upload left for the next run")
+                return False
+            timeout = min(timeout, remaining)
+
         try:
             # Compress and upload
             gzipped = gzip.compress(json.dumps(parsed_lines).encode())
-            _send_logs_to_s247(config, gzipped, log_size)
+            _send_logs_to_s247(config, gzipped, log_size, timeout)
         except urllib.error.HTTPError as e:
             if e.code in REJECTED_UPLOAD_STATUSES:
                 # Site24x7 answered and refused this payload: it is reachable, so the
@@ -1019,7 +1034,8 @@ def _json_log_parser(
     return parsed_lines, log_size
 
 
-def _send_logs_to_s247(config: Dict, gzipped_data: bytes, log_size: int) -> None:
+def _send_logs_to_s247(config: Dict, gzipped_data: bytes, log_size: int,
+                       timeout: float = 120) -> None:
     """POST gzipped log data to Site24x7 upload endpoint."""
     header_obj = {
         "X-DeviceKey": config["apiKey"],
@@ -1033,7 +1049,7 @@ def _send_logs_to_s247(config: Dict, gzipped_data: bytes, log_size: int) -> None
     upload_domain = config['uploadDomain']
     upload_url = f"https://{upload_domain}/upload"
     request = urllib.request.Request(upload_url, headers=header_obj)
-    response = _KEYED_OPENER.open(request, data=gzipped_data, timeout=120)
+    response = _KEYED_OPENER.open(request, data=gzipped_data, timeout=timeout)
     resp_headers = dict(response.getheaders())
     upload_id = resp_headers.get("x-uploadid", "unknown")
 

@@ -1155,7 +1155,7 @@ python3 test_e2e.py
      │ (normal)│                   │(fail)│
      └────▲────┘                   └──┬───┘
           │                           │
-     success                    900s cooldown (15 min)
+     success                    300s cooldown (5 min)
           │                           │
      ┌────┴─────┐                     │
      │HALF_OPEN │◀────────────────────┘
@@ -1164,12 +1164,36 @@ python3 test_e2e.py
 ```
 
 - **Closed:** Normal operation. All requests pass through.
-- **Open:** Circuit tripped after 5 consecutive failures. State persisted to `s247-config/config/circuit-breaker-state.json`. All requests immediately return `False` for **15 minutes** — no API calls made. A "Circuit OPEN" error event is logged to the Debug tab.
-- **Half-Open:** After 300 seconds (5 min), allows one test request. If it succeeds → closed (logged as "S247 recovered"). If it fails → open again for another 15 min.
+- **Open:** Circuit tripped after 8 consecutive failures. State persisted to `s247-config/config/circuit-breaker-state.json`. All requests immediately return `False` for **5 minutes** — no API calls made. A "Circuit OPEN" error event is logged to the Debug tab.
+- **Half-Open:** After 300 seconds (5 min), allows one test request. If it succeeds → closed (logged as "S247 recovered"). If it fails → open again for another 5 min.
 
 **Why persisted?** The function runs every 2 min; failures are saved between runs so a breaker that never reaches the threshold in one run still trips across runs.
 
 Used by `post_logs()` — when the circuit is open, log uploads are silently skipped and blobs remain in storage (safe for up to 7 days).
+
+**What counts as a failure.** Only failures a retry can fix trip the breaker:
+
+| Upload outcome | Breaker | Records |
+|---|---|---|
+| HTTP 200 | success | sent |
+| Connection error, timeout, HTTP 408 / 429 / 5xx, any other 2xx | failure | kept, retried next run |
+| HTTP 401 / 403 (Device Key refused) | failure | kept, retried; status `upload_refused` |
+| HTTP 400 / 404 / 415 / 422 (payload refused) | success (Site24x7 answered) | dropped and recorded; the next batch goes on |
+| HTTP 413 (too large) | success | batch split in halves; a single record still refused is dropped |
+| Broken log-type configuration (decode / regex) | not touched | kept, retried; only that blob waits |
+| Less than 5 s left in the run | not touched | kept, retried next run |
+
+Each request's timeout is capped to the time left before the run's deadline.
+
+**Checkpoints never re-send what arrived.** Each blob's checkpoint records the exact position past what was handled (sent, or deliberately dropped):
+
+| Blob kind | Position fields |
+|---|---|
+| Append blob | `next_byte` (end of the last fully handled envelope) + `skip_records` (records handled in the next one) + `append_created` |
+| Block blob | `next_block` + `skip_records` (records handled in that block). Used only when every block parses on its own into exactly the records of the whole range; otherwise the range is retried whole (records may arrive twice, none is lost) |
+| Single-shot blob (no block list) | done: `next_block: -1` + `last_modified`; part-way: `partial_modified` + `sent_records` |
+
+Concurrent saves merge by whole-entry progress (`_progress`): the entry that got further wins with its resume fields.
 
 ### Rate Limiter (`site24x7_client.py`)
 
@@ -1574,7 +1598,7 @@ When inflow exceeds processing capacity:
 3. **Backlog alert** — When pending blobs > 500, a warning event is logged to the Debug API
 4. **Batch splitting** — Blobs with >5,000 records are split into multiple upload batches
 5. **Stale cleanup** — Blobs older than 7 days with no config are auto-deleted (data loss — by design, warns in logs)
-6. **Circuit breaker** — If S247 is down, stops retrying after 8 failures (prevents wasted time), recovers after 5 min
+6. **Circuit breaker** — If S247 is down, stops retrying after 8 failures (prevents wasted time), recovers after 5 min. Refused payloads do not trip it (see Circuit Breaker)
 
 ### What Is NOT Handled (Future Work)
 

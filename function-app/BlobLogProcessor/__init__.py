@@ -180,8 +180,10 @@ def _process_all_regions():
         "time_budget_exhausted": False, "error_blobs": [],
     }
     run_start = time.monotonic()
-    # Uploads stop at this point so the run ends (and saves checkpoints) in time.
+    # Uploads stop at this point so the run ends (and saves checkpoints) in time;
+    # the client also caps each request's timeout to the time left.
     total_stats["deadline"] = run_start + 600 - TIME_BUDGET_RESERVE_SEC
+    client.upload_deadline = total_stats["deadline"]
 
     for acct in regional_accounts:
         acct_name = acct.name
@@ -330,20 +332,26 @@ def _process_all_regions():
                                         "error": f"Skipped {skipped} malformed record(s)",
                                     })
                             if records:
-                                total_stats["processed"] += len(records)
-                                sent = _upload_in_order(client, source_config_b64, records,
-                                                        using_general, total_stats,
-                                                        acct_name, cname, blob.name)
+                                # Records of the first envelope an earlier run already handled
+                                # (appended bytes never change, so they are the same records).
+                                skip = _resume_skip(cp_entry, "next_byte", offset, len(records))
+                                total_stats["processed"] += len(records) - skip
+                                sent = skip + _upload_in_order(client, source_config_b64, records[skip:],
+                                                               using_general, total_stats,
+                                                               acct_name, cname, blob.name)
                                 if sent < len(records):
-                                    # Advance exactly past the envelopes that were fully sent,
-                                    # so nothing already delivered is sent again.
-                                    done = max([b for n, b in boundaries if n <= sent], default=0)
-                                    if done:
-                                        checkpoints[cp_key] = {
-                                            "next_block": -1, "next_byte": offset + done,
-                                            "append_created": generation, "last_seen": _now_iso(),
-                                            "last_modified": cur_lm,
-                                        }
+                                    # Advance exactly past the envelopes that were fully handled and
+                                    # count the records handled in the next one, so nothing already
+                                    # delivered is sent again (nothing new handled: left as it was).
+                                    done_n, done_b = max([(n, b) for n, b in boundaries if n <= sent], default=(0, 0))
+                                    if sent == skip:
+                                        continue
+                                    checkpoints[cp_key] = {
+                                        "next_block": -1, "next_byte": offset + done_b,
+                                        "skip_records": sent - done_n,
+                                        "append_created": generation, "last_seen": _now_iso(),
+                                        "last_modified": cur_lm,
+                                    }
                                     continue
                             checkpoints[cp_key] = {
                                 "next_block": -1, "next_byte": offset + consumed,
@@ -399,11 +407,12 @@ def _process_all_regions():
                                     }
                                     total_stats["blobs_advanced"] += 1
                                 elif sent:
-                                    # Keep the full-read marker unset so the blob is read
-                                    # again, and resume after the records already sent.
-                                    checkpoints[cp_key] = dict(
-                                        cp_entry, last_seen=_now_iso(),
-                                        partial_modified=cur_lm, sent_records=already + sent)
+                                    # No full-read marker, so the blob is read again; the next run
+                                    # resumes after the records this version already handled.
+                                    checkpoints[cp_key] = {
+                                        "partial_modified": cur_lm, "sent_records": already + sent,
+                                        "last_seen": _now_iso(),
+                                    }
                                 # Nothing sent: leave checkpoint as-is for retry
                             else:
                                 checkpoints[cp_key] = {
@@ -468,23 +477,29 @@ def _process_all_regions():
                             }
                             continue
 
-                        total_stats["processed"] += len(records)
-                        boundaries = _block_boundaries(data, committed, next_block, upper, len(records))
-                        sent = _upload_in_order(client, source_config_b64, records,
-                                                using_general, total_stats,
-                                                acct_name, cname, blob.name)
+                        boundaries = _block_boundaries(data, committed, next_block, upper, records)
+                        # Records an earlier run handled from this block; only trusted when every
+                        # block parses on its own, so the first block's records are the same ones.
+                        skip = _resume_skip(cp_entry, "next_block", next_block, len(records)) if boundaries else 0
+                        total_stats["processed"] += len(records) - skip
+                        sent = skip + _upload_in_order(client, source_config_b64, records[skip:],
+                                                       using_general, total_stats,
+                                                       acct_name, cname, blob.name)
                         if sent == len(records):
                             checkpoints[cp_key] = {
                                 "next_block": upper,
                                 "last_seen": _now_iso(),
                             }
                             total_stats["blobs_advanced"] += 1
-                        else:
-                            # Advance past the blocks whose records were all sent, so they
-                            # are not sent again; the rest is retried next cycle.
-                            done = max([blk for n, blk in boundaries if n <= sent], default=next_block)
-                            if done > next_block:
-                                checkpoints[cp_key] = {"next_block": done, "last_seen": _now_iso()}
+                        elif boundaries and sent > skip:
+                            # Advance past the blocks whose records were all handled and count the
+                            # records handled in the next one, so nothing is sent again.
+                            done_n, done_blk = max([(n, blk) for n, blk in boundaries if n <= sent],
+                                                   default=(0, next_block))
+                            checkpoints[cp_key] = {"next_block": done_blk, "skip_records": sent - done_n,
+                                                   "last_seen": _now_iso()}
+                        # A record spans blocks: no safe boundary inside the range, so the whole
+                        # range is retried next cycle (records may arrive twice, none is lost).
 
                     except Exception as e:
                         # Checkpoint not advanced, so the blob is read again next run.
@@ -688,19 +703,32 @@ def _utf8_len(text: str) -> int:
     return len(text.encode("utf-8", "surrogateescape"))
 
 
-def _block_boundaries(data, committed, first, upper, total):
-    """``(records_before, block_after)`` for every block in ``committed[first:upper]``.
+def _block_boundaries(data, committed, first, upper, records):
+    """``(records_before, block_after)`` for every block in ``committed[first:upper]``,
+    or None when the blocks cannot be split safely.
 
-    Azure commits whole records per block, so each block parses on its own. If the
-    per-block counts do not add up to ``total`` (a record split across blocks), only
-    the end of the range is a safe boundary and the range is sent all or nothing."""
-    boundaries, count, pos = [], 0, 0
-    for index in range(first, upper):
-        size = committed[index].size
-        count += len(_parse_records(data[pos:pos + size]))
+    Azure commits whole records per block, so each block normally parses on its own.
+    The split is trusted only when the blocks cover exactly the bytes read and their
+    records, block by block, are the very records of the whole range in order; a
+    matching count alone could pair the halves of a record split across blocks."""
+    sizes = [committed[index].size for index in range(first, upper)]
+    if sum(sizes) != len(data):
+        return None
+    boundaries, parsed, pos = [], [], 0
+    for index, size in zip(range(first, upper), sizes):
+        parsed.extend(_parse_records(data[pos:pos + size]))
         pos += size
-        boundaries.append((count, index + 1))
-    return boundaries if count == total else [(total, upper)]
+        boundaries.append((len(parsed), index + 1))
+    return boundaries if parsed == records else None
+
+
+def _resume_skip(cp_entry, field, position, available) -> int:
+    """Records already handled at ``position`` by an earlier run (0 if unknown)."""
+    skip = cp_entry.get("skip_records", 0)
+    if (cp_entry.get(field) != position or not isinstance(skip, int) or isinstance(skip, bool)
+            or not 0 <= skip <= available):
+        return 0
+    return skip
 
 
 def _batches(records):
@@ -890,12 +918,32 @@ def _save_checkpoints(conn_str: str, checkpoints: dict) -> None:
         logger.error("BlobLogProcessor: Failed to save checkpoints: %s", str(e))
 
 
+def _progress(entry: dict):
+    """How far a checkpoint entry got, comparable only within its kind.
+
+    Append blobs: (generation, next byte, records handled in the next envelope).
+    Single-shot blobs: (version, done, records sent of that version).
+    Block blobs: (next block, records handled in that block)."""
+    def number(value):
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+    if "next_byte" in entry:
+        return ("append", str(entry.get("append_created", "")), number(entry.get("next_byte")),
+                number(entry.get("skip_records")))
+    if "partial_modified" in entry:
+        return ("full", str(entry.get("partial_modified", "")), 0, number(entry.get("sent_records")))
+    if entry.get("next_block") == -1:
+        return ("full", str(entry.get("last_modified", "")), 1, 0)
+    return ("block", number(entry.get("next_block")), number(entry.get("skip_records")))
+
+
 def _merge_checkpoints(remote, local) -> dict:
     """Merge two per-blob checkpoint dicts.
 
-    Each value is a dict ``{"next_block": int, "last_seen": iso, ...}``. On
-    conflict we take the **max** ``next_block`` (so a more-advanced run never
-    regresses) and the **latest** ``last_seen`` (so GC works correctly).
+    Each value is a dict ``{"next_block": int, "last_seen": iso, ...}``. On conflict
+    the entry that got further wins **as a whole** (see ``_progress``), so a more
+    advanced run never regresses and its resume fields stay together; when the kinds
+    differ the local (newer) view wins. ``last_seen`` is the latest of both (so GC
+    works correctly).
 
     For backwards compatibility, legacy string values (old per-account ISO
     timestamps) are dropped — a fresh per-blob checkpoint will be built on the
@@ -915,33 +963,9 @@ def _merge_checkpoints(remote, local) -> dict:
             if not isinstance(prev, dict):
                 merged[k] = dict(v)
                 continue
-            out = dict(prev)
-            if "next_byte" in v or "next_byte" in prev:
-                old_generation = prev.get("append_created", "")
-                new_generation = v.get("append_created", "")
-                if old_generation and new_generation and old_generation != new_generation:
-                    winner = v if new_generation > old_generation else prev
-                elif "next_byte" not in prev:
-                    winner = v
-                elif "next_byte" not in v:
-                    winner = prev
-                else:
-                    winner = v if int(v["next_byte"]) >= int(prev["next_byte"]) else prev
-                out.update(winner)
-                out["last_seen"] = max(prev.get("last_seen", ""), v.get("last_seen", ""))
-                merged[k] = out
-                continue
-            try:
-                out["next_block"] = max(int(prev.get("next_block", 0)),
-                                          int(v.get("next_block", 0)))
-            except (TypeError, ValueError):
-                out["next_block"] = v.get("next_block", prev.get("next_block", 0))
-            ls_p = prev.get("last_seen", "")
-            ls_v = v.get("last_seen", "")
-            out["last_seen"] = ls_v if (ls_v and ls_v > ls_p) else (ls_p or ls_v)
-            if v.get("last_modified"):
-                out["last_modified"] = v["last_modified"]
-            elif prev.get("last_modified"):
-                out["last_modified"] = prev["last_modified"]
+            old, new = _progress(prev), _progress(v)
+            winner = prev if old[0] == new[0] and old > new else v
+            out = dict(winner)
+            out["last_seen"] = max(str(prev.get("last_seen", "")), str(v.get("last_seen", "")))
             merged[k] = out
     return merged
