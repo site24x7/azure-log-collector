@@ -239,6 +239,7 @@ def _update_state() -> dict:
     try:
         from shared.updater import get_update_state
         state = get_update_state()
-        return {k: state.get(k, "") for k in ("pending_version", "previous_version", "submitted_at", "confirmed_at")}
+        return {k: state.get(k, "") for k in ("pending_version", "previous_version", "submitted_at",
+                                              "confirmed_at", "failed_at", "error")}
     except Exception:
         return {}

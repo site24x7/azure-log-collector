@@ -1047,7 +1047,7 @@ async function checkUpdate() {
         try {
           const apply = await api('check-update?apply=1', { method: 'POST' });
           if (apply.action === 'deployed') {
-            showToast(`Updated to v${apply.remote_version}! App will restart shortly.`);
+            showToast(`Installing v${apply.remote_version}. The app restarts in a few minutes.`);
             refreshVersionAfterUpdate(apply.remote_version);
           } else {
             // Refusals (too new, pinned, disabled, pre-release) explain themselves in message.
@@ -1357,7 +1357,7 @@ function renderConfiguredResources(resources) {
       const t = r.configured_at ? fmtTime(r.configured_at) : '—';
       const cats = (r.categories || []).join(', ') || '—';
       const catCount = (r.categories || []).length;
-      const shortType = (r.resource_type || '').replace(/^Microsoft\./i, '');
+      const shortType = (r.resource_type || '').replace(/^Microsoft\\./i, '');
       return `<tr style="border-top:1px solid var(--border)">` +
         `<td style="${truncCell}" title="${escAttr(r.name + '\\n' + r.id)}">${esc(r.name)}</td>` +
         `<td style="${truncCell};color:var(--muted)" title="${escAttr(r.resource_type)}">${esc(shortType)}</td>` +

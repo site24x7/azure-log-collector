@@ -15,7 +15,7 @@ Use unique test-event markers and retain evidence of the events in AppLogs.
 
 | Scenario | Pass condition |
 |---|---|
-| Fresh portal deployment | Published customer template and matching package deploy in East US and Central India; nested operations succeed, Oryx completes, authenticated health reports `deps_ok=true`, and expected functions register. |
+| Fresh portal deployment | Published customer template and matching package deploy in East US and Central India; nested operations succeed, OneDeploy installs the package, authenticated health reports `deps_ok=true`, and expected functions register. |
 | Repeated deployment | Same template, suffix and location reuse resources; no duplicate storage, Function App or forwarding destinations appear. |
 | Name unavailable | Preflight rejects an unavailable name before provisioning, gives a naming override, and a fresh override succeeds. Availability-check errors never imply availability. |
 | Existing collector upgrade | Start with the published stable version; upgrade through the actual supported updater path. Config, filters, storage destinations and processing checkpoints survive; new uniquely marked events arrive. |
@@ -42,8 +42,8 @@ should be approved solely because these automated checks are green.
 
 ## Current unresolved verification
 
-The PR deployment template has passed Azure preflight; live ZipDeploy/Oryx
-startup, fresh install, upgrade, rollback and ingestion are still pending.
+The Flex Consumption template must pass Azure preflight, then live OneDeploy
+startup, fresh install, upgrade, rollback and ingestion.
 Long-suffix naming requires the updated collector package and matching template
 pin. Legacy URL-mode updater behavior and transition from old deployment methods
 must be tested before customers receive the new stable version. The local demo

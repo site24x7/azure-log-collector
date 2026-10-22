@@ -1,6 +1,6 @@
-# Exact, hash-checked dependencies of the release build (Linux x86_64, CPython 3.11).
+# Exact, hash-checked dependencies of the release build (Linux x86_64, CPython 3.13).
 # Generated from requirements.txt: pip download --platform manylinux2014_x86_64
-#   --python-version 3.11 --implementation cp --only-binary=:all: -r requirements.txt
+#   --python-version 3.13 --implementation cp --only-binary=:all: -r requirements.txt
 # Regenerate whenever requirements.txt changes; the release installs with --require-hashes.
 
 azure-common==1.1.28 \
@@ -26,9 +26,9 @@ azure-storage-blob==12.27.1 \
 certifi==2026.10.19 \
     --hash=sha256:42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b
 cffi==2.1.1 \
-    --hash=sha256:34e261f78cb6ceaaa36f42f2613f4380d94d9c759a9c73c769ee6e0247364632
+    --hash=sha256:a931079504ecc49efed7744c476a5c343a92fabf66dec2db95edb1b2fdc770e2
 charset-normalizer==3.5.2 \
-    --hash=sha256:211d5a3eb6af8f513b8d4ca19a8c1b7accab1b5f0d3175f9826b03c1a920dc1f
+    --hash=sha256:7218e8f32b0956cfcd048fd42d9d5779809745ca1d86113ca56f66e7ae1549c4
 cryptography==50.0.2 \
     --hash=sha256:630ebfea3bf689d075f82316324ff7433dc447fe6bc1bfc76524b74b4a9567d2
 idna==3.20 \
@@ -36,7 +36,7 @@ idna==3.20 \
 isodate==0.7.2 \
     --hash=sha256:28009937d8031054830160fce6d409ed342816b543597cece116d966c6d99e15
 markupsafe==3.0.4 \
-    --hash=sha256:6da83a088f8ef93b2d483a8232a4dbf4d69d3d8496b568a03c56becac43e1808
+    --hash=sha256:434139499bb20b502ed3baa1f169e618f924a97e7a777fea1a49446d80106cf6
 msal==1.39.0 \
     --hash=sha256:2d2577886906cd7293850dffa2da29119966c213bfc6ec0cecf8bf7621e1ca77
 msal-extensions==1.3.1 \

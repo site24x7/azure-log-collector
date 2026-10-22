@@ -96,22 +96,98 @@ def test_template_strips_separators_from_deployment_suffix():
     assert "parameters('deploymentSuffix')" not in variables['uniqueSuffix']
 
 
-def test_template_runs_from_direct_package_url():
-    # Linux Consumption refuses to be created with a redirecting package URL
-    # (GitHub release assets 302), so the template uses the raw.githubusercontent
-    # copy on the packages branch, which is served directly.
+# Settings the Flex Consumption plan rejects or ignores (Microsoft: "Flex
+# Consumption plan deprecations"), plus the retired instrumentation key.
+FLEX_DEPRECATED_SETTINGS = {
+    'ENABLE_ORYX_BUILD', 'FUNCTIONS_EXTENSION_VERSION', 'FUNCTIONS_WORKER_RUNTIME',
+    'FUNCTIONS_WORKER_RUNTIME_VERSION', 'FUNCTIONS_MAX_HTTP_CONCURRENCY', 'FUNCTIONS_WORKER_PROCESS_COUNT',
+    'FUNCTIONS_WORKER_DYNAMIC_CONCURRENCY_ENABLED', 'SCM_DO_BUILD_DURING_DEPLOYMENT',
+    'WEBSITE_CONTENTAZUREFILECONNECTIONSTRING', 'WEBSITE_CONTENTOVERVNET', 'WEBSITE_CONTENTSHARE',
+    'WEBSITE_DNS_SERVER', 'WEBSITE_MAX_DYNAMIC_APPLICATION_SCALE_OUT', 'WEBSITE_NODE_DEFAULT_VERSION',
+    'WEBSITE_RUN_FROM_PACKAGE', 'WEBSITE_SKIP_CONTENTSHARE_VALIDATION', 'WEBSITE_VNET_ROUTE_ALL',
+    'WEBSITE_TIME_ZONE', 'TZ', 'APPINSIGHTS_INSTRUMENTATIONKEY',
+}
+
+
+def _nested_resources():
     template = json.loads((ROOT / 'setup/azuredeploy.json').read_text())
+    inner = next(r for r in template['resources'] if r['name'] == 's247-diag-logs-resources')
+    return template, inner['properties']['template']['resources']
+
+
+def test_template_runs_on_flex_consumption():
+    template, nested = _nested_resources()
+    plan = next(r for r in nested if r['type'] == 'Microsoft.Web/serverfarms')
+    assert plan['sku'] == {'name': 'FC1', 'tier': 'FlexConsumption'} and plan['properties']['reserved'] is True
+    site = next(r for r in nested if r['type'] == 'Microsoft.Web/sites')
+    config = site['properties']['functionAppConfig']
+    assert config['runtime'] == {'name': 'python', 'version': '3.13'}
+    assert 'linuxFxVersion' not in site['properties']['siteConfig']
+    settings = {s['name']: s['value'] for s in site['properties']['siteConfig']['appSettings']}
+    assert not FLEX_DEPRECATED_SETTINGS & settings.keys()
+    assert 'APPLICATIONINSIGHTS_CONNECTION_STRING' in settings
+    assert settings['DIAG_SEED_REGION'] == "[parameters('location')]"
+    # The deployment container exists before the app, and its connection setting is defined.
+    storage = config['deployment']['storage']
+    assert storage['type'] == 'blobContainer' and "parameters('deploymentContainerName')" in storage['value']
+    assert storage['authentication']['storageAccountConnectionStringName'] in settings
+    container = next(r for r in nested if r['type'] == 'Microsoft.Storage/storageAccounts/blobServices/containers'
+                     and 'deploymentContainerName' in r['name'])
+    assert any('deploymentContainerName' in d for d in site['dependsOn'])
+    assert container['properties']['publicAccess'] == 'None'
     assert template['parameters']['deploymentSuffix']['defaultValue'] == ''
+
+
+def test_template_installs_the_prebuilt_package_from_the_packages_branch():
+    # Release asset URLs redirect, so the template uses the raw.githubusercontent
+    # copy on the packages branch; the zip already carries its dependencies.
+    template, nested = _nested_resources()
     assert template['variables']['functionZipUrl'].startswith(
         'https://raw.githubusercontent.com/site24x7/azure-log-collector/packages/v')
-    nested = template['resources'][1]['properties']['template']['resources']
+    deploy = [r for r in nested if r['type'] == 'Microsoft.Web/sites/extensions']
+    assert len(deploy) == 1 and deploy[0]['name'].endswith("'/onedeploy')]")
+    assert deploy[0]['properties'] == {'packageUri': "[parameters('functionZipUrl')]", 'remoteBuild': False}
+
+
+def test_unsupported_region_fails_before_anything_is_created():
+    # Flex Consumption is not offered everywhere; a region check runs first, so
+    # preflight rejects such a region instead of leaving a locked, half-built group.
+    template, _ = _nested_resources()
+    check = next(r for r in template['resources'] if r['name'].startswith("[concat('s247-diag-logs-region-check-'"))
+    allowed = check['properties']['template']['parameters']['location']['allowedValues']
+    assert {'centralindia', 'southindia', 'eastus', 'westeurope'} <= set(allowed)
+    assert check['properties']['parameters']['location']['value'] == '[deployment().location]'
+    rg = next(r for r in template['resources'] if r['type'] == 'Microsoft.Resources/resourceGroups')
+    assert rg['dependsOn'] == [check['name']]
+
+
+def test_resource_group_lock_is_created_last():
+    # A failed deployment must not leave a locked, half-built resource group.
+    template, nested = _nested_resources()
+    assert not any(r['type'] == 'Microsoft.Authorization/locks' for r in nested)
+    last = template['resources'][-1]
+    assert last['properties']['template']['resources'][0]['type'] == 'Microsoft.Authorization/locks'
+    roles = next(r['name'] for r in template['resources'] if 'sub-roles' in r['name'])
+    assert set(last['dependsOn']) == {'s247-diag-logs-resources', roles}
+
+
+def test_dashboard_output_uses_the_apps_real_host_name():
+    template, _ = _nested_resources()
+    assert 'defaultHostName' in template['outputs']['dashboardUrl']['value']
+    assert 'azurewebsites.net' not in json.dumps(template)
+
+
+def test_release_build_lock_and_template_use_the_same_python():
+    _, nested = _nested_resources()
     site = next(r for r in nested if r['type'] == 'Microsoft.Web/sites')
-    settings = {s['name']: s['value'] for s in site['properties']['siteConfig']['appSettings']}
-    assert settings['WEBSITE_RUN_FROM_PACKAGE'] == "[parameters('functionZipUrl')]"
-    assert 'SCM_DO_BUILD_DURING_DEPLOYMENT' not in settings
-    assert 'ENABLE_ORYX_BUILD' not in settings
-    assert settings['DIAG_SEED_REGION'] == "[parameters('location')]"
-    assert not any(r['type'] == 'Microsoft.Web/sites/extensions' for r in nested)
+    runtime = site['properties']['functionAppConfig']['runtime']['version']
+    release = (ROOT / '.github/workflows/release-function-app.yml').read_text()
+    validate = (ROOT / '.github/workflows/validate-function-app.yml').read_text()
+    lock = (ROOT / 'function-app/requirements.lock').read_text()
+    assert f'--python-version {runtime} ' in release
+    assert release.count(f"python-version: '{runtime}'") == 1
+    assert f"python-version: '{runtime}'" in validate
+    assert f'CPython {runtime})' in lock and f'--python-version {runtime} ' in lock
 
 
 @pytest.mark.parametrize('failure', ['global_collision', 'outage', 'ownership_denied'])

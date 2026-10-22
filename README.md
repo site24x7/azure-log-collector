@@ -56,12 +56,14 @@ the full suffix and region into at most 24 characters. This requires the
 matching updated collector code—do not combine a new long suffix with an older
 collector package that still truncates regional names.
 
-The template runs the collector from a package URL (`WEBSITE_RUN_FROM_PACKAGE`).
-Azure refuses to create a Linux Consumption app with a redirecting package URL,
-and GitHub release download links always redirect, so each release also commits
-the identical zip to the `packages` branch and the template uses its
-`raw.githubusercontent.com` link, which is served directly. A successful ARM validation is not proof of code
-startup; verify `/api/health` and actual ingestion after deployment.
+The template creates a **Flex Consumption** Function App (Python 3.13) and installs
+the release package with OneDeploy. The package already contains its Python
+dependencies, so nothing is built in Azure. GitHub release download links always
+redirect, so each release also commits the identical zip to the `packages` branch
+(also as `released-package.zip`, the name Flex Consumption documents for OneDeploy)
+and the template uses its `raw.githubusercontent.com` link, which is served
+directly and never replaced once released. A successful ARM validation is not
+proof of code startup; verify `/api/health` and actual ingestion after deployment.
 
 **Which key opens the dashboard.** The deployment's `dashboardUrl` output is the
 address without a key (keys are never written to deployment outputs). Open it with
@@ -178,7 +180,7 @@ collector's diagnostic setting from resources where it sends to this deployment'
 
 | Resource | Cost |
 |----------|------|
-| Function App (Consumption) | ~$0.20/million executions |
+| Function App (Flex Consumption, 2,048 MB instances) | Billed per GB-second while functions run, plus executions; see [Azure Functions pricing](https://azure.microsoft.com/pricing/details/functions/). Grows with log volume. |
 | Storage Account (per region) | ~$0.02/GB/month |
 | **Total (typical)** | **~$5–10/month** |
 
@@ -249,16 +251,21 @@ Check GitHub's "Set as a pre-release" box when creating alpha/beta tags. With de
    stable release is the latest again.
 2. Or release the known-good content as a new version (a released version's package is never
    replaced).
-3. A collector that cannot start after a bad update cannot update itself: point
-   `WEBSITE_RUN_FROM_PACKAGE` back at the previous package URL in the Azure portal.
+3. A collector that cannot start after a bad update cannot update itself. Install the
+   previous version's package again (Flex Consumption keeps no earlier packages):
+
+   ```bash
+   az functionapp deploy -g <resource-group> -n <function-app> --type zip \
+     --src-url https://raw.githubusercontent.com/site24x7/azure-log-collector/packages/v<previous-version>/released-package.zip
+   ```
 
 Every AutoUpdater run writes audit events (`auto_update_run`, `auto_update_health_check`) visible via the debug-logs endpoint.
 
 ## Security
 
 The collector runs inside your Azure tenant: its managed identity for ARM, storage account keys for
-its own storage, and your Site24x7 Device Key. Site24x7 holds the Function App's host key so
-admins can run the collector's actions from Site24x7.
+its own storage, and your Site24x7 Device Key. Site24x7 holds a dedicated `site24x7` function key,
+valid only on the endpoints it calls, so admins can run the collector's actions from Site24x7.
 
 See **[docs/security-overview.md](docs/security-overview.md)** for a customer-facing security brief covering: trust boundary, RBAC, data path & residency, self-update controls, logging & auditability, uninstall, and answers to common security questions.
 

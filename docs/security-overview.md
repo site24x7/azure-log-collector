@@ -43,7 +43,7 @@ The Site24x7 addresses come from the `SITE24X7_BASE_URL` app setting. The upload
 | Credential | Where it is | Used for |
 |---|---|---|
 | System-assigned managed identity | Azure-managed | All ARM calls |
-| `AzureWebJobsStorage` / `WEBSITE_CONTENTAZUREFILECONNECTIONSTRING` | App settings (connection strings with the account key of the collector's own storage account) | Functions runtime, the collector's state, scan queue |
+| `AzureWebJobsStorage` / `DEPLOYMENT_STORAGE_CONNECTION_STRING` | App settings (connection strings with the account key of the collector's own storage account) | Functions runtime, the collector's state, scan queue |
 | Regional storage account keys | Read at run time through ARM `listKeys` (Contributor on the collector's resource group), held in memory only | Reading the buffered log blobs |
 | Site24x7 Device Key | App setting `SITE24X7_API_KEY` (encrypted at rest by Azure) | Authenticating to Site24x7. It is not stored with the saved log type configurations, and it is never written to logs. |
 | Function App host keys | Azure-managed | Authorize every HTTP endpoint (section 7). Used by you, for example to open the dashboard. **Never sent to Site24x7.** |
@@ -203,10 +203,10 @@ Every run and post-update health check is recorded as an event.
 
 **Manual update:** `GET /api/check-update` reports what is available, and `POST /api/check-update?apply=1` applies it. Site24x7 admins can do the same from the collector's Settings tab.
 
-**Installing the verified bytes:** after the checks, the collector copies the verified zip to its own storage account (`s247-packages`). It then runs from a read-only link to that copy, so Azure loads exactly the bytes that were checked.
-- The previous package address is kept in `S247_PREVIOUS_PACKAGE`.
-- An update counts as done only when the new version confirms on its first run (`update_state` in `/api/status`).
-- A failed update is not rolled back automatically. To go back, set `WEBSITE_RUN_FROM_PACKAGE` to the `S247_PREVIOUS_PACKAGE` value.
+**Installing the verified bytes:** after the checks, the collector copies the verified zip to its own storage account (`s247-packages`) and installs it with OneDeploy from a read-only link to that copy that expires after 6 hours, so Azure installs exactly the bytes that were checked.
+- Before installing, the collector imports every function and shared module of the new version in a separate process, using only the package's own dependencies; a package that cannot load is refused, so an update cannot leave a collector that is unable to start.
+- An update counts as done only when the new version confirms on its first run (`update_state` in `/api/status`, which also records the previous version).
+- A failed update is not rolled back automatically. To go back, install the previous version's package from the `packages` branch (`az functionapp deploy --type zip --src-url .../packages/v<previous-version>/released-package.zip`).
 
 ---
 
@@ -236,10 +236,10 @@ Every run and post-update health check is recorded as an event.
 | Item | Status | Mitigation |
 |---|---|---|
 | Site24x7 holds a key to the collector's management endpoints (section 6) | By design (Site24x7 runs the admin actions) | Dedicated `site24x7` function key on 14 functions only; admin-only, server-built and audited actions in Site24x7; `SITE24X7_KEY_EXCLUDE` narrows or removes its reach. |
-| A failed update is not rolled back automatically | Open | The update is reported as confirmed only when the new version runs. `S247_PREVIOUS_PACKAGE` holds the address to go back to; `PINNED_VERSION` and `SKIP_AUTO_UPDATE` control updates. |
+| A failed update is not rolled back automatically | Mitigated | A package whose functions cannot load (missing dependency, broken import, wrong Python build) is refused before install, by the release workflow and again by the collector. Packages are also checked (digest, structure, version) before install, releases install only after `MIN_RELEASE_AGE_MINUTES`, and the update is reported as confirmed only when the new version runs. Every released package stays on the `packages` branch to go back to; `PINNED_VERSION` and `SKIP_AUTO_UPDATE` control updates. |
 | Masking and filter patterns come from Site24x7 and run with Python's backtracking regular expressions | Accepted | Patterns are defined by Site24x7, not by log content. A rule that fails is applied fail-closed (the field is withheld). |
 | The `packages` branch the template installs from | Open (repository setting) | The release workflow never replaces a released package. Recommended: branch protection that lets only the release workflow push to `packages`. |
-| No Key Vault, Private Endpoint or customer-managed key by default | By design (Consumption plan, single template) | Key Vault references in app settings work for `SITE24X7_API_KEY`. A Premium plan with virtual network integration supports private networking. |
+| No Key Vault, Private Endpoint or customer-managed key by default | By design (single template) | Key Vault references in app settings work for `SITE24X7_API_KEY`. The Flex Consumption plan supports virtual network integration; the template doesn't configure it. |
 
 ## 13. Common questions
 

@@ -164,7 +164,7 @@ This system automates the collection and forwarding of Azure diagnostic logs to 
 | Resource | Name | Purpose |
 |----------|------|---------|
 | **Resource Group** | `s247-diag-logs-rg` | Contains all pipeline resources |
-| **Function App** | `s247-diag-func-XXXXXX` | Hosts all Azure Functions (Python 3.11) |
+| **Function App** | `s247-diag-func-XXXXXX` | Hosts all Azure Functions (Flex Consumption, Python 3.13) |
 | **Storage Account** (primary) | `s247diag<region><suffix>` | Function App storage + config blobs + checkpoints |
 | **Storage Accounts** (regional) | `s247diag{region}{suffix}` | Per-region log collection (auto-provisioned) |
 
@@ -491,7 +491,7 @@ Azure Diagnostic Settings require the destination Storage Account to be **in the
 │     ├─ json.loads every .json file                                     │
 │     └─ required files present                                          │
 │  9. Validation failed? → refuse to deploy (action=deploy_failed)       │
-│ 10. POST to ARM zipdeploy API (Managed Identity)                       │
+│ 10. Stage verified copy, PUT ARM onedeploy (Managed Identity)            │
 │ 11. Function App restarts with new version                             │
 │ 12. Post-deploy: ping /api/health, write auto_update_health_check      │
 │     audit event (informational, no rollback)                           │
@@ -619,7 +619,7 @@ Parses Azure diagnostic log envelope format:
 
 ### 6.7 updater.py — Self-Update Mechanism
 
-Checks remote `version.json` and auto-deploys via ARM zipdeploy API.
+Checks remote `version.json` and auto-deploys via ARM OneDeploy.
 
 ---
 
@@ -797,7 +797,7 @@ Triggers an immediate resource discovery and configuration scan.
 ```json
 {
   "status": "alive",
-  "python_version": "3.11.x",
+  "python_version": "3.13.x",
   "env_keys": ["SUBSCRIPTION_IDS", "SITE24X7_API_KEY", "..."],
   "dependencies": {
     "azure.identity": "ok",

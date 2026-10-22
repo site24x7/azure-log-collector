@@ -578,7 +578,7 @@ Persistent debug event logging and processing stats with ring buffer storage.
 
 ### shared/updater.py
 
-Auto-update mechanism — checks remote version and deploys via Azure ARM zipdeploy.
+Auto-update mechanism — checks remote version and installs it with Azure ARM OneDeploy (Flex Consumption).
 
 **Imports:** `requests`, `azure.identity.DefaultAzureCredential`, `azure.mgmt.web.WebSiteManagementClient`
 
@@ -590,7 +590,7 @@ Auto-update mechanism — checks remote version and deploys via Azure ARM zipdep
 | `parse_version` | `(version_str: str)` | `Tuple[int, int, int, int, int, int]` | Parse semver to 6-tuple `(major, minor, patch, stability, label_rank, pre_num)`; orders `dev < alpha < beta < rc < final` correctly across labels |
 | `fetch_remote_version` | `(update_url: str)` | `Optional[Dict]` | Fetch from version.json, GitHub Releases, or shorthand |
 | `is_update_available` | `(local_version: str, remote_version: str)` | `bool` | Compare versions |
-| `deploy_update` | `(package_url: str)` | `Dict` | Download and deploy via Azure ARM zipdeploy API |
+| `deploy_update` | `(package_url: str, expected_sha256=None, expected_version=None)` | `Dict` | Download, verify, stage in `s247-packages` and install via ARM OneDeploy |
 | `check_and_apply_update` | `(auto_apply: bool = False)` | `Dict` | Full update workflow (check, optionally deploy) |
 
 **Supported Update URL Formats:**
@@ -1399,13 +1399,7 @@ s247-function-app.zip
 
 ### Build Settings
 
-The Azure Functions build system installs dependencies from `requirements.txt` during deployment. Key settings configured in the function app:
-
-| Setting | Value | Purpose |
-|---------|-------|---------|
-| `FUNCTIONS_WORKER_RUNTIME` | `python` | Python runtime |
-| `SCM_DO_BUILD_DURING_DEPLOYMENT` | `true` | Install pip packages during deploy |
-| `ENABLE_ORYX_BUILD` | `true` | Use Oryx build system |
+The app runs on the Flex Consumption plan with Python 3.13 (`functionAppConfig.runtime` in the template). Release packages are prebuilt: the release workflow installs `requirements.lock` (hash-checked, manylinux2014, CPython 3.13) into `.python_packages`, and the template and the AutoUpdater install them with OneDeploy and `remoteBuild=false`. `setup/setup.sh` deploys local source with a remote build instead (`config-zip --build-remote true`). Flex Consumption rejects the old Consumption build settings (`FUNCTIONS_WORKER_RUNTIME`, `SCM_DO_BUILD_DURING_DEPLOYMENT`, `ENABLE_ORYX_BUILD`, `WEBSITE_RUN_FROM_PACKAGE`), so none is set; a test keeps them out of the template.
 
 `host.json` configuration:
 - **Function timeout:** 10 minutes (`"functionTimeout": "00:10:00"`)
@@ -1434,8 +1428,9 @@ The `AutoUpdater` function (timer-triggered, 3 AM UTC daily) and `CheckUpdate` e
    - `ast.parse()` — every app `.py` file must be syntactically valid. **Vendored third-party packages under `.python_packages/` are skipped** — they come from PyPI and occasionally contain BOMs or other encoding quirks that `ast.parse` rejects even though Python's own loader accepts them. App code is decoded with `utf-8-sig` so a stray leading BOM is stripped before parsing.
    - `json.loads()` — every `.json` file must parse
    - Required files present: `host.json`, `VERSION`, `AutoUpdater/__init__.py`, `AutoUpdater/function.json`, `shared/updater.py`, `requirements.txt`
-7. **Deploy:** Only if validation passes, POST to Azure ARM `/zipdeploy` using the Function App's Managed Identity.
-8. **Post-deploy health check:** After a successful deploy, ping `https://{site}.azurewebsites.net/api/health` up to 3 times (with 20s warm-up + 30s between attempts) and write an `auto_update_health_check` audit event. Informational only — there is no automatic rollback; recovery is "revert + new release" or `PINNED_VERSION`.
+7. **Import check:** `check_package_imports()` unpacks the zip and, in a separate `python -I -S` process, imports every function module and every `shared/*.py` module with only the package's `.python_packages`. Any failure refuses the deploy. The release workflow runs the same check on the built zip.
+8. **Deploy:** Only if validation passes, stage the verified zip in `s247-packages` and PUT the ARM `extensions/onedeploy` resource (`packageUri` = a 6-hour read-only link to that copy, `remoteBuild=false`) using the Function App's Managed Identity.
+9. **Post-deploy health check:** After a successful deploy, ping `https://{site}.azurewebsites.net/api/health` up to 3 times (with 20s warm-up + 30s between attempts) and write an `auto_update_health_check` audit event. Informational only — there is no automatic rollback; recovery is "revert + new release" or `PINNED_VERSION`.
 
 Every AutoUpdater run writes an `auto_update_run` audit event (via `debug_logger.log_event`) so operators can reconstruct history even if the new build breaks its own logging.
 
@@ -1623,7 +1618,7 @@ curl http://localhost:7071/api/debug
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `AzureWebJobsStorage` | Yes | Azure Storage connection string (for config + checkpoints) |
-| `FUNCTIONS_WORKER_RUNTIME` | Yes | Must be `python` |
+| `FUNCTIONS_WORKER_RUNTIME` | Local only | `python` in `local.settings.json` for Core Tools; in Azure the Flex Consumption runtime setting replaces it |
 | `SUBSCRIPTION_IDS` | Yes | Comma-separated Azure subscription IDs to scan |
 | `SITE24X7_API_KEY` | Yes | Site24x7 device key for API auth |
 | `SITE24X7_BASE_URL` | Yes | Site24x7 base URL (e.g., `https://www.site24x7.com`) |

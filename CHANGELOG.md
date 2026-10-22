@@ -7,6 +7,59 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.0.1-beta11] — 2026-10-22
+
+### Changed
+- Hosting moves to the **Flex Consumption** plan (`FC1`, 2,048 MB instances, at
+  most 10 instances). Azure retires Linux Consumption on 30 September 2028 and
+  gives it no new language versions. Flex Consumption has no in-place migration,
+  so collectors from earlier betas must be deployed again.
+- Python 3.13 (Flex Consumption supports 3.11 only until October 2027). The
+  locked dependencies are unchanged; cffi, charset-normalizer and markupsafe use
+  their CPython 3.13 wheels.
+- The template installs the release package with OneDeploy into a deployment
+  container in the collector's storage account (`app-package-<function app>`),
+  from `packages/<tag>/released-package.zip` (the file name Flex Consumption
+  documents; each release publishes it next to `s247-function-app.zip`).
+  The settings Flex Consumption rejects are gone (`WEBSITE_RUN_FROM_PACKAGE`,
+  `FUNCTIONS_WORKER_RUNTIME`, `FUNCTIONS_EXTENSION_VERSION`,
+  `WEBSITE_CONTENTAZUREFILECONNECTIONSTRING`, `WEBSITE_CONTENTSHARE`).
+- Updates install the verified copy with OneDeploy instead of switching
+  `WEBSITE_RUN_FROM_PACKAGE`; the link to the copy is read-only and expires
+  after 6 hours (it was valid for 10 years). `S247_PREVIOUS_PACKAGE` is no
+  longer kept: every released package stays on the `packages` branch.
+- Application Insights is connected with `APPLICATIONINSIGHTS_CONNECTION_STRING`
+  instead of the retired instrumentation key.
+- The template first checks that the chosen region offers Flex Consumption, so
+  preflight rejects any other region before a resource group, storage account
+  or lock is created. The resource group lock is created last, after the app,
+  its package and its roles, so a failed deployment leaves no locked partial
+  group. CORS is set in the app's own `siteConfig`, and the `dashboardUrl`
+  output uses the app's real host name.
+- An update is reported as submitted, not done: the new version records
+  `confirmed_at` on its first run, a refused install records `failed_at`, a
+  second update waits while one is in progress (30 minutes), and nothing is
+  installed when the state cannot be recorded. The post-update health check that
+  ran in the old (replaced) process is removed.
+- `setup/setup.sh` refuses to reuse an existing Function App that is not Flex
+  Consumption on Python 3.13, instead of updating its code in place.
+- `setup/setup.sh` creates a Flex Consumption app and deploys with a remote
+  build; the Oryx settings and the Kudu ZipDeploy fallback are removed.
+- CI runs on Python 3.13 with `actions/checkout` v7.0.1 and `actions/setup-python`
+  v7.0.0 (Node.js 24) on `ubuntu-24.04`.
+
+### Added
+- Updates are refused when the new version cannot load: before installing, the
+  collector imports every function and shared module of the package in a
+  separate process with only the package's own dependencies (a missing
+  dependency, broken import or build for another Python is caught). The release
+  workflow runs the same check on the built zip, so such a package is never
+  released.
+
+### Fixed
+- An invalid escape sequence in the dashboard's script (`\.` in a regular expression), which Python
+  3.12+ reports as a SyntaxWarning.
+
 ## [1.0.1-beta10] — 2026-10-21
 
 ### Added
