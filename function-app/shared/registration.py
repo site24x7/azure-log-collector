@@ -173,6 +173,10 @@ def build_status_summary() -> Dict:
         "last_processing_time": runs[0].get("timestamp", "") if runs else "",
         "recent_uploaded": sum(int(r.get("uploaded", 0) or 0) for r in runs),
         "recent_dropped": sum(int(r.get("dropped", 0) or 0) for r in runs),
+        # Blobs / blocks too large to read in these runs (their records are not counted).
+        "recent_skipped_parts": sum(int(r.get("skipped_parts", 0) or 0) for r in runs),
+        # The latest run's uploads were refused for the Device Key (HTTP 401/403).
+        "upload_refused": bool(runs[0].get("upload_refused", False)) if runs else False,
         # Records the latest run could not send; they are re-sent on the next run,
         # so this goes back to 0 as soon as uploads work again.
         "pending_records": int(runs[0].get("retrying", 0) or 0) if runs else 0,

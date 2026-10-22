@@ -37,6 +37,10 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 _KEYED_OPENER = urllib.request.build_opener(_NoRedirect())
 
+# Site24x7 refused the payload itself; resending the same records cannot succeed.
+# 413 is split by the caller first; 401/403 (Device Key) are retried, as every upload fails alike.
+REJECTED_UPLOAD_STATUSES = frozenset({400, 404, 413, 415, 422})
+
 
 def _require_https(url: str) -> str:
     """Requests that carry the Device Key go over HTTPS only."""
@@ -622,6 +626,10 @@ class Site24x7Client:
     # ─── Log Upload (from log_sender.py) ─────────────────────────────────
 
     last_unparsed = 0
+    # HTTP status of a batch Site24x7 refused for good (a retry cannot fix it), else 0.
+    last_rejected = 0
+    # True once Site24x7 refused the Device Key (401/403) during this client's lifetime.
+    upload_refused = False
 
     def post_logs(self, source_config_b64: str, log_events: List[Dict]) -> bool:
         """Parse and POST logs to Site24x7 using the log_sender.py flow.
@@ -630,6 +638,7 @@ class Site24x7Client:
             source_config_b64: Base64-encoded sourceConfig JSON
             log_events: Raw log event records from Azure diagnostic logs
         """
+        self.last_rejected = 0
         if not self.circuit_breaker.can_execute():
             logger.warning("Circuit breaker OPEN — skipping log POST")
             return False
@@ -688,28 +697,48 @@ class Site24x7Client:
                 self.circuit_breaker.record_success()
                 return True
 
+        except Exception as e:
+            # The log type's own configuration is broken: only this batch waits (it is
+            # re-read next run), and Site24x7 is not blamed, so other uploads go on.
+            self._report_upload_failure(e, len(log_events), "configuration")
+            return False
+
+        try:
             # Compress and upload
             gzipped = gzip.compress(json.dumps(parsed_lines).encode())
             _send_logs_to_s247(config, gzipped, log_size)
-
-            self.circuit_breaker.record_success()
-            logger.info("Uploaded %d log records to Site24x7", len(parsed_lines))
-            return True
-
+        except urllib.error.HTTPError as e:
+            if e.code in REJECTED_UPLOAD_STATUSES:
+                # Site24x7 answered and refused this payload: it is reachable, so the
+                # breaker is not tripped, and the caller drops (or splits) the batch.
+                self.last_rejected = e.code
+                self.circuit_breaker.record_success()
+            else:
+                if e.code in (401, 403):
+                    self.upload_refused = True
+                self.circuit_breaker.record_failure()
+            self._report_upload_failure(e, len(log_events), f"HTTP {e.code}")
+            return False
         except Exception as e:
             self.circuit_breaker.record_failure()
-            logger.error("Failed to post logs to Site24x7: %s", e)
-            traceback.print_exc()
-            try:
-                from shared.debug_logger import log_event
-                log_event("error", "Site24x7Client",
-                          f"Log upload failed: {e}",
-                          {"error": str(e), "error_type": type(e).__name__,
-                           "record_count": len(log_events),
-                           "circuit_breaker_state": self.circuit_breaker.state})
-            except Exception:
-                pass
+            self._report_upload_failure(e, len(log_events), "connection")
             return False
+
+        self.circuit_breaker.record_success()
+        logger.info("Uploaded %d log records to Site24x7", len(parsed_lines))
+        return True
+
+    def _report_upload_failure(self, error: Exception, record_count: int, cause: str) -> None:
+        logger.error("Failed to post logs to Site24x7 (%s): %s", cause, error)
+        try:
+            from shared.debug_logger import log_event
+            log_event("error", "Site24x7Client",
+                      f"Log upload failed ({cause}): {error}",
+                      {"error": str(error), "error_type": type(error).__name__, "cause": cause,
+                       "record_count": record_count,
+                       "circuit_breaker_state": self.circuit_breaker.state})
+        except Exception:
+            pass
 
     def get_general_log_type_config(self) -> Optional[str]:
         """Get the general catch-all log type config (base64)."""

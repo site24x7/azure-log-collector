@@ -7,19 +7,14 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
-## [1.0.1-beta13] — 2026-10-22
+## [1.0.1-beta14] — unreleased
 
 ### Changed
-- Deployment form: `startCollectingAtOnce` is now `confirmAfterDiscovery`
-  (default `true`: after the first resource scan, the collector waits for an
-  admin to confirm in Site24x7). `generalLogTypeEnabled` defaults to `false`.
-  The resource group and suffix descriptions are shorter, start with
-  "Optional", and use no angle brackets (the portal showed them as `&lt;`).
 - A portal form (`setup/createUiDefinition.json`): labelled fields ("Resource
   group name (optional)", "Deployment suffix (optional)"), a password box for
   the Device Key, a data center list, Yes/No choices, and only the regions that
   offer Flex Consumption. The Site24x7 page opens the portal with it for
-  releases from 1.0.1-beta13 on.
+  releases from 1.0.1-beta14 on.
 - Log types are shown with Azure's own category names (`DeveloperPortalAuditLogs`
   rather than the catalog's `developerportalauditlogs`): scans save the names
   they see in `category-names.json`, and `GET /api/disabled-logtypes` returns
@@ -29,6 +24,30 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
   (`s247-diag-func-<suffix>-logs`: 30-day retention, 1 GB daily cap). Before,
   Azure created a workspace with no cap in a separate `ai_..._managed` resource
   group, which deleting the collector's group left behind.
+
+### Fixed
+- A batch Site24x7 refuses for good (HTTP 400, 404, 415, 422) is dropped and
+  recorded, and the upload goes on with the next batch. Before, it was retried
+  on every run and tripped the shared circuit breaker, which paused every
+  upload. A payload too large (413) is split in halves first.
+- A refused Device Key (401/403) is still retried, since every upload fails
+  alike, and the status now reports it (`upload_refused`).
+- A broken log-type configuration no longer trips the circuit breaker; only
+  that blob waits.
+- Block blobs advance past every block whose records were all sent, and
+  single-shot blobs remember how many records were sent, so a failed batch no
+  longer makes earlier batches arrive twice.
+- `dropped` counts records only. Blobs and blocks too large to read are
+  counted as `skipped_parts` (status: `recent_skipped_parts`).
+
+## [1.0.1-beta13] — 2026-10-22
+
+### Changed
+- Deployment form: `startCollectingAtOnce` is now `confirmAfterDiscovery`
+  (default `true`: after the first resource scan, the collector waits for an
+  admin to confirm in Site24x7). `generalLogTypeEnabled` defaults to `false`.
+  The resource group and suffix descriptions are shorter, start with
+  "Optional", and use no angle brackets (the portal showed them as `&lt;`).
 
 ## [1.0.1-beta12] — 2026-10-22
 

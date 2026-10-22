@@ -330,3 +330,16 @@ class TestSyncRegistration:
             self.now[0] += registration.KEY_CHECK_INTERVAL_SEC
             registration.sync_registration()
         assert reg.call_count == 2
+
+
+def test_summary_reports_skipped_parts_and_a_refused_device_key(azure_env, no_state):
+    runs = [{"timestamp": "2026-10-23T00:02:00+00:00", "uploaded": 0, "dropped": 3, "retrying": 5,
+             "skipped_parts": 1, "upload_refused": True},
+            {"timestamp": "2026-10-23T00:00:00+00:00", "uploaded": 7, "dropped": 0, "skipped_parts": 2}]
+    with patch("shared.debug_logger.get_processing_stats", return_value=runs), \
+         patch("shared.config_store.get_configured_resources", return_value={}):
+        summary = registration.build_status_summary()
+    assert summary["recent_skipped_parts"] == 3
+    assert summary["recent_dropped"] == 3              # records only, oversized parts apart
+    assert summary["upload_refused"] is True           # from the latest run
+    assert summary["pending_records"] == 5

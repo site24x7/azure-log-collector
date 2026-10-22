@@ -169,9 +169,12 @@ def _process_all_regions():
 
     client = Site24x7Client()
     total_stats = {
-        # dropped = records that will never be sent (malformed, too big to read);
-        # retrying = records whose upload failed this run and are re-read next run.
+        # dropped = records that will never be sent (malformed, unparseable, refused by
+        # Site24x7); skipped_parts = blobs / blocks too large to read (their record count
+        # is unknown, so they are not added to dropped); retrying = records whose upload
+        # failed this run and are re-read next run.
         "processed": 0, "uploaded": 0, "general": 0, "dropped": 0, "retrying": 0,
+        "rejected": 0, "skipped_parts": 0, "upload_refused": False,
         "blobs_advanced": 0, "blobs_with_unread": 0, "blobs_seen": 0,
         "batches_sent": 0, "bytes_read": 0,
         "time_budget_exhausted": False, "error_blobs": [],
@@ -367,7 +370,7 @@ def _process_all_regions():
                             if (blob.size or 0) > MAX_READ_BYTES:
                                 # Too big to read whole; recorded and skipped so it does
                                 # not stall the run on every poll.
-                                total_stats["dropped"] += 1
+                                total_stats["skipped_parts"] += 1
                                 total_stats["error_blobs"].append({
                                     "account": acct_name, "container": cname, "blob": blob.name,
                                     "error": f"Blob too large to read whole: {(blob.size or 0)/(1024*1024):.1f} MB",
@@ -377,19 +380,31 @@ def _process_all_regions():
                                 continue
                             data, records = _full_read_records(blob_client)
                             total_stats["bytes_read"] += len(data)
+                            # Records already sent from this same version of the blob
+                            # (an earlier run stopped part-way) are not sent again.
+                            already = (cp_entry.get("sent_records", 0)
+                                       if cp_entry.get("partial_modified") == cur_lm else 0)
+                            already = already if isinstance(already, int) and 0 <= already <= len(records) else 0
+                            records = records[already:]
                             if records:
                                 total_stats["processed"] += len(records)
-                                ok = _upload_records(client, source_config_b64, records,
-                                                     using_general, total_stats,
-                                                     acct_name, cname, blob.name)
-                                if ok:
+                                sent = _upload_in_order(client, source_config_b64, records,
+                                                        using_general, total_stats,
+                                                        acct_name, cname, blob.name)
+                                if sent == len(records):
                                     checkpoints[cp_key] = {
                                         "next_block": -1,
                                         "last_seen": _now_iso(),
                                         "last_modified": cur_lm,
                                     }
                                     total_stats["blobs_advanced"] += 1
-                                # Failed: leave checkpoint as-is for retry
+                                elif sent:
+                                    # Keep the full-read marker unset so the blob is read
+                                    # again, and resume after the records already sent.
+                                    checkpoints[cp_key] = dict(
+                                        cp_entry, last_seen=_now_iso(),
+                                        partial_modified=cur_lm, sent_records=already + sent)
+                                # Nothing sent: leave checkpoint as-is for retry
                             else:
                                 checkpoints[cp_key] = {
                                     "next_block": -1,
@@ -429,7 +444,7 @@ def _process_all_regions():
                                 "BlobLogProcessor: Skipping one oversized block of %s/%s (%.1f MB)",
                                 cname, blob.name, committed[next_block].size / (1024 * 1024),
                             )
-                            total_stats["dropped"] += 1
+                            total_stats["skipped_parts"] += 1
                             total_stats["error_blobs"].append({
                                 "account": acct_name, "container": cname, "blob": blob.name,
                                 "error": f"Oversized block: {committed[next_block].size/(1024*1024):.1f} MB",
@@ -454,16 +469,22 @@ def _process_all_regions():
                             continue
 
                         total_stats["processed"] += len(records)
-                        ok = _upload_records(client, source_config_b64, records,
-                                             using_general, total_stats,
-                                             acct_name, cname, blob.name)
-                        if ok:
+                        boundaries = _block_boundaries(data, committed, next_block, upper, len(records))
+                        sent = _upload_in_order(client, source_config_b64, records,
+                                                using_general, total_stats,
+                                                acct_name, cname, blob.name)
+                        if sent == len(records):
                             checkpoints[cp_key] = {
                                 "next_block": upper,
                                 "last_seen": _now_iso(),
                             }
                             total_stats["blobs_advanced"] += 1
-                        # If not ok, leave checkpoint unchanged → retry next cycle.
+                        else:
+                            # Advance past the blocks whose records were all sent, so they
+                            # are not sent again; the rest is retried next cycle.
+                            done = max([blk for n, blk in boundaries if n <= sent], default=next_block)
+                            if done > next_block:
+                                checkpoints[cp_key] = {"next_block": done, "last_seen": _now_iso()}
 
                     except Exception as e:
                         # Checkpoint not advanced, so the blob is read again next run.
@@ -667,6 +688,21 @@ def _utf8_len(text: str) -> int:
     return len(text.encode("utf-8", "surrogateescape"))
 
 
+def _block_boundaries(data, committed, first, upper, total):
+    """``(records_before, block_after)`` for every block in ``committed[first:upper]``.
+
+    Azure commits whole records per block, so each block parses on its own. If the
+    per-block counts do not add up to ``total`` (a record split across blocks), only
+    the end of the range is a safe boundary and the range is sent all or nothing."""
+    boundaries, count, pos = [], 0, 0
+    for index in range(first, upper):
+        size = committed[index].size
+        count += len(_parse_records(data[pos:pos + size]))
+        pos += size
+        boundaries.append((count, index + 1))
+    return boundaries if count == total else [(total, upper)]
+
+
 def _batches(records):
     """Consecutive batches of at most MAX_RECORDS_PER_BATCH records and about
     MAX_BATCH_BYTES of JSON each (a single larger record goes alone)."""
@@ -684,23 +720,44 @@ def _batches(records):
 
 def _upload_in_order(client, source_config_b64, records, using_general,
                      stats, acct_name, container, blob_name) -> int:
-    """Upload ``records`` in order and return how many leading records were sent.
+    """Upload ``records`` in order and return how many leading records were handled.
 
-    Stops at the first failed batch, or when the run's deadline has passed:
+    Stops at the first batch that failed for a reason a retry can fix (Site24x7
+    unreachable, Device Key refused), or when the run's deadline has passed:
     later batches are not sent ahead of it, so a caller that checkpoints past
-    exactly the sent records re-sends nothing that already arrived. The rest
-    count as retrying. Records that could not be parsed are counted as dropped
-    (a retry cannot fix them)."""
+    exactly the handled records re-sends nothing that already arrived. The rest
+    count as retrying. A batch Site24x7 refused for good is dropped (a retry
+    cannot fix it) and the upload goes on; a payload too large is split first.
+    Records that could not be parsed are counted as dropped too."""
     sent = 0
-    for batch in _batches(records):
+    queue = list(_batches(records))
+    while queue:
+        batch = queue.pop(0)
         if time.monotonic() > stats.get("deadline", float("inf")):
             stats["time_budget_exhausted"] = True
             break
         success = client.post_logs(source_config_b64, batch)
         stats["batches_sent"] += 1
+        if getattr(client, "upload_refused", False) is True:
+            stats["upload_refused"] = True
         unparsed = getattr(client, "last_unparsed", 0) if success else 0
         unparsed = unparsed if isinstance(unparsed, int) else 0
         if not success:
+            rejected = getattr(client, "last_rejected", 0)
+            rejected = rejected if isinstance(rejected, int) and not isinstance(rejected, bool) else 0
+            if rejected == 413 and len(batch) > 1:
+                half = len(batch) // 2
+                queue[0:0] = [batch[:half], batch[half:]]
+                continue
+            if rejected:
+                stats["dropped"] += len(batch)
+                stats["rejected"] = stats.get("rejected", 0) + len(batch)
+                stats["error_blobs"].append({
+                    "account": acct_name, "container": container, "blob": blob_name,
+                    "error": f"Site24x7 refused {len(batch)} record(s) (HTTP {rejected})",
+                })
+                sent += len(batch)
+                continue
             stats["error_blobs"].append({
                 "account": acct_name, "container": container,
                 "blob": blob_name, "error": "post_logs failed",
