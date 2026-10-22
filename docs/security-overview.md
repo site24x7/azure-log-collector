@@ -27,7 +27,7 @@ The Function App makes outbound HTTPS calls only:
 | `management.azure.com` | ARM: list resources, manage diagnostic settings, storage accounts, locks, own app settings, function keys |
 | `*.blob/queue/table.core.windows.net` | The collector's own storage (state, queues) and the regional log storage accounts |
 | Managed identity endpoint (local to the Function App) | Azure access tokens |
-| `api.github.com`, `github.com`, `objects.githubusercontent.com`, `raw.githubusercontent.com` | Update checks and update packages, only when `UPDATE_CHECK_URL` is set (the template sets it to this repository) |
+| `api.github.com`, `github.com`, `objects.githubusercontent.com`, `release-assets.githubusercontent.com` | Update checks and update packages, only when `UPDATE_CHECK_URL` is set (the template sets it to this repository) |
 | `<function-app>.azurewebsites.net/api/health` | Health check after an update (its own endpoint) |
 
 `<dc>` is the Site24x7 data center chosen at deployment: `com` (US), `in`, `eu`, `net.au`, `cn` or `jp`.
@@ -206,7 +206,7 @@ Every run and post-update health check is recorded as an event.
 **Installing the verified bytes:** after the checks, the collector copies the verified zip to its own storage account (`s247-packages`) and installs it with OneDeploy from a read-only link to that copy that expires after 6 hours, so Azure installs exactly the bytes that were checked.
 - Before installing, the collector imports every function and shared module of the new version in a separate process, using only the package's own dependencies; a package that cannot load is refused, so an update cannot leave a collector that is unable to start.
 - An update counts as done only when the new version confirms on its first run (`update_state` in `/api/status`, which also records the previous version).
-- A failed update is not rolled back automatically. To go back, install the previous version's package from the `packages` branch (`az functionapp deploy --type zip --src-url .../packages/v<previous-version>/released-package.zip`).
+- A failed update is not rolled back automatically. To go back, install the previous release's package (`az functionapp deploy --type zip --src-url https://github.com/site24x7/azure-log-collector/releases/download/v<previous-version>/released-package.zip`).
 
 ---
 
@@ -236,9 +236,9 @@ Every run and post-update health check is recorded as an event.
 | Item | Status | Mitigation |
 |---|---|---|
 | Site24x7 holds a key to the collector's management endpoints (section 6) | By design (Site24x7 runs the admin actions) | Dedicated `site24x7` function key on 14 functions only; admin-only, server-built and audited actions in Site24x7; `SITE24X7_KEY_EXCLUDE` narrows or removes its reach. |
-| A failed update is not rolled back automatically | Mitigated | A package whose functions cannot load (missing dependency, broken import, wrong Python build) is refused before install, by the release workflow and again by the collector. Packages are also checked (digest, structure, version) before install, releases install only after `MIN_RELEASE_AGE_MINUTES`, and the update is reported as confirmed only when the new version runs. Every released package stays on the `packages` branch to go back to; `PINNED_VERSION` and `SKIP_AUTO_UPDATE` control updates. |
+| A failed update is not rolled back automatically | Mitigated | A package whose functions cannot load (missing dependency, broken import, wrong Python build) is refused before install, by the release workflow and again by the collector. Packages are also checked (digest, structure, version) before install, releases install only after `MIN_RELEASE_AGE_MINUTES`, and the update is reported as confirmed only when the new version runs. Every release keeps its package as a release asset to go back to; `PINNED_VERSION` and `SKIP_AUTO_UPDATE` control updates. |
 | Masking and filter patterns come from Site24x7 and run with Python's backtracking regular expressions | Accepted | Patterns are defined by Site24x7, not by log content. A rule that fails is applied fail-closed (the field is withheld). |
-| The `packages` branch the template installs from | Open (repository setting) | The release workflow never replaces a released package. Recommended: branch protection that lets only the release workflow push to `packages`. |
+| Release packages the template and updater install | Open (repository setting) | The template and the updater install release assets. The release workflow publishes each release once with all its files (draft, then publish) and never replaces them. Recommended: turn on immutable releases for the repository, so no one can change a published release's files or tag. |
 | No Key Vault, Private Endpoint or customer-managed key by default | By design (single template) | Key Vault references in app settings work for `SITE24X7_API_KEY`. The Flex Consumption plan supports virtual network integration; the template doesn't configure it. |
 
 ## 13. Common questions

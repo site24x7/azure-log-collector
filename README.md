@@ -58,12 +58,11 @@ collector package that still truncates regional names.
 
 The template creates a **Flex Consumption** Function App (Python 3.13) and installs
 the release package with OneDeploy. The package already contains its Python
-dependencies, so nothing is built in Azure. GitHub release download links always
-redirect, so each release also commits the identical zip to the `packages` branch
-(also as `released-package.zip`, the name Flex Consumption documents for OneDeploy)
-and the template uses its `raw.githubusercontent.com` link, which is served
-directly and never replaced once released. A successful ARM validation is not
-proof of code startup; verify `/api/health` and actual ingestion after deployment.
+dependencies, so nothing is built in Azure. The template installs the release's
+own `released-package.zip` asset (the file name Flex Consumption documents for
+OneDeploy; OneDeploy follows GitHub's download redirect). A successful ARM
+validation is not proof of code startup; verify `/api/health` and actual
+ingestion after deployment.
 
 **Which key opens the dashboard.** The deployment's `dashboardUrl` output is the
 address without a key (keys are never written to deployment outputs). Open it with
@@ -256,10 +255,13 @@ Check GitHub's "Set as a pre-release" box when creating alpha/beta tags. With de
 
    ```bash
    az functionapp deploy -g <resource-group> -n <function-app> --type zip \
-     --src-url https://raw.githubusercontent.com/site24x7/azure-log-collector/packages/v<previous-version>/released-package.zip
+     --src-url https://github.com/site24x7/azure-log-collector/releases/download/v<previous-version>/released-package.zip
    ```
 
-Every AutoUpdater run writes audit events (`auto_update_run`, `auto_update_health_check`) visible via the debug-logs endpoint.
+   Azure CLI 2.79 may then print a JSON parsing error although the install
+   succeeded; check `/api/health` or the app's deployment status.
+
+Every AutoUpdater run writes an audit event (`auto_update_run`) visible via the debug-logs endpoint; the new version records `confirmed_at` in `update_state` (`/api/status`) on its first run.
 
 ## Security
 

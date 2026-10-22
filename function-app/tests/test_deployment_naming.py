@@ -138,12 +138,13 @@ def test_template_runs_on_flex_consumption():
     assert template['parameters']['deploymentSuffix']['defaultValue'] == ''
 
 
-def test_template_installs_the_prebuilt_package_from_the_packages_branch():
-    # Release asset URLs redirect, so the template uses the raw.githubusercontent
-    # copy on the packages branch; the zip already carries its dependencies.
+def test_template_installs_the_prebuilt_package_from_its_release():
+    # OneDeploy follows the release download redirect (verified live on Flex);
+    # the zip already carries its dependencies, so nothing is built in Azure.
     template, nested = _nested_resources()
-    assert template['variables']['functionZipUrl'].startswith(
-        'https://raw.githubusercontent.com/site24x7/azure-log-collector/packages/v')
+    url = template['variables']['functionZipUrl']
+    assert url.startswith('https://github.com/site24x7/azure-log-collector/releases/download/v')
+    assert url.endswith('/released-package.zip')
     deploy = [r for r in nested if r['type'] == 'Microsoft.Web/sites/extensions']
     assert len(deploy) == 1 and deploy[0]['name'].endswith("'/onedeploy')]")
     assert deploy[0]['properties'] == {'packageUri': "[parameters('functionZipUrl')]", 'remoteBuild': False}

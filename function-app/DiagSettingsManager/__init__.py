@@ -137,6 +137,8 @@ def run_scan():
         save_category_resource_types,
         clear_cache,
         is_collection_active,
+        get_resource_inventory,
+        save_resource_inventory,
     )
 
     """Core scan logic: discover resources, create log types in Site24x7,
@@ -250,6 +252,10 @@ def run_scan():
 
     # Publish discovery counts while preserving the previous completed scan and lock
     _save_early_scan_state(all_resources, active_resources, ignored_count)
+    # Filter choices for the Site24x7 page and the dashboard. A partial discovery
+    # keeps the previous choices rather than hiding values it failed to see.
+    if discovery_complete or get_resource_inventory() is None:
+        save_resource_inventory(all_resources, subscription_ids)
 
     # Review mode (new deployments): report what would be configured and stop
     # before anything is created — no storage accounts, Site24x7 log types or

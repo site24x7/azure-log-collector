@@ -9,9 +9,11 @@
       }
     },
     "logLevel": {
-      "default": "Information",
+      "default": "Warning",
       "Host.Results": "Error",
-      "Function": "Information"
+      "Host.Aggregator": "Information",
+      "Function": "Information",
+      "Azure.Core": "Warning"
     }
   },
   "extensionBundle": {

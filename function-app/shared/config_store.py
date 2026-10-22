@@ -26,6 +26,9 @@ CATEGORY_RESOURCE_TYPES_BLOB = "category-resource-types.json"
 SCAN_STATE_BLOB = "scan-state.json"
 ENTRA_STATE_BLOB = "entra-logtypes.json"
 COLLECTION_APPROVAL_BLOB = "collection-approval.json"
+# Filter choices (resource groups, regions, types, tags) seen by the last scan.
+RESOURCE_INVENTORY_BLOB = "resource-inventory.json"
+INVENTORY_MAX_VALUES = 5000
 
 # Sentinel for negative caching (config does not exist in blob)
 _MISSING = object()
@@ -675,6 +678,38 @@ def try_acquire_scan_lock(ttl_seconds: int = 900) -> bool:
     # Acquired only when the write that set in_progress was committed.
     written = _rmw_blob(SCAN_STATE_BLOB, mutate, default={}, strict=True)
     return written is not None and acquired["acquired"]
+
+
+def save_resource_inventory(resources: List[Dict], subscription_ids: List[str]) -> bool:
+    """Save the filter choices found by a scan, so the filter pages never have
+    to list the subscription again. Values only, at most INVENTORY_MAX_VALUES
+    of each."""
+    def values(items):
+        return sorted({v for v in items if v})[:INVENTORY_MAX_VALUES]
+
+    inventory = {
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "resource_count": len(resources),
+        "subscriptions": values(subscription_ids),
+        "resource_groups": values(r.get("resource_group", "") for r in resources),
+        "locations": values(r.get("location", "") for r in resources),
+        "resource_types": values(r.get("type", "") for r in resources),
+        "tags": values(f"{k}={v}" for r in resources for k, v in (r.get("tags") or {}).items()),
+    }
+    return _write_blob(RESOURCE_INVENTORY_BLOB, json.dumps(inventory))
+
+
+def get_resource_inventory() -> Optional[Dict]:
+    """The filter choices of the last scan, or None before the first scan."""
+    raw = _read_blob(RESOURCE_INVENTORY_BLOB)
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except json.JSONDecodeError:
+        logger.error("Corrupt JSON in %s", RESOURCE_INVENTORY_BLOB)
+        return None
 
 
 def get_scan_state() -> Dict:

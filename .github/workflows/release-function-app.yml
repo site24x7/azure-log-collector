@@ -79,7 +79,7 @@ jobs:
         if: steps.check_release.outputs.exists == 'false' || inputs.force_release == true
         run: |
           TAG="${{ steps.version.outputs.tag }}"
-          EXPECTED="https://raw.githubusercontent.com/${{ github.repository }}/packages/${TAG}/released-package.zip"
+          EXPECTED="https://github.com/${{ github.repository }}/releases/download/${TAG}/released-package.zip"
           if ! grep -q "$EXPECTED" setup/azuredeploy.json; then
             echo "::error::setup/azuredeploy.json functionZipUrl must be pinned to ${EXPECTED}"
             grep functionZipUrl setup/azuredeploy.json
@@ -155,61 +155,6 @@ jobs:
           EOF
           cat version.json
 
-      # The template installs from this byte-identical copy on the packages
-      # branch, which raw.githubusercontent.com serves directly (release asset
-      # URLs always 302) and which never changes once released. Published before
-      # the release so a released template never points at a missing package.
-      - name: Publish direct-download package copy
-        if: steps.check_release.outputs.exists == 'false' || inputs.force_release == true
-        run: |
-          TAG="${{ steps.version.outputs.tag }}"
-          REPO="${{ github.repository }}"
-          PKG_DIR="$RUNNER_TEMP/packages"
-          REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
-          if git ls-remote --exit-code --heads "$REMOTE" packages >/dev/null; then
-            git clone --depth 1 --branch packages "$REMOTE" "$PKG_DIR"
-          else
-            git init -b packages "$PKG_DIR"
-            git -C "$PKG_DIR" remote add origin "$REMOTE"
-          fi
-          # A released version's package is never replaced: the template of that
-          # release installs from this path. Only a run that failed before
-          # creating the release may publish it again.
-          if [ -f "$PKG_DIR/$TAG/s247-function-app.zip" ] && [ "$RELEASE_EXISTS" = "true" ]; then
-            echo "::error::$TAG is already released; bump function-app/VERSION instead of replacing its package"
-            exit 1
-          fi
-          mkdir -p "$PKG_DIR/$TAG"
-          cp s247-function-app.zip "$PKG_DIR/$TAG/s247-function-app.zip"
-          # Flex Consumption documents this name for OneDeploy packages; the
-          # template installs this copy.
-          cp s247-function-app.zip "$PKG_DIR/$TAG/released-package.zip"
-          cd "$PKG_DIR"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
-          git add "$TAG/s247-function-app.zip" "$TAG/released-package.zip"
-          git diff --cached --quiet || git commit -m "Package for $TAG"
-          git push origin packages
-
-          # Prove the URL the template uses answers 200 directly (no redirect)
-          # and serves the exact zip. raw.githubusercontent can lag a push briefly.
-          URL="https://raw.githubusercontent.com/${REPO}/packages/${TAG}/released-package.zip"
-          WANT="$(sha256sum "$GITHUB_WORKSPACE/s247-function-app.zip" | cut -d' ' -f1)"
-          for attempt in $(seq 1 20); do
-            CODE="$(curl -s -o "$RUNNER_TEMP/raw.zip" -w '%{http_code}' "$URL" || true)"
-            if [ "$CODE" = "200" ] && [ "$(sha256sum "$RUNNER_TEMP/raw.zip" | cut -d' ' -f1)" = "$WANT" ]; then
-              echo "Direct package URL OK: $URL"
-              exit 0
-            fi
-            echo "Attempt $attempt: HTTP $CODE or digest mismatch; retrying"
-            sleep 15
-          done
-          echo "::error::$URL did not serve the release zip directly"
-          exit 1
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_EXISTS: ${{ steps.check_release.outputs.exists }}
-
       - name: Create GitHub Release
         if: steps.check_release.outputs.exists == 'false' || inputs.force_release == true
         run: |
@@ -232,14 +177,37 @@ jobs:
             git push --delete origin "$TAG" 2>/dev/null || true
           fi
 
+          # The template installs released-package.zip (the file name Flex
+          # Consumption documents for OneDeploy); the AutoUpdater downloads
+          # s247-function-app.zip. Same bytes. Created as a draft with every file,
+          # then published, so a published release never changes afterwards
+          # (required when the repository makes releases immutable).
+          cp s247-function-app.zip released-package.zip
           gh release create "$TAG" \
+            --draft \
             --title "Function App $VERSION" \
             --notes "$NOTES" \
             --target "${{ github.sha }}" \
             "${RELEASE_FLAGS[@]}" \
             s247-function-app.zip \
+            released-package.zip \
             version.json \
             setup/azuredeploy.json
+          gh release edit "$TAG" --draft=false
+
+          # Prove the address the template installs from serves the exact zip.
+          URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/released-package.zip"
+          WANT="$(sha256sum s247-function-app.zip | cut -d' ' -f1)"
+          for attempt in $(seq 1 10); do
+            if curl -sfL -o "$RUNNER_TEMP/check.zip" "$URL" && [ "$(sha256sum "$RUNNER_TEMP/check.zip" | cut -d' ' -f1)" = "$WANT" ]; then
+              echo "Package URL OK: $URL"
+              exit 0
+            fi
+            echo "Attempt $attempt: package not served yet; retrying"
+            sleep 10
+          done
+          echo "::error::$URL does not serve the release zip"
+          exit 1
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VALIDATION_REPORT_URL: ${{ inputs.validation_report_url }}

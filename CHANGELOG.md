@@ -7,6 +7,24 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.0.1-beta12] — 2026-10-22
+
+### Changed
+- The filter choices (resource groups, regions, resource types, tags,
+  subscriptions) come from an inventory the resource scan saves
+  (`resource-inventory.json`, values only). `GET /api/ignore-list` no longer
+  lists the subscriptions and checks every resource type on each request, which
+  took close to a minute in a mid-sized subscription. It returns the time of the
+  scan the choices came from (`available_updated_at`) and no per-resource list.
+- The template installs the release's own `released-package.zip` asset.
+  OneDeploy follows GitHub's download redirect, so the `packages` branch is no
+  longer published. The release workflow creates the release as a draft with all
+  its files, publishes it, then checks that the template's package address serves
+  the released zip.
+- Less logging to Application Insights: the Azure SDK's per-request lines (URL,
+  headers) are kept to warnings, status requests log at debug, and host
+  categories default to warnings.
+
 ## [1.0.1-beta11] — 2026-10-22
 
 ### Changed

@@ -7,9 +7,9 @@ import azure.functions as func
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     from shared.ignore_list import load_ignore_list
-    from shared.azure_manager import AzureManager
+    from shared.config_store import get_resource_inventory
 
-    logging.info("GetIgnoreList: Fetching ignore list and available resources")
+    logging.info("GetIgnoreList: Fetching ignore list and filter choices")
 
     try:
         subscription_ids = [
@@ -19,42 +19,21 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         ]
 
         ignore_list = load_ignore_list()
-        azure_mgr = AzureManager()
-
-        # Get available resources for UI dropdowns
-        all_resources = azure_mgr.get_all_resources(subscription_ids)
-        resource_groups = sorted(set(r.get("resource_group", "") for r in all_resources))
-        locations = sorted(set(r.get("location", "") for r in all_resources))
-        resource_summaries = [
-            {
-                "id": r.get("id", ""),
-                "name": r.get("name", ""),
-                "type": r.get("type", ""),
-                "location": r.get("location", ""),
-                "resource_group": r.get("resource_group", ""),
-            }
-            for r in all_resources
-        ]
-
-        # Collect available tags from resources for UI suggestions
-        all_tags = set()
-        all_types = set()
-        for r in all_resources:
-            for k, v in (r.get("tags") or {}).items():
-                all_tags.add(f"{k}={v}")
-            if r.get("type"):
-                all_types.add(r["type"])
+        # Choices come from the last scan's inventory: listing the subscription
+        # on every request is too slow for large environments.
+        inventory = get_resource_inventory() or {}
 
         response = {
             "ignore_list": ignore_list,
             "available": {
-                "subscriptions": subscription_ids,
-                "resource_groups": resource_groups,
-                "locations": locations,
-                "resource_ids": resource_summaries,
-                "tags": sorted(all_tags),
-                "resource_types": sorted(all_types),
+                "subscriptions": inventory.get("subscriptions") or subscription_ids,
+                "resource_groups": inventory.get("resource_groups", []),
+                "locations": inventory.get("locations", []),
+                "resource_ids": [],
+                "tags": inventory.get("tags", []),
+                "resource_types": inventory.get("resource_types", []),
             },
+            "available_updated_at": inventory.get("updated_at"),
         }
 
         return func.HttpResponse(

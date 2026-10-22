@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
-    logger.info("GetStatus: Starting request")
+    logger.debug("GetStatus: Starting request")
 
     try:
         subscription_ids = [
@@ -83,7 +83,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             except Exception:
                 return []
 
-        logger.info(
+        logger.debug(
             "GetStatus: Config loaded — subs=%s, rg=%s, processing=%s",
             subscription_ids, resource_group, processing_enabled,
         )
@@ -152,7 +152,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         try:
             from shared.ignore_list import load_ignore_list
             ignore_list = load_ignore_list()
-            logger.info("GetStatus: Ignore list loaded OK")
+            logger.debug("GetStatus: Ignore list loaded OK")
         except Exception as e:
             logger.error("GetStatus: Failed to load ignore list: %s\n%s", e, traceback.format_exc())
             ignore_list = {"resource_groups": [], "locations": [], "resource_ids": []}
@@ -167,7 +167,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 {"region": region, "storage_account": sa_name}
                 for region, sa_name in provisioned_map.items()
             ]
-            logger.info("GetStatus: Provisioned regions: %s", provisioned_map)
+            logger.debug("GetStatus: Provisioned regions: %s", provisioned_map)
         except Exception as e:
             logger.error("GetStatus: Failed to get regions: %s\n%s", e, traceback.format_exc())
             status["errors"].append(f"provisioned_regions: {e}")
@@ -184,7 +184,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                     "active": scan_state.get("active_resources", 0),
                     "ignored": scan_state.get("ignored_resources", 0),
                 }
-            logger.info("GetStatus: Resources from scan state — %s", status["resources"])
+            logger.debug("GetStatus: Resources from scan state — %s", status["resources"])
         except Exception as e:
             logger.error("GetStatus: Failed to get resource counts: %s", e)
             status["errors"].append(f"resources: {e}")
