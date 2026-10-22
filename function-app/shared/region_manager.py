@@ -137,7 +137,7 @@ def _check_storage_name(client, resource_group: str, name: str, region: str) -> 
         except ResourceNotFoundError as error:
             raise RuntimeError(
                 f"Storage name '{name}' is unavailable globally. For a fresh install, "
-                "choose another deploymentSuffix/DEPLOYMENT_SUFFIX; do not change a live collector's suffix."
+                "choose another optionalDeploymentSuffix/DEPLOYMENT_SUFFIX; do not change a live collector's suffix."
             ) from error
         tags = existing.tags or {}
         owner = (tags.get(COLLECTOR_TAG) or "").strip().lower()
