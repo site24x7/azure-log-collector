@@ -480,3 +480,29 @@ def test_strict_snapshot_initializes_missing_container_and_rechecks_blob(outcome
     assert blob.download_blob.call_count == (1 if outcome == 'init_error' else 2)
     blob.upload_blob.assert_not_called()
     blob.delete_blob.assert_not_called()
+
+
+class TestProcessingControl:
+    def test_legacy_default_only_when_blob_absent(self, monkeypatch):
+        monkeypatch.setenv("AzureWebJobsStorage", "configured")
+        monkeypatch.setenv("PROCESSING_ENABLED", "false")
+        from shared import config_store as store
+        with patch.object(store, "_read_blob", return_value=None):
+            assert store.get_processing_enabled() is False
+
+    def test_saved_flag_overrides_legacy_environment(self, monkeypatch):
+        monkeypatch.setenv("AzureWebJobsStorage", "configured")
+        monkeypatch.setenv("PROCESSING_ENABLED", "false")
+        from shared import config_store as store
+        with patch.object(store, "_read_blob", side_effect=['{"enabled":true}', '{"enabled":false}']):
+            assert store.get_processing_enabled() is True
+            assert store.get_processing_enabled() is False
+
+    def test_corrupt_or_unreadable_control_never_resumes(self, monkeypatch):
+        monkeypatch.setenv("AzureWebJobsStorage", "configured")
+        from shared import config_store as store
+        for value in ['{"enabled":"true"}', 'null', 'bad']:
+            with patch.object(store, "_read_blob", return_value=value), pytest.raises((ValueError, TypeError)):
+                store.get_processing_enabled()
+        with patch.object(store, "_read_blob", side_effect=RuntimeError("unavailable")), pytest.raises(RuntimeError):
+            store.get_processing_enabled()

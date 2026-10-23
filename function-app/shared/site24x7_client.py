@@ -634,6 +634,9 @@ class Site24x7Client:
     last_rejected = 0
     # True once Site24x7 refused the Device Key (401/403) during this client's lifetime.
     upload_refused = False
+    # Last actual upload attempt only; config errors/empty runs are not connectivity probes.
+    last_upload_status = None
+    last_upload_http_status = None
     # time.monotonic() after which no upload may still be running (set by the processor).
     upload_deadline: Optional[float] = None
 
@@ -645,6 +648,8 @@ class Site24x7Client:
             log_events: Raw log event records from Azure diagnostic logs
         """
         self.last_rejected = 0
+        self.last_upload_status = None
+        self.last_upload_http_status = None
         if not self.circuit_breaker.can_execute():
             logger.warning("Circuit breaker OPEN — skipping log POST")
             return False
@@ -723,7 +728,10 @@ class Site24x7Client:
             gzipped = gzip.compress(json.dumps(parsed_lines).encode())
             _send_logs_to_s247(config, gzipped, log_size, timeout)
         except urllib.error.HTTPError as e:
+            self.last_upload_status = "refused" if e.code in (401, 403) else "failed"
+            self.last_upload_http_status = e.code
             if e.code in REJECTED_UPLOAD_STATUSES:
+                self.last_upload_status = "rejected"
                 # Site24x7 answered and refused this payload: it is reachable, so the
                 # breaker is not tripped, and the caller drops (or splits) the batch.
                 self.last_rejected = e.code
@@ -735,11 +743,14 @@ class Site24x7Client:
             self._report_upload_failure(e, len(log_events), f"HTTP {e.code}")
             return False
         except Exception as e:
+            self.last_upload_status = "failed"
             self.circuit_breaker.record_failure()
             self._report_upload_failure(e, len(log_events), "connection")
             return False
 
         self.circuit_breaker.record_success()
+        self.last_upload_status = "ok"
+        self.last_upload_http_status = 200
         logger.info("Uploaded %d log records to Site24x7", len(parsed_lines))
         return True
 

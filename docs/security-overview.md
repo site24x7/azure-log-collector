@@ -110,14 +110,14 @@ Once collecting, every scan (every 6 hours, and on demand) does the following:
 - A scan that can't read the exclusion list stops.
 
 **Admin actions**
-- They can change app settings, which restarts the Function App: processing on or off, automatic scans, general log type, own-resource collection, storage protection days.
+- They can pause/resume processing through a shared storage flag, without restarting the Function App. Changes to automatic scans, general log type, own-resource collection and storage protection days still update app settings and restart it.
 - They can remove all of this collector's diagnostic settings. This also turns automatic scans off first.
 
 ---
 
 ## 6. What Site24x7 holds and can do
 
-The collector registers with Site24x7 after every scan, on restart, and when its key changes. It sends:
+The collector registers with Site24x7 after every scan, on restart, when its key changes (see Operational freshness and connectivity). It sends:
 - its Function App name, address, resource ID, subscription, resource group and region;
 - its version and a status summary;
 - the **`site24x7` function key**. This is a dedicated key, not a host key, and the collector creates it on just these 14 functions: status, scan, processing, start-collecting, ignore-list (get and put), disabled-logtypes (get and post), entra-logtypes, general-logtype (put), settings, configured-resources, check-update and remove-diagnostic-settings.
@@ -251,3 +251,64 @@ Every run and post-update health check is recorded as an event.
 | What if the GitHub repository were compromised? | An attacker would need to publish a release that passes the update gates (section 9) and wait for the age gate. You can turn updates off (`SKIP_AUTO_UPDATE=true`) or point `UPDATE_CHECK_URL` at your own fork. |
 | What if Site24x7 were compromised? | With the Device Key, an attacker could send logs into your Site24x7 account. With the stored `site24x7` key (section 6), they could call those 14 endpoints, for example change settings or remove diagnostic settings, but not the dashboard or debug data. Revoke it with `SITE24X7_KEY_EXCLUDE=*`. They cannot reach your other Azure resources: the collector's identity is limited as described in section 3. |
 | Can I check what is deployed? | Each release zip is built by GitHub Actions from a tagged commit, with its SHA-256 in `version.json`. Compare the running package with the tag. |
+
+## Operational freshness and connectivity
+
+Discovery and log processing are different schedules: discovery runs every six
+hours by default; processing is scheduled every two minutes. Registration updates
+Site24x7 after scans, worker startup, key changes and relevant management events.
+It is not repeated every processing cycle and there is no periodic full-registration
+heartbeat. Live authenticated status reads provide current health without rewriting
+the database registration row. Pause/resume returns the saved state directly and
+does not wait for a callback registration.
+
+The Site24x7 detail page handles the two directions independently:
+
+- If its authenticated Function App status read fails, returns a non-success HTTP
+  response or an invalid body, it shows a collector API problem. It cannot infer
+  the collector's current outbound health from that failure.
+- If the API answers, its `operational_status` shows the last scan's Site24x7 API
+  reachability and bounded phase/HTTP errors, plus the last observed upload
+  attempt (`ok`, `failed`, `refused`, `rejected`) and its observation time.
+  A reachable Function App does not prove that it can upload to Site24x7.
+- With no fresh report or live snapshot for twenty-six hours, the page marks the
+  historical status unavailable; a failed live check is shown immediately. Removing a stale registration still requires
+  the separate twenty-six-hour policy. Viewer/list data remain registration
+  snapshots; the existing live-read API is admin-only.
+
+Refresh on the detail page re-reads the live collector status. While the collector
+page is visible it also refreshes once a minute, so current status checks
+continue without a manual reload. Live reads never
+rewrite LAST_SYNC_TIME or claim that registration succeeded. Detailed errors are
+allowlisted as phase/HTTP status only; response bodies, URLs and keys are omitted.
+
+`last_processing_time` is the latest recorded processing-run completion, including
+runs that uploaded zero records. It is not the last successful upload. Early
+returns/failed runs can have no summary. `upload_status_time` identifies an actual
+upload attempt: empty runs do not clear an earlier error. The last observation is
+looked up in a bounded fifty-run history, so its absence means unknown. HTTP200
+is receiver acknowledgement and does not prove that records are indexed.
+
+The relay is development infrastructure. If it stops answering, both catalog
+calls and registrations through that relay can fail; Site24x7 must use its live
+read/freshness rules rather than wait for an error report over the broken path.
+
+A failure of Site24x7's own collector-data REST endpoint is not evidence that
+the Function App is unreachable. The client requires a recognised proxy result
+(accepted + http_status) before classifying the collector API. A browser HTTP
+error, missing result or Site24x7 error object shows Site24x7 API request failed,
+with collector status unknown; it does not advise checking Azure. Settings and
+filters use this same distinction. A stale report is historical evidence, not
+a second diagnosis of an Azure outage.
+
+### Pause/resume response time
+
+`PUT /api/processing` saves `config/processing-control.json` rather than changing
+an Azure app setting. It does not restart the Function App, enumerate keys or
+wait for a registration callback. Status reads and each processing invocation
+read this shared value without a worker-local cache. Only an absent control blob
+uses the legacy `PROCESSING_ENABLED` app setting; storage/corrupt-state errors
+must not permit processing. A failed save returns an error rather than success.
+The next scheduled run observes the flag; a run already in progress may finish.
+Other app-setting changes can still restart the collector. Network/storage and
+audit persistence can still affect latency; no live response-time SLA is claimed.

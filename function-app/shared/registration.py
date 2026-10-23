@@ -1,13 +1,9 @@
-"""Register this collector with Site24x7 after every discovery scan.
+"""Report collector identity after scans, restarts and key changes.
 
-Site24x7 keeps one row per collector (account + Function App URL) so the
-Deploy Diagnostic Logs page can show every collector's read-only status to
-all users, and let admins open this Function App's dashboard. The function
-key is read fresh from ARM on each run. Besides every scan, the collector
-registers on a worker's first processing run (restart, redeploy, new
-instance) and whenever its function key changes (checked every 15 minutes),
-so a rotated key reaches Site24x7 without waiting for a scan. Keys travel
-only in the POST body and are never logged.
+Current operational health is also available through authenticated GET status,
+independently of whether the collector can register with Site24x7. There is no
+periodic full-registration heartbeat. Keys and raw backend response bodies are
+never included in the operational snapshot.
 """
 
 import hashlib
@@ -152,9 +148,9 @@ def _revoke(resource_id: str, function: str, token: str) -> None:
              {"properties": {"name": SITE24X7_KEY_NAME, "value": secrets.token_urlsafe(40)}})
 
 
-def build_status_summary() -> Dict:
+def build_status_summary(include_names: bool = True) -> Dict:
     """Read-only status shown to every Site24x7 user; contains no secrets."""
-    from shared.config_store import get_scan_state, get_configured_resources, is_collection_active
+    from shared.config_store import get_scan_state, get_configured_resources, is_collection_active, get_processing_enabled
     from shared.debug_logger import get_processing_stats
 
     scan = get_scan_state() or {}
@@ -168,7 +164,7 @@ def build_status_summary() -> Dict:
         "ignored_resources": scan.get("ignored_resources", 0),
         "scan_errors": len(errors) if isinstance(errors, list) else errors,
         "s247_reachable": scan.get("s247_reachable"),
-        "processing_enabled": os.environ.get("PROCESSING_ENABLED", "true").lower() == "true",
+        "processing_enabled": get_processing_enabled(),
         "auto_scan_enabled": os.environ.get("AUTO_SCAN_ENABLED", "true").lower() == "true",
         "last_processing_time": runs[0].get("timestamp", "") if runs else "",
         "recent_uploaded": sum(int(r.get("uploaded", 0) or 0) for r in runs),
@@ -183,6 +179,7 @@ def build_status_summary() -> Dict:
         # The recent counts cover these runs; the oldest one's time says since when.
         "recent_since": runs[-1].get("timestamp", "") if runs else "",
         "reported_at": datetime.now(timezone.utc).isoformat(),
+        "s247_errors": safe_scan_errors(scan.get("s247_errors")),
         # New deployments wait for an admin to start collecting; until then
         # scans only report what they would configure.
         "review_pending": not is_collection_active(),
@@ -208,8 +205,32 @@ def build_status_summary() -> Dict:
     except Exception:
         pass  # absence of this count must not block registration
     # Last: names fill only what the other fields leave of the status budget.
-    _add_subscription_names(summary, _subscription_names(summary["subscription_ids"]))
+    # Only actual attempts establish upload health; an empty/paused run does not clear an error.
+    for run in get_processing_stats(limit=50) or []:
+        if run.get("upload_status") in ("ok", "failed", "refused", "rejected"):
+            summary["upload_status"] = run["upload_status"]
+            summary["upload_status_time"] = run.get("upload_status_time", run.get("timestamp", ""))
+            code = run.get("upload_http_status")
+            if isinstance(code, int) and not isinstance(code, bool) and 100 <= code <= 599:
+                summary["upload_http_status"] = code
+            break
+    if include_names:
+        _add_subscription_names(summary, _subscription_names(summary["subscription_ids"]))
     return summary
+
+
+def safe_scan_errors(errors):
+    """Closed diagnostic contract: never expose raw backend messages or response bodies."""
+    result = []
+    for error in errors[:5] if isinstance(errors, list) else []:
+        if not isinstance(error, dict) or error.get("phase") not in ("catalog", "preflight", "logtype_creation"):
+            continue
+        safe = {"phase": error["phase"]}
+        code = error.get("http_status")
+        if isinstance(code, int) and not isinstance(code, bool) and 100 <= code <= 599:
+            safe["http_status"] = code
+        result.append(safe)
+    return result
 
 
 _NAME_MAX = 64

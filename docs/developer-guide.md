@@ -1661,3 +1661,64 @@ curl http://localhost:7071/api/debug
 | `SITE24X7_PROXY_URL` | No | Route API calls through proxy (testing only) |
 | `SAFE_DELETE_MAX_AGE_DAYS` | No | Days to keep unprocessed blobs before cleanup (default: 7) |
 | `BLOB_RETENTION_DAYS` | No | Days after which the storage lifecycle rule deletes log blobs, sent or not (default 7) |
+
+## Operational freshness and connectivity
+
+Discovery and log processing are different schedules: discovery runs every six
+hours by default; processing is scheduled every two minutes. Registration updates
+Site24x7 after scans, worker startup, key changes and relevant management events.
+It is not repeated every processing cycle and there is no periodic full-registration
+heartbeat. Live authenticated status reads provide current health without rewriting
+the database registration row. Pause/resume returns the saved state directly and
+does not wait for a callback registration.
+
+The Site24x7 detail page handles the two directions independently:
+
+- If its authenticated Function App status read fails, returns a non-success HTTP
+  response or an invalid body, it shows a collector API problem. It cannot infer
+  the collector's current outbound health from that failure.
+- If the API answers, its `operational_status` shows the last scan's Site24x7 API
+  reachability and bounded phase/HTTP errors, plus the last observed upload
+  attempt (`ok`, `failed`, `refused`, `rejected`) and its observation time.
+  A reachable Function App does not prove that it can upload to Site24x7.
+- With no fresh report or live snapshot for twenty-six hours, the page marks the
+  historical status unavailable; a failed live check is shown immediately. Removing a stale registration still requires
+  the separate twenty-six-hour policy. Viewer/list data remain registration
+  snapshots; the existing live-read API is admin-only.
+
+Refresh on the detail page re-reads the live collector status. While the collector
+page is visible it also refreshes once a minute, so current status checks
+continue without a manual reload. Live reads never
+rewrite LAST_SYNC_TIME or claim that registration succeeded. Detailed errors are
+allowlisted as phase/HTTP status only; response bodies, URLs and keys are omitted.
+
+`last_processing_time` is the latest recorded processing-run completion, including
+runs that uploaded zero records. It is not the last successful upload. Early
+returns/failed runs can have no summary. `upload_status_time` identifies an actual
+upload attempt: empty runs do not clear an earlier error. The last observation is
+looked up in a bounded fifty-run history, so its absence means unknown. HTTP200
+is receiver acknowledgement and does not prove that records are indexed.
+
+The relay is development infrastructure. If it stops answering, both catalog
+calls and registrations through that relay can fail; Site24x7 must use its live
+read/freshness rules rather than wait for an error report over the broken path.
+
+A failure of Site24x7's own collector-data REST endpoint is not evidence that
+the Function App is unreachable. The client requires a recognised proxy result
+(accepted + http_status) before classifying the collector API. A browser HTTP
+error, missing result or Site24x7 error object shows Site24x7 API request failed,
+with collector status unknown; it does not advise checking Azure. Settings and
+filters use this same distinction. A stale report is historical evidence, not
+a second diagnosis of an Azure outage.
+
+### Pause/resume response time
+
+`PUT /api/processing` saves `config/processing-control.json` rather than changing
+an Azure app setting. It does not restart the Function App, enumerate keys or
+wait for a registration callback. Status reads and each processing invocation
+read this shared value without a worker-local cache. Only an absent control blob
+uses the legacy `PROCESSING_ENABLED` app setting; storage/corrupt-state errors
+must not permit processing. A failed save returns an error rather than success.
+The next scheduled run observes the flag; a run already in progress may finish.
+Other app-setting changes can still restart the collector. Network/storage and
+audit persistence can still affect latency; no live response-time SLA is claimed.

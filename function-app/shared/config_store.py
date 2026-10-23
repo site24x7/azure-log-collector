@@ -28,6 +28,7 @@ CATEGORY_NAMES_BLOB = "category-names.json"
 SCAN_STATE_BLOB = "scan-state.json"
 ENTRA_STATE_BLOB = "entra-logtypes.json"
 COLLECTION_APPROVAL_BLOB = "collection-approval.json"
+PROCESSING_CONTROL_BLOB = "processing-control.json"
 # Filter choices (resource groups, regions, types, tags) seen by the last scan.
 RESOURCE_INVENTORY_BLOB = "resource-inventory.json"
 INVENTORY_MAX_VALUES = 5000
@@ -612,6 +613,31 @@ def clear_cache():
 # ------------------------------------------------------------------
 
 # ─── Review before collecting (new deployments) ──────────────────────────────
+
+
+def get_processing_enabled() -> bool:
+    """Shared pause flag; only a confirmed missing blob uses the legacy app setting.
+
+    No worker cache: every processing invocation sees the saved value without an
+    app-setting write or restart. Storage/corrupt-data errors are not treated as
+    permission to resume processing.
+    """
+    if not os.environ.get("AzureWebJobsStorage"):
+        return os.environ.get("PROCESSING_ENABLED", "true").lower() == "true"
+    raw = _read_blob(PROCESSING_CONTROL_BLOB, strict=True)
+    if raw is None:
+        return os.environ.get("PROCESSING_ENABLED", "true").lower() == "true"
+    state = json.loads(raw)
+    if not isinstance(state, dict) or not isinstance(state.get("enabled"), bool):
+        raise ValueError("Invalid processing control")
+    return state["enabled"]
+
+
+def save_processing_enabled(enabled: bool) -> bool:
+    """Persist pause/resume without changing Azure deployment configuration."""
+    if not isinstance(enabled, bool):
+        return False
+    return _write_blob(PROCESSING_CONTROL_BLOB, json.dumps({"enabled": enabled}))
 
 
 def is_collection_active() -> bool:

@@ -15,24 +15,23 @@ def _req(body):
 
 def test_stop_processing_reports_a_failed_save(monkeypatch):
     monkeypatch.setenv("PROCESSING_ENABLED", "true")
-    with patch("shared.azure_manager.AzureManager") as mgr, \
+    with patch("shared.config_store.save_processing_enabled", return_value=False), \
          patch("shared.registration.register_with_site24x7") as register:
-        mgr.return_value.update_app_setting.return_value = False
         resp = StopProcessing.main(_req({"enabled": False}))
     assert resp.status_code == 500
-    assert StopProcessing.os.environ["PROCESSING_ENABLED"] == "true"  # local state unchanged
-    assert not register.called
+    register.assert_not_called()
 
 
-def test_stop_processing_succeeds_when_saved_and_reports_the_new_state():
-    with patch("shared.azure_manager.AzureManager") as mgr, \
+def test_stop_processing_saves_shared_flag_without_arm_or_registration():
+    with patch("shared.config_store.save_processing_enabled", return_value=True) as save, \
+         patch("shared.azure_manager.AzureManager") as arm, \
          patch("shared.registration.register_with_site24x7") as register:
-        mgr.return_value.update_app_setting.return_value = True
         resp = StopProcessing.main(_req({"enabled": False}))
     assert resp.status_code == 200
-    assert register.called  # Site24x7 sees "paused" without waiting for the next scan
-    # Bounded so the answer reaches Site24x7 within its 30 s limit.
-    assert register.call_args.kwargs["timeout"] == StopProcessing.REPORT_TIMEOUT_SEC <= 10
+    assert json.loads(resp.get_body())["enabled"] is False
+    save.assert_called_once_with(False)
+    arm.assert_not_called()
+    register.assert_not_called()
 
 
 def test_general_logtype_reports_a_failed_save():

@@ -80,7 +80,12 @@ def main(timer: func.TimerRequest) -> None:
     except Exception as e:
         logger.warning("BlobLogProcessor: update confirmation failed: %s", type(e).__name__)
 
-    processing_enabled = os.environ.get("PROCESSING_ENABLED", "true").lower() == "true"
+    try:
+        from shared.config_store import get_processing_enabled
+        processing_enabled = get_processing_enabled()
+    except Exception as e:
+        logger.error("BlobLogProcessor: processing control unreadable (%s) — skipping", type(e).__name__)
+        return
     if not processing_enabled:
         logger.warning("BlobLogProcessor: Processing is DISABLED — skipping")
         return
@@ -768,6 +773,14 @@ def _upload_in_order(client, source_config_b64, records, using_general,
             stats["time_budget_exhausted"] = True
             break
         success = client.post_logs(source_config_b64, batch)
+        upload_status = getattr(client, "last_upload_status", None)
+        if upload_status in ("ok", "failed", "refused", "rejected"):
+            stats["upload_status"] = upload_status
+            stats["upload_status_time"] = datetime.now(timezone.utc).isoformat()
+            status_code = getattr(client, "last_upload_http_status", None)
+            stats.pop("upload_http_status", None)
+            if isinstance(status_code, int) and not isinstance(status_code, bool) and 100 <= status_code <= 599:
+                stats["upload_http_status"] = status_code
         stats["batches_sent"] += 1
         if getattr(client, "upload_refused", False) is True:
             stats["upload_refused"] = True

@@ -264,12 +264,17 @@ def validate_config() -> List[Dict]:
         })
 
     # Processing state
-    if os.environ.get("PROCESSING_ENABLED", "true").lower() != "true":
-        issues.append({
-            "level": "warning",
-            "field": "PROCESSING_ENABLED",
-            "message": "Log processing is DISABLED — logs are accumulating but not forwarded",
-        })
+    from shared.config_store import get_processing_enabled
+    try:
+        if not get_processing_enabled():
+            issues.append({
+                "level": "warning",
+                "field": "PROCESSING_ENABLED",
+                "message": "Log processing is DISABLED — logs are accumulating but not forwarded",
+            })
+    except Exception:
+        issues.append({"level": "error", "field": "processing-control",
+                       "message": "The saved processing state could not be read"})
 
     # General logtype
     general_enabled = os.environ.get("GENERAL_LOGTYPE_ENABLED", "false").lower() == "true"

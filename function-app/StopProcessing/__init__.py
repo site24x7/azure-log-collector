@@ -1,16 +1,11 @@
-import os
 import json
 import logging
 
 import azure.functions as func
 
 
-# Longest wait for the report to Site24x7 before answering the caller.
-REPORT_TIMEOUT_SEC = 10
-
-
 def main(req: func.HttpRequest) -> func.HttpResponse:
-    from shared.azure_manager import AzureManager
+    from shared.config_store import save_processing_enabled
 
     """Toggle log processing on/off.
 
@@ -41,24 +36,15 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     try:
-        azure_mgr = AzureManager()
-        new_value = "true" if enabled else "false"
-        if not azure_mgr.update_app_setting("PROCESSING_ENABLED", new_value):
-            # The setting was not saved: say so, or Site24x7 would report success.
-            logging.error("StopProcessing: could not save PROCESSING_ENABLED=%s", new_value)
+        if not save_processing_enabled(enabled):
+            logging.error("StopProcessing: could not save processing state")
             return func.HttpResponse(
                 json.dumps({"error": "Failed to update processing state"}),
                 mimetype="application/json",
                 status_code=500,
             )
-
-        # Update in-process env so subsequent reads reflect the change
-        os.environ["PROCESSING_ENABLED"] = new_value
-        # Tell Site24x7 now, so its page shows the new state before the next scan.
-        # Bounded: Site24x7 waits 30 s for this answer, and the setting is already
-        # saved; if the report is slow, the next scan or timer run reports it.
-        from shared.registration import register_with_site24x7
-        register_with_site24x7(timeout=REPORT_TIMEOUT_SEC)
+        # No ARM update/restart, key reads or callback registration in this
+        # request. Status reads and the next timer invocation read this blob.
 
         action = "enabled" if enabled else "stopped"
         logging.info("StopProcessing: Processing %s", action)

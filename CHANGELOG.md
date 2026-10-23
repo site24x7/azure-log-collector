@@ -7,6 +7,18 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [Unreleased]
+
+### Fixed
+- Pause/resume uses shared storage state without restarting the Function App or
+  waiting for registration/key lookups before answering.
+- Read operational health directly from the collector without adding periodic
+  registration writes; retain registration on scans, restarts and key changes.
+- Expose a closed live operational snapshot so Site24x7 can distinguish an
+  unreachable collector API from outbound Site24x7 API or upload failures.
+- Record actual upload outcomes separately from processing runs; empty runs do
+  not clear failures. Stale reports no longer leave the page appearing Running.
+
 ## [1.0.1-beta14] — 2026-10-23
 
 ### Changed

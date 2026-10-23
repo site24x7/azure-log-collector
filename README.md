@@ -288,3 +288,7 @@ Internal — Site24x7 / Zoho Corporation
 Stable publication requires manual approval with live-validation evidence.
 See [Stable release validation](docs/release-validation.md) for fresh-install,
 repeat-deployment, upgrade, rollback, ingestion and client-workflow requirements.
+
+The Site24x7 detail page reads current collector status directly. It distinguishes
+failures checking the collector from failures sending logs, without periodic
+registration writes. See [operational freshness](docs/troubleshooting-guide.md#operational-freshness-and-connectivity).

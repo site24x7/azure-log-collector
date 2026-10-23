@@ -22,7 +22,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             "RESOURCE_GROUP_NAME", os.environ.get("RESOURCE_GROUP", "s247-diag-logs-rg")
         )
         general_enabled = os.environ.get("GENERAL_LOGTYPE_ENABLED", "false").lower() == "true"
-        processing_enabled = os.environ.get("PROCESSING_ENABLED", "true").lower() == "true"
+        from shared.config_store import get_processing_enabled
+        processing_enabled = get_processing_enabled()
         monitor_pipeline = os.environ.get("MONITOR_PIPELINE_RESOURCES", "false").lower() == "true"
         auto_scan = os.environ.get("AUTO_SCAN_ENABLED", "true").lower() == "true"
         try:
@@ -111,6 +112,14 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             "resources": {"total": 0, "active": 0, "ignored": 0},
             "errors": [],
         }
+
+        # Live operational snapshot lets Site24x7 read outbound failures even when
+        # this collector cannot send a registration through the outbound path.
+        try:
+            from shared.registration import build_status_summary
+            status["operational_status"] = build_status_summary(include_names=False)
+        except Exception:
+            pass  # No snapshot means unknown, never a fabricated healthy result.
 
         # Entra ID (tenant-scoped) log collection status. Our MI cannot create
         # the Entra diagnostic setting — a tenant admin does it manually and

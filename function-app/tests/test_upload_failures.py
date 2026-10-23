@@ -50,6 +50,7 @@ def test_refused_payload_does_not_trip_the_breaker(client, code):
     with patch("shared.site24x7_client._KEYED_OPENER.open", side_effect=_http_error(code)):
         assert client.post_logs(CONFIG, EVENTS) is False
     assert client.last_rejected == code
+    assert client.last_upload_status == "rejected" and client.last_upload_http_status == code
     client.circuit_breaker.record_failure.assert_not_called()
     assert client.upload_refused is False
 
@@ -61,6 +62,7 @@ def test_refused_device_key_is_retried_and_flagged(client, code):
     assert client.last_rejected == 0                     # retried, not dropped
     client.circuit_breaker.record_failure.assert_called_once()
     assert client.upload_refused is True
+    assert client.last_upload_status == "refused" and client.last_upload_http_status == code
 
 
 @pytest.mark.parametrize("error", [_http_error(503), _http_error(429), urllib.error.URLError("down"), TimeoutError()])
@@ -68,6 +70,7 @@ def test_outage_is_retried_and_trips_the_breaker(client, error):
     with patch("shared.site24x7_client._KEYED_OPENER.open", side_effect=error):
         assert client.post_logs(CONFIG, EVENTS) is False
     assert client.last_rejected == 0
+    assert client.last_upload_status == "failed"
     client.circuit_breaker.record_failure.assert_called_once()
 
 
@@ -77,6 +80,7 @@ def test_broken_log_type_config_does_not_trip_the_breaker(client):
     opener.assert_not_called()
     client.circuit_breaker.record_failure.assert_not_called()
     assert client.last_rejected == 0                     # kept for retry, not dropped
+    assert client.last_upload_status is None
 
 
 def test_other_2xx_is_not_success(client):
@@ -95,6 +99,7 @@ def test_a_success_clears_the_last_refusal(client):
     with patch("shared.site24x7_client._KEYED_OPENER.open", return_value=ok):
         assert client.post_logs(CONFIG, EVENTS) is True
     assert client.last_rejected == 0
+    assert client.last_upload_status == "ok" and client.last_upload_http_status == 200
 
 
 # ─── _upload_in_order: refused batches are dropped, the rest goes on ─────────
@@ -371,3 +376,20 @@ def test_cross_kind_merge_keeps_the_most_recently_processed_entry():
     assert merge(remote, stale_local)["k"]["next_byte"] == 50          # stale carried-along entry loses
     newer_local = {"k": {"next_block": -1, "last_modified": "v3", "last_seen": "2026-10-23T02:00:00"}}
     assert "next_byte" not in merge(remote, newer_local)["k"]           # newer processing wins
+
+
+def test_actual_upload_failure_is_recorded_without_raw_response():
+    client = _ScriptedClient([(False, 0)])
+    client.last_upload_status = "failed"
+    client.last_upload_http_status = 504
+    stats = _stats()
+    assert _upload_in_order(client, "cfg", [{"n": 1}], False, stats, "a", "c", "b") == 0
+    assert stats["upload_status"] == "failed" and stats["upload_http_status"] == 504
+    assert stats["upload_status_time"]
+
+
+def test_configuration_or_empty_run_does_not_invent_upload_health():
+    client = _ScriptedClient([(True, 0)])
+    stats = _stats()
+    _upload_in_order(client, "cfg", [{"n": 1}], False, stats, "a", "c", "b")
+    assert "upload_status" not in stats

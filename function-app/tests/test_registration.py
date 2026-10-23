@@ -291,7 +291,7 @@ class TestSyncRegistration:
         monkeypatch.setattr(registration.time, "monotonic", lambda: self.now[0])
 
     def _register_ok(self, key):
-        def register(timeout=60):
+        def register(timeout=60, reuse_identity=False):
             registration._registered_key_hash = registration._key_hash(key)
             return True
         return register
@@ -343,3 +343,30 @@ def test_summary_reports_skipped_parts_and_a_refused_device_key(azure_env, no_st
     assert summary["recent_dropped"] == 3              # records only, oversized parts apart
     assert summary["upload_refused"] is True           # from the latest run
     assert summary["pending_records"] == 5
+
+
+def test_operational_status_preserves_failure_across_empty_runs(monkeypatch):
+    runs = [{"timestamp": "2026-10-23T08:02:00Z", "uploaded": 0},
+            {"timestamp": "2026-10-23T08:00:00Z", "upload_status": "failed", "upload_http_status": 504}]
+    with patch("shared.config_store.get_scan_state", return_value={"s247_reachable": False, "s247_errors": [
+             {"phase": "catalog", "http_status": 504, "message": "key=secret"},
+             {"phase": "evil", "http_status": 200}]}), \
+         patch("shared.config_store.get_configured_resources", return_value={}), \
+         patch("shared.config_store.is_collection_active", return_value=True), \
+         patch("shared.debug_logger.get_processing_stats", return_value=runs):
+        result = registration.build_status_summary(include_names=False)
+    assert result["s247_errors"] == [{"phase": "catalog", "http_status": 504}]
+    assert result["upload_status"] == "failed" and result["upload_http_status"] == 504
+    assert result["upload_status_time"] == "2026-10-23T08:00:00Z"
+    assert "secret" not in json.dumps(result)
+
+
+def test_operational_status_new_success_clears_previous_upload_failure():
+    runs = [{"timestamp": "2026-10-23T08:04:00Z", "upload_status": "ok", "upload_http_status": 200},
+            {"timestamp": "2026-10-23T08:00:00Z", "upload_status": "failed", "upload_http_status": 504}]
+    with patch("shared.config_store.get_scan_state", return_value={}), \
+         patch("shared.config_store.get_configured_resources", return_value={}), \
+         patch("shared.config_store.is_collection_active", return_value=True), \
+         patch("shared.debug_logger.get_processing_stats", return_value=runs):
+        result = registration.build_status_summary(include_names=False)
+    assert result["upload_status"] == "ok" and result["upload_http_status"] == 200

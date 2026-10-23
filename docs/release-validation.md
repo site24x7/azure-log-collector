@@ -22,6 +22,9 @@ Use unique test-event markers and retain evidence of the events in AppLogs.
 | Rollback | Restore the known-good package using the tested deployment method and verify new events remain searchable. The current health check reports failures but does not automatically roll back. |
 | Resource logs | A real Azure resource emits a marked diagnostic record, it reaches regional storage, and the same record is searchable in Site24x7 with correct category/resource/time fields. |
 | Optional Entra logs | Verify AuditLogs end to end and each additional category actually advertised by the receiving server; unsupported categories must remain clearly unavailable. |
+| Site24x7 cannot read collector API | Simulate timeout, denied key/non-2xx and malformed 200 response. The detail page shows collector API failure; cached healthy status cannot override it. Outbound health stays last-known/unknown, never inferred from inbound failure. |
+| Collector cannot reach Site24x7 API/upload | Keep collector status API reachable, fail outbound API and upload paths independently. Live status shows API phase + HTTP status or last upload failure + observation time; empty runs do not establish recovery. A real successful upload clears the recorded upload failure. |
+| Both paths fail | With no recent report/live snapshot, status becomes unavailable within the 26-hour historical-report policy (live failures show immediately); old data remains historical. Recovery preserves the server's true last registration time. |
 | Client onboarding | Test the deployed client link, prerequisites, Device Key/DC guidance, Azure handoff, deployment Outputs, dashboard/scan flow, ingestion confirmation, management and cleanup. Opening Azure is not deployment success. |
 | Relay demo | Test both API queue/blob and actual log-upload blob forwarding. A local saved file, relay HTTP 200 or staging-blob acknowledgement does not establish AppLogs ingestion. |
 
