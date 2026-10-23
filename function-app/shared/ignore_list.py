@@ -72,15 +72,25 @@ def _migrate_tags(ignore_list: Dict) -> Dict:
     return ignore_list
 
 
-def load_ignore_list() -> Dict:
+class IgnoreListUnavailable(RuntimeError):
+    """The ignore list exists but could not be read; treating it as empty would
+    configure resources the user excluded."""
+
+
+def load_ignore_list(strict: bool = False) -> Dict:
     """Load the ignore list from blob storage.
 
     Returns an empty-list structure if the blob does not exist or cannot
     be read.  Automatically migrates legacy flat tag lists to the new
     include/exclude structure.
+
+    With ``strict`` (scans), a read failure other than "not found" raises
+    IgnoreListUnavailable instead of returning an empty list.
     """
     blob_client = _get_blob_client()
     if blob_client is None:
+        if strict:
+            raise IgnoreListUnavailable("storage is not configured")
         return copy.deepcopy(_EMPTY_IGNORE_LIST)
 
     try:
@@ -96,6 +106,8 @@ def load_ignore_list() -> Dict:
             )
         else:
             logger.error(f"Failed to load ignore list: {e}")
+            if strict:
+                raise IgnoreListUnavailable(type(e).__name__) from e
         return copy.deepcopy(_EMPTY_IGNORE_LIST)
 
 
@@ -166,41 +178,41 @@ def is_ignored(resource: Dict, ignore_list: Dict) -> bool:
         subscription_id = _extract_sub_from_id(resource_id).lower()
 
     # Check resource_ids
-    ignored_ids = [rid.lower() for rid in ignore_list.get("resource_ids", [])]
+    ignored_ids = [rid.lower() for rid in (ignore_list.get("resource_ids") or [])]
     if resource_id in ignored_ids:
         return True
 
     # Check subscriptions
-    ignored_subs = [s.lower() for s in ignore_list.get("subscriptions", [])]
+    ignored_subs = [s.lower() for s in (ignore_list.get("subscriptions") or [])]
     if subscription_id in ignored_subs:
         return True
 
     # Check resource_groups
-    ignored_rgs = [rg.lower() for rg in ignore_list.get("resource_groups", [])]
+    ignored_rgs = [rg.lower() for rg in (ignore_list.get("resource_groups") or [])]
     if resource_group in ignored_rgs:
         return True
 
     # Check locations
     ignored_locations = [
-        loc.lower() for loc in ignore_list.get("locations", [])
+        loc.lower() for loc in (ignore_list.get("locations") or [])
     ]
     if location in ignored_locations:
         return True
 
     # Check resource_types (e.g. "Microsoft.Compute/virtualMachines")
-    ignored_types = [t.lower() for t in ignore_list.get("resource_types", [])]
+    ignored_types = [t.lower() for t in (ignore_list.get("resource_types") or [])]
     if resource_type in ignored_types:
         return True
 
     # ── Tag-based filtering (include/exclude) ──
-    tags_config = ignore_list.get("tags", {})
+    tags_config = ignore_list.get("tags") or {}
 
     # Support legacy flat list format
     if isinstance(tags_config, list):
         tags_config = {"include": [], "exclude": tags_config}
 
-    exclude_tags = tags_config.get("exclude", [])
-    include_tags = tags_config.get("include", [])
+    exclude_tags = tags_config.get("exclude") or []
+    include_tags = tags_config.get("include") or []
 
     # Exclude tags — if resource matches any, it's ignored
     for tag_rule in exclude_tags:

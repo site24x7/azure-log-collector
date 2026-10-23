@@ -424,7 +424,7 @@ class TestCheckAndApplyUpdate:
         mock_deploy.return_value = {"success": True, "status_code": 200}
         result = check_and_apply_update(auto_apply=True)
         assert result["action"] == "deployed"
-        mock_deploy.assert_called_once_with("https://example.com/v2.zip", expected_sha256=None)
+        mock_deploy.assert_called_once_with("https://example.com/v2.zip", expected_sha256=None, expected_version="2.0.0")
 
     @patch("shared.updater.fetch_remote_version")
     @patch("shared.updater.get_local_version")
@@ -503,7 +503,7 @@ class TestPinnedVersion:
         mock_deploy.return_value = {"success": True}
         result = check_and_apply_update(auto_apply=True)
         assert result["action"] == "deployed"
-        mock_deploy.assert_called_once_with("pkg", expected_sha256="abc")
+        mock_deploy.assert_called_once_with("pkg", expected_sha256="abc", expected_version="1.5.0")
 
 
 class TestReleaseAgeGate:
@@ -704,3 +704,308 @@ class TestUpdateChannel:
         result = fetch_remote_version("https://api.github.com/repos/o/r/releases?per_page=5")
         assert result["version"] == "2.0.0-beta.1"
         assert result["prerelease"] is True
+
+
+def test_package_version_must_match_the_advertised_version(tmp_path):
+    """A manifest saying 2.0.0 cannot ship an older package past the downgrade check."""
+    import zipfile
+    from shared.updater import validate_zip_package
+    pkg = tmp_path / "pkg.zip"
+    with zipfile.ZipFile(pkg, "w") as zf:
+        zf.writestr("host.json", "{}")
+        zf.writestr("VERSION", "1.0.0")
+        zf.writestr("AutoUpdater/__init__.py", "x = 1\n")
+        zf.writestr("shared/updater.py", "x = 1\n")
+        zf.writestr("requirements.txt", "")
+        zf.writestr("AutoUpdater/function.json", "{}")
+    ok_any, _ = validate_zip_package(str(pkg))
+    assert ok_any
+    ok_match, _ = validate_zip_package(str(pkg), expected_version="1.0.0")
+    ok_other, reason = validate_zip_package(str(pkg), expected_version="2.0.0")
+    assert (ok_match, ok_other) == (ok_any, False) and "does not match" in reason
+
+
+class FakeStateStore:
+    """In-memory update-state blob with ETag semantics (IfMatch / IfMissing)."""
+
+    def __init__(self, state=None, fail_reads=0, fail_writes=0):
+        self.text = json.dumps(state) if state is not None else None
+        self.version = 1 if state is not None else 0
+        self.fail_reads, self.fail_writes, self.writes = fail_reads, fail_writes, []
+
+    def read(self, path, strict=False):
+        if self.fail_reads:
+            self.fail_reads -= 1
+            raise RuntimeError("storage unavailable")
+        return self.text, (f"etag-{self.version}" if self.text is not None else None)
+
+    def write(self, path, data, etag):
+        if self.fail_writes:
+            self.fail_writes -= 1
+            return False, False
+        current = f"etag-{self.version}" if self.text is not None else None
+        if etag != current:
+            return False, True
+        self.text, self.version = data, self.version + 1
+        self.writes.append(json.loads(data))
+        return True, False
+
+    @property
+    def state(self):
+        return json.loads(self.text) if self.text else {}
+
+
+def _store_patches(store):
+    return (patch("shared.config_store._read_blob_with_etag", side_effect=store.read),
+            patch("shared.config_store._write_blob_conditional", side_effect=store.write))
+
+
+def _deploy(monkeypatch, tmp_path, put_status=202, store=None, put_error=None, on_put=None):
+    import shared.updater as up
+    monkeypatch.setenv("WEBSITE_SITE_NAME", "app")
+    monkeypatch.setenv("SUBSCRIPTION_IDS", "sub")
+    monkeypatch.setenv("RESOURCE_GROUP_NAME", "rg")
+    monkeypatch.setenv("REQUIRE_PACKAGE_SHA256", "false")
+    store = store or FakeStateStore()
+    read_p, write_p = _store_patches(store)
+
+    def fake_put(*a, **k):
+        if on_put:
+            on_put()
+        if put_error:
+            raise put_error
+        return MagicMock(status_code=put_status, text="nope")
+
+    with patch.object(up, "_package_url_trusted", return_value=(True, "")), \
+         patch.object(up.requests, "get") as get, \
+         patch.object(up, "validate_zip_package", return_value=(True, "")), \
+         patch.object(up, "check_package_imports", return_value=(True, "")), \
+         patch.object(up, "DefaultAzureCredential"), \
+         patch.object(up.requests, "patch") as patch_call, \
+         patch.object(up.requests, "put", side_effect=fake_put) as put, \
+         patch.object(up, "_stage_verified_package", return_value="https://own.blob.core.windows.net/s247-packages/2.0.0-x/released-package.zip?sig") as stage, \
+         patch.object(up, "get_local_version", return_value="1.0.0"), read_p, write_p:
+        get.return_value.iter_content.return_value = [b"verified-bytes"]
+        result = up.deploy_update("https://github.com/site24x7/azure-log-collector/releases/download/v2.0.0/s247-function-app.zip",
+                                  expected_version="2.0.0")
+    return result, put, patch_call, stage, store
+
+
+def test_update_installs_the_verified_copy_with_onedeploy(monkeypatch, tmp_path):
+    """Azure must install the bytes that were checked, not re-download the release URL."""
+    store = FakeStateStore()
+    seen = {}
+    result, put, patch_call, stage, _ = _deploy(monkeypatch, tmp_path, store=store,
+                                               on_put=lambda: seen.update(store.state))
+    assert result["success"] and result["submitted"] and not result["confirmed"] and result["mode"] == "onedeploy"
+    stage.assert_called_once()
+    url = put.call_args.args[0]
+    assert url.startswith("https://management.azure.com/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Web/sites/app/extensions/onedeploy?")
+    assert put.call_args.kwargs["json"] == {"properties": {
+        "packageUri": "https://own.blob.core.windows.net/s247-packages/2.0.0-x/released-package.zip?sig", "remoteBuild": False}}
+    patch_call.assert_not_called()          # Flex: no app-setting swap, no restart call
+    # The attempt is recorded before the deploy, which restarts this app.
+    assert seen["pending_version"] == "2.0.0" and seen["attempt_id"] == result["attempt_id"]
+
+
+def test_rejected_onedeploy_records_the_failure(monkeypatch, tmp_path):
+    result, _, _, _, store = _deploy(monkeypatch, tmp_path, put_status=409)
+    assert result["success"] is False and result["status_code"] == 409
+    assert store.state["failed_at"] and "HTTP 409" in store.state["error"]
+
+
+def test_a_lost_deploy_request_is_recorded_and_does_not_block_a_retry(monkeypatch, tmp_path):
+    import requests
+    result, _, _, _, store = _deploy(monkeypatch, tmp_path, put_error=requests.ConnectionError("timeout"))
+    assert result["success"] is False and "ConnectionError" in result["error"]
+    assert store.state["failed_at"] and "may still complete" in store.state["error"]
+    retry, put, *_ = _deploy(monkeypatch, tmp_path, store=store)
+    assert retry["success"] is True and put.call_count == 1
+
+
+def test_nothing_is_installed_when_the_state_cannot_be_recorded(monkeypatch, tmp_path):
+    result, put, *_ = _deploy(monkeypatch, tmp_path, store=FakeStateStore(fail_writes=1))
+    assert result["success"] is False and "update state" in result["error"]
+    put.assert_not_called()
+
+
+def test_nothing_is_installed_when_the_state_cannot_be_read(monkeypatch, tmp_path):
+    result, put, *_ = _deploy(monkeypatch, tmp_path, store=FakeStateStore(fail_reads=1))
+    assert result["success"] is False and "update state" in result["error"]
+    put.assert_not_called()
+
+
+def test_a_second_update_waits_for_the_one_in_progress(monkeypatch, tmp_path):
+    from datetime import datetime, timezone
+    recent = {"pending_version": "1.9.0", "attempt_id": "a", "submitted_at": datetime.now(timezone.utc).isoformat()}
+    result, put, _, stage, store = _deploy(monkeypatch, tmp_path, store=FakeStateStore(recent))
+    assert result["success"] is False and result["in_progress"] and "1.9.0" in result["error"]
+    put.assert_not_called() and stage.assert_not_called()
+    assert store.state == recent
+
+
+def test_simultaneous_updates_install_only_once(monkeypatch, tmp_path):
+    # Another request claims the state between this one's read and its claim.
+    import shared.updater as up
+    store = FakeStateStore()
+    real_stage = MagicMock(return_value="https://own/x/released-package.zip?sig")
+
+    def stage_and_race(*a, **k):
+        store.write("update-state.json", json.dumps({"attempt_id": "other", "pending_version": "2.0.0",
+                                                     "submitted_at": "2099-01-01T00:00:00+00:00"}), None)
+        return real_stage()
+
+    with patch.object(up, "_stage_verified_package", side_effect=stage_and_race):
+        monkeypatch.setenv("WEBSITE_SITE_NAME", "app")
+        monkeypatch.setenv("SUBSCRIPTION_IDS", "sub")
+        monkeypatch.setenv("REQUIRE_PACKAGE_SHA256", "false")
+        read_p, write_p = _store_patches(store)
+        with patch.object(up, "_package_url_trusted", return_value=(True, "")), \
+             patch.object(up.requests, "get") as get, \
+             patch.object(up, "validate_zip_package", return_value=(True, "")), \
+             patch.object(up, "check_package_imports", return_value=(True, "")), \
+             patch.object(up, "DefaultAzureCredential"), \
+             patch.object(up.requests, "put") as put, read_p, write_p:
+            get.return_value.iter_content.return_value = [b"zip"]
+            result = up.deploy_update("https://github.com/site24x7/azure-log-collector/releases/download/v2.0.0/s247-function-app.zip")
+    assert result["success"] is False and result["in_progress"]
+    put.assert_not_called()
+    assert store.state["attempt_id"] == "other"
+
+
+@pytest.mark.parametrize("state", [
+    {"pending_version": "1.9.0", "submitted_at": "2020-01-01T00:00:00+00:00"},            # stale
+    {"pending_version": "1.9.0", "submitted_at": "2099-01-01T00:00:00+00:00", "confirmed_at": "x"},
+    {"pending_version": "1.9.0", "submitted_at": "2099-01-01T00:00:00+00:00", "failed_at": "x"},
+])
+def test_finished_or_stale_updates_do_not_block(monkeypatch, tmp_path, state):
+    result, put, *_ = _deploy(monkeypatch, tmp_path, store=FakeStateStore(state))
+    assert result["success"] is True
+    put.assert_called_once()
+
+
+def test_a_late_failure_does_not_overwrite_a_newer_attempt(monkeypatch):
+    import shared.updater as up
+    store = FakeStateStore({"attempt_id": "newer", "pending_version": "2.1.0"})
+    read_p, write_p = _store_patches(store)
+    with read_p, write_p:
+        up._record_failed_attempt({"attempt_id": "older"}, "boom")
+    assert "failed_at" not in store.state and store.state["attempt_id"] == "newer"
+
+
+def _confirm(monkeypatch, store, local="2.0.0", runs=2):
+    import shared.updater as up
+    monkeypatch.setattr(up, "_confirmation_checked", False)
+    read_p, write_p = _store_patches(store)
+    with read_p, write_p, patch.object(up, "get_local_version", return_value=local):
+        for _ in range(runs):
+            up.confirm_running_version()
+    return up
+
+
+def test_new_version_confirms_the_update_once(monkeypatch):
+    store = FakeStateStore({"pending_version": "2.0.0", "failed_at": "x", "error": "lost"})
+    _confirm(monkeypatch, store)
+    assert len(store.writes) == 1 and store.state["confirmed_at"]
+    assert "failed_at" not in store.state and "error" not in store.state
+
+
+def test_old_version_does_not_confirm(monkeypatch):
+    store = FakeStateStore({"pending_version": "2.0.0"})
+    _confirm(monkeypatch, store, local="1.0.0")
+    assert store.writes == []
+
+
+@pytest.mark.parametrize("failure", ["unreadable", "unwritable"])
+def test_confirmation_is_retried_after_a_storage_failure(monkeypatch, failure):
+    store = FakeStateStore({"pending_version": "2.0.0"},
+                           fail_reads=1 if failure == "unreadable" else 0,
+                           fail_writes=1 if failure == "unwritable" else 0)
+    up = _confirm(monkeypatch, store)
+    assert store.state["confirmed_at"] and up._confirmation_checked is True
+
+
+def test_staged_package_link_is_read_only_https(monkeypatch, tmp_path):
+    import shared.updater as up
+    pkg = tmp_path / "pkg.zip"
+    pkg.write_bytes(b"zip")
+    monkeypatch.setenv("AzureWebJobsStorage", "DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=a2V5;EndpointSuffix=core.windows.net")
+    with patch("azure.storage.blob.BlobClient.upload_blob") as upload, \
+         patch("azure.storage.blob.ContainerClient.create_container"):
+        link = up._stage_verified_package(str(pkg), "2.0.0", "ab" * 32)
+    upload.assert_called_once()
+    assert link.startswith("https://acct.blob.core.windows.net/s247-packages/2.0.0-abababababababab/released-package.zip?")
+    assert "sp=r&" in link and "spr=https" in link
+
+
+def _package(tmp_path, files, prefix=""):
+    import zipfile
+    path = tmp_path / "pkg.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        for name, body in files.items():
+            zf.writestr(prefix + name, body)
+    return str(path)
+
+
+GOOD_FILES = {
+    "host.json": "{}",
+    "HealthCheck/function.json": "{}",
+    "HealthCheck/__init__.py": "import json\nimport shared.helper\ndef main(req):\n    return 1\n",
+    "shared/__init__.py": "",
+    "shared/helper.py": "import s247dep\n",
+    ".python_packages/lib/site-packages/s247dep/__init__.py": "VALUE = 1\n",
+}
+
+
+@pytest.mark.parametrize("prefix", ["", "function-app/"])
+def test_package_that_imports_cleanly_passes(tmp_path, prefix):
+    from shared.updater import check_package_imports
+    assert check_package_imports(_package(tmp_path, GOOD_FILES, prefix)) == (True, "")
+
+
+def test_package_with_a_broken_function_is_refused(tmp_path):
+    from shared.updater import check_package_imports
+    files = dict(GOOD_FILES, **{"Broken/function.json": "{}", "Broken/__init__.py": "from shared.helper import missing_name\n"})
+    ok, reason = check_package_imports(_package(tmp_path, files))
+    assert not ok and reason.startswith("Broken cannot be imported: ImportError")
+
+
+def test_package_missing_a_dependency_is_refused(tmp_path):
+    # A shared module's dependency is checked even when no function imports it at load time.
+    from shared.updater import check_package_imports
+    files = {k: v for k, v in GOOD_FILES.items() if "s247dep" not in k}
+    files["HealthCheck/__init__.py"] = "def main(req):\n    return 1\n"
+    ok, reason = check_package_imports(_package(tmp_path, files))
+    assert not ok and reason.startswith("shared.helper cannot be imported: ModuleNotFoundError")
+
+
+def test_package_does_not_see_this_apps_modules(tmp_path):
+    # The check must use only the package's own code and dependencies.
+    from shared.updater import check_package_imports
+    files = dict(GOOD_FILES, **{"shared/helper.py": "import azure.functions\n"})
+    ok, reason = check_package_imports(_package(tmp_path, files))
+    assert not ok and "azure" in reason
+
+
+def test_package_with_an_escaping_path_is_refused(tmp_path):
+    from shared.updater import check_package_imports
+    ok, reason = check_package_imports(_package(tmp_path, dict(GOOD_FILES, **{"../evil.py": "x = 1"})))
+    assert not ok and reason.startswith("unsafe path")
+    assert not (tmp_path.parent / "evil.py").exists()
+
+
+def test_deploy_refuses_a_package_that_does_not_import(monkeypatch, tmp_path):
+    import shared.updater as up
+    monkeypatch.setenv("WEBSITE_SITE_NAME", "app")
+    monkeypatch.setenv("SUBSCRIPTION_IDS", "sub")
+    monkeypatch.setenv("REQUIRE_PACKAGE_SHA256", "false")
+    with patch.object(up, "_package_url_trusted", return_value=(True, "")), \
+         patch.object(up.requests, "get") as get, \
+         patch.object(up, "validate_zip_package", return_value=(True, "")), \
+         patch.object(up, "check_package_imports", return_value=(False, "X cannot be imported: ImportError: y")), \
+         patch.object(up, "_stage_verified_package") as stage, \
+         patch.object(up.requests, "put") as put:
+        get.return_value.iter_content.return_value = [b"zip"]
+        result = up.deploy_update("https://github.com/site24x7/azure-log-collector/releases/download/v2.0.0/s247-function-app.zip")
+    assert result["success"] is False and result["validation_failed"] and "import check" in result["error"]
+    stage.assert_not_called() and put.assert_not_called()

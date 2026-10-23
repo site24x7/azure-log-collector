@@ -23,8 +23,15 @@ SUPPORTED_TYPES_BLOB = "azure-log-types.json"
 DISABLED_TYPES_BLOB = "disabled-logtypes.json"
 CONFIGURED_RESOURCES_BLOB = "configured-resources.json"
 CATEGORY_RESOURCE_TYPES_BLOB = "category-resource-types.json"
+# Azure's own spelling of each category (DeveloperPortalAuditLogs), by normalized key.
+CATEGORY_NAMES_BLOB = "category-names.json"
 SCAN_STATE_BLOB = "scan-state.json"
 ENTRA_STATE_BLOB = "entra-logtypes.json"
+COLLECTION_APPROVAL_BLOB = "collection-approval.json"
+PROCESSING_CONTROL_BLOB = "processing-control.json"
+# Filter choices (resource groups, regions, types, tags) seen by the last scan.
+RESOURCE_INVENTORY_BLOB = "resource-inventory.json"
+INVENTORY_MAX_VALUES = 5000
 
 # Sentinel for negative caching (config does not exist in blob)
 _MISSING = object()
@@ -36,6 +43,17 @@ _cache = {
     "logtype_configs": {},
     "configured_resources": None,
 }
+
+# A worker process serves many invocations, and HTTP functions (dashboard,
+# status, configured resources) never call clear_cache(), so without an expiry
+# each worker kept whatever it read first and the dashboard showed stale data.
+CACHE_TTL_SECONDS = 30
+_cache_started = time.monotonic()
+
+
+def _expire_cache() -> None:
+    if time.monotonic() - _cache_started > CACHE_TTL_SECONDS:
+        clear_cache()
 
 
 def _get_service_client() -> Optional[BlobServiceClient]:
@@ -168,20 +186,30 @@ def _rmw_blob(
     mutate: Callable[[Optional[Dict]], Optional[Dict]],
     max_retries: int = 5,
     default: Optional[Dict] = None,
+    strict: bool = False,
 ) -> Optional[Dict]:
     """Read-modify-write a JSON blob with ETag-based optimistic concurrency.
 
     ``mutate`` receives the current parsed JSON (or ``default`` if the blob is
     absent) and must return the new value to persist. Returning ``None`` aborts
     the write (no-op). Retries on ETag conflict up to ``max_retries``.
-    Returns the persisted value, or ``None`` on failure/abort.
+    Returns the persisted value, or ``None`` on failure/abort. With ``strict``
+    a failed or corrupt read returns ``None`` without calling ``mutate``, so a
+    caller never mistakes an unreadable blob for "nothing to change".
     """
     for attempt in range(max_retries):
-        raw, etag = _read_blob_with_etag(blob_path)
+        try:
+            raw, etag = _read_blob_with_etag(blob_path, strict=strict)
+        except Exception as e:
+            logger.error("RMW could not read %s (%s)", blob_path, type(e).__name__)
+            return None
         if raw is not None:
             try:
                 current = json.loads(raw)
             except json.JSONDecodeError:
+                if strict:
+                    logger.error("Corrupt JSON in %s — not changing it", blob_path)
+                    return None
                 logger.error("Corrupt JSON in %s — treating as empty", blob_path)
                 current = default
         else:
@@ -232,6 +260,7 @@ def _delete_blob(blob_path: str) -> bool:
 
 def get_supported_log_types(force_refresh: bool = False) -> Dict:
     """Read the catalog; force a blob read for requests served by other workers."""
+    _expire_cache()
     if not force_refresh and _cache["supported_types"] is not None:
         return _cache["supported_types"]
 
@@ -275,6 +304,7 @@ def _normalize_category(category: str) -> str:
 
 def get_logtype_config(category: str, force_refresh: bool = False, strict: bool = False) -> Optional[Dict]:
     """Get sourceConfig; strict mode requires a reliable snapshot for mutations."""
+    _expire_cache()
     config_key = f"S247_{_normalize_category(category)}"
 
     if not (force_refresh or strict) and config_key in _cache["logtype_configs"]:
@@ -296,7 +326,13 @@ def get_logtype_config(category: str, force_refresh: bool = False, strict: bool 
 
 
 def save_logtype_config(category: str, config: Dict) -> bool:
-    """Save sourceConfig for a log category."""
+    """Save sourceConfig for a log category.
+
+    The Device Key is not stored with it: uploads always use the live key from
+    the app settings, so a saved copy would only be one more place it leaks from.
+    """
+    if isinstance(config, dict):
+        config = {k: v for k, v in config.items() if k != "apiKey"}
     config_key = f"S247_{_normalize_category(category)}"
     blob_path = f"{LOGTYPE_CONFIGS_PREFIX}{config_key}.json"
     if _write_blob(blob_path, json.dumps(config, indent=2)):
@@ -342,15 +378,26 @@ def get_all_logtype_configs() -> Dict[str, Dict]:
 # ─── Disabled Log Types ──────────────────────────────────────────────────────
 
 
-def get_disabled_log_types() -> List[str]:
-    """Get list of disabled log type categories."""
+def get_disabled_log_types(strict: bool = False) -> List[str]:
+    """Get list of disabled log type categories.
+
+    With ``strict`` a read failure or corrupt list raises instead of looking
+    like "nothing disabled" (the processor would then send disabled logs).
+    """
+    _expire_cache()
     if _cache["disabled_types"] is not None:
         return list(_cache["disabled_types"])
 
-    data = _read_blob(DISABLED_TYPES_BLOB)
+    data = _read_blob(DISABLED_TYPES_BLOB, strict=True) if strict else _read_blob(DISABLED_TYPES_BLOB)
     if data:
-        _cache["disabled_types"] = json.loads(data)
-        return list(_cache["disabled_types"])
+        disabled = json.loads(data)
+        if not isinstance(disabled, list):
+            if strict:
+                raise ValueError("disabled log types is not a list")
+            return []
+        _cache["disabled_types"] = disabled
+        return list(disabled)
+    _cache["disabled_types"] = []
     return []
 
 
@@ -364,33 +411,38 @@ def save_disabled_log_types(disabled: List[str]) -> bool:
 
 def disable_log_type(category: str) -> bool:
     """Add a category to the disabled list (concurrency-safe)."""
+    noop = []
+
     def mutate(current):
         disabled = current if isinstance(current, list) else []
         if category.lower() in [d.lower() for d in disabled]:
+            noop.append(True)
             return None  # already present — abort write
         return disabled + [category]
 
-    result = _rmw_blob(DISABLED_TYPES_BLOB, mutate, default=[])
+    result = _rmw_blob(DISABLED_TYPES_BLOB, mutate, default=[], strict=True)
     if result is not None:
         _cache["disabled_types"] = result
-        return True
-    # None may mean abort-no-op (already present) OR failure. Check cache.
-    return True
+    # None is either "already disabled" (fine) or a failed write.
+    return result is not None or bool(noop)
 
 
 def enable_log_type(category: str) -> bool:
     """Remove a category from the disabled list (concurrency-safe)."""
+    noop = []
+
     def mutate(current):
         disabled = current if isinstance(current, list) else []
         updated = [d for d in disabled if d.lower() != category.lower()]
         if len(updated) == len(disabled):
+            noop.append(True)
             return None  # not present — abort
         return updated
 
-    result = _rmw_blob(DISABLED_TYPES_BLOB, mutate, default=[])
+    result = _rmw_blob(DISABLED_TYPES_BLOB, mutate, default=[], strict=True)
     if result is not None:
         _cache["disabled_types"] = result
-    return True
+    return result is not None or bool(noop)
 
 
 def is_log_type_disabled(category: str) -> bool:
@@ -443,6 +495,7 @@ def get_configured_resources() -> Dict:
 
     Structure: { resource_id: { "categories": [...], "storage_account": "...", "configured_at": "..." } }
     """
+    _expire_cache()
     if _cache["configured_resources"] is not None:
         return _cache["configured_resources"]
 
@@ -480,15 +533,37 @@ def save_category_resource_types(mapping: Dict) -> bool:
     return _write_blob(CATEGORY_RESOURCE_TYPES_BLOB, json.dumps(mapping, indent=2))
 
 
+def get_category_names() -> Dict[str, str]:
+    """Azure's spelling of each log category seen in scans, by normalized key."""
+    data = _read_blob(CATEGORY_NAMES_BLOB)
+    if data:
+        try:
+            names = json.loads(data)
+            if isinstance(names, dict):
+                return {str(k): str(v) for k, v in names.items()}
+        except json.JSONDecodeError:
+            logger.error("Failed to parse %s", CATEGORY_NAMES_BLOB)
+    return {}
+
+
+def save_category_names(names: Dict[str, str]) -> bool:
+    """Add newly seen category names; names learned in earlier scans are kept."""
+    merged = get_category_names()
+    merged.update({k: v for k, v in names.items() if k and v})
+    return _write_blob(CATEGORY_NAMES_BLOB, json.dumps(merged, indent=2, sort_keys=True))
+
+
 def mark_resource_configured(
-    resource_id: str, categories: List[str], storage_account: str
+    resource_id: str, categories: List[str], storage_account: str, setting_name: str = ""
 ) -> bool:
     """Mark a resource as configured (concurrency-safe RMW)."""
     from datetime import datetime, timezone
+    from shared.azure_manager import collector_setting_name
 
     entry = {
         "categories": categories,
         "storage_account": storage_account,
+        "setting_name": setting_name or collector_setting_name(),
         "configured_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -506,22 +581,27 @@ def mark_resource_configured(
 
 def unmark_resource_configured(resource_id: str) -> bool:
     """Remove a resource from the configured tracking (concurrency-safe RMW)."""
+    noop = []
+
     def mutate(current):
         configured = current if isinstance(current, dict) else {}
         if resource_id not in configured:
+            noop.append(True)
             return None  # not present — abort
         configured = dict(configured)
         del configured[resource_id]
         return configured
 
-    result = _rmw_blob(CONFIGURED_RESOURCES_BLOB, mutate, default={})
+    result = _rmw_blob(CONFIGURED_RESOURCES_BLOB, mutate, default={}, strict=True)
     if result is not None:
         _cache["configured_resources"] = result
-    return True
+    return result is not None or bool(noop)
 
 
 def clear_cache():
     """Clear all in-memory caches. Call at the start of each function invocation."""
+    global _cache_started
+    _cache_started = time.monotonic()
     _cache["supported_types"] = None
     _cache["disabled_types"] = None
     _cache["logtype_configs"] = {}
@@ -531,6 +611,63 @@ def clear_cache():
 # ------------------------------------------------------------------
 # Scan state (blob-backed, not app settings)
 # ------------------------------------------------------------------
+
+# ─── Review before collecting (new deployments) ──────────────────────────────
+
+
+def get_processing_enabled() -> bool:
+    """Shared pause flag; only a confirmed missing blob uses the legacy app setting.
+
+    No worker cache: every processing invocation sees the saved value without an
+    app-setting write or restart. Storage/corrupt-data errors are not treated as
+    permission to resume processing.
+    """
+    if not os.environ.get("AzureWebJobsStorage"):
+        return os.environ.get("PROCESSING_ENABLED", "true").lower() == "true"
+    raw = _read_blob(PROCESSING_CONTROL_BLOB, strict=True)
+    if raw is None:
+        return os.environ.get("PROCESSING_ENABLED", "true").lower() == "true"
+    state = json.loads(raw)
+    if not isinstance(state, dict) or not isinstance(state.get("enabled"), bool):
+        raise ValueError("Invalid processing control")
+    return state["enabled"]
+
+
+def save_processing_enabled(enabled: bool) -> bool:
+    """Persist pause/resume without changing Azure deployment configuration."""
+    if not isinstance(enabled, bool):
+        return False
+    return _write_blob(PROCESSING_CONTROL_BLOB, json.dumps({"enabled": enabled}))
+
+
+def is_collection_active() -> bool:
+    """Whether scans may change Azure and Site24x7.
+
+    New deployments set REVIEW_BEFORE_COLLECTING=true: their scans only
+    discover and report until an admin starts collecting (approve_collection).
+    Installs without the setting collect as before. When the approval cannot
+    be read, scans stay read-only.
+    """
+    if os.environ.get("REVIEW_BEFORE_COLLECTING", "").strip().lower() != "true":
+        return True
+    try:
+        raw = _read_blob(COLLECTION_APPROVAL_BLOB, strict=True)
+        return bool(raw) and json.loads(raw).get("approved") is True
+    except Exception as e:
+        logger.warning("Collection approval unreadable (%s) — staying read-only", type(e).__name__)
+        return False
+
+
+def approve_collection(source: str) -> bool:
+    """Record that an admin started collecting. Stored in a blob, not an app
+    setting, so approving does not restart the Function App."""
+    from datetime import datetime, timezone
+    return _write_blob(COLLECTION_APPROVAL_BLOB, json.dumps({
+        "approved": True,
+        "approved_at": datetime.now(timezone.utc).isoformat(),
+        "source": source,
+    }))
+
 
 def save_scan_state(state: Dict) -> bool:
     """Save scan state (last scan time, stats) to blob storage.
@@ -566,6 +703,8 @@ def try_acquire_scan_lock(ttl_seconds: int = 900) -> bool:
     acquired = {"acquired": False}
 
     def mutate(current):
+        # Reset on every attempt: an ETag retry may find another scan running.
+        acquired["acquired"] = False
         state = dict(current) if isinstance(current, dict) else {}
         if state.get("in_progress"):
             started = state.get("scan_started_at") or state.get("last_scan_time")
@@ -584,8 +723,41 @@ def try_acquire_scan_lock(ttl_seconds: int = 900) -> bool:
         acquired["acquired"] = True
         return state
 
-    _rmw_blob(SCAN_STATE_BLOB, mutate, default={})
-    return acquired["acquired"]
+    # Acquired only when the write that set in_progress was committed.
+    written = _rmw_blob(SCAN_STATE_BLOB, mutate, default={}, strict=True)
+    return written is not None and acquired["acquired"]
+
+
+def save_resource_inventory(resources: List[Dict], subscription_ids: List[str]) -> bool:
+    """Save the filter choices found by a scan, so the filter pages never have
+    to list the subscription again. Values only, at most INVENTORY_MAX_VALUES
+    of each."""
+    def values(items):
+        return sorted({v for v in items if v})[:INVENTORY_MAX_VALUES]
+
+    inventory = {
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "resource_count": len(resources),
+        "subscriptions": values(subscription_ids),
+        "resource_groups": values(r.get("resource_group", "") for r in resources),
+        "locations": values(r.get("location", "") for r in resources),
+        "resource_types": values(r.get("type", "") for r in resources),
+        "tags": values(f"{k}={v}" for r in resources for k, v in (r.get("tags") or {}).items()),
+    }
+    return _write_blob(RESOURCE_INVENTORY_BLOB, json.dumps(inventory))
+
+
+def get_resource_inventory() -> Optional[Dict]:
+    """The filter choices of the last scan, or None before the first scan."""
+    raw = _read_blob(RESOURCE_INVENTORY_BLOB)
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except json.JSONDecodeError:
+        logger.error("Corrupt JSON in %s", RESOURCE_INVENTORY_BLOB)
+        return None
 
 
 def get_scan_state() -> Dict:

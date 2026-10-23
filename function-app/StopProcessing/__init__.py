@@ -1,4 +1,3 @@
-import os
 import json
 import logging
 
@@ -6,7 +5,7 @@ import azure.functions as func
 
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
-    from shared.azure_manager import AzureManager
+    from shared.config_store import save_processing_enabled
 
     """Toggle log processing on/off.
 
@@ -27,21 +26,25 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             status_code=400,
         )
 
-    enabled = body.get("enabled")
-    if enabled is None:
+    # A JSON boolean only: "false" (a non-empty string) would turn processing on.
+    enabled = body.get("enabled") if isinstance(body, dict) else None
+    if not isinstance(enabled, bool):
         return func.HttpResponse(
-            json.dumps({"error": "Missing 'enabled' field (true/false)"}),
+            json.dumps({"error": "'enabled' must be true or false"}),
             mimetype="application/json",
             status_code=400,
         )
 
     try:
-        azure_mgr = AzureManager()
-        new_value = "true" if enabled else "false"
-        azure_mgr.update_app_setting("PROCESSING_ENABLED", new_value)
-
-        # Update in-process env so subsequent reads reflect the change
-        os.environ["PROCESSING_ENABLED"] = new_value
+        if not save_processing_enabled(enabled):
+            logging.error("StopProcessing: could not save processing state")
+            return func.HttpResponse(
+                json.dumps({"error": "Failed to update processing state"}),
+                mimetype="application/json",
+                status_code=500,
+            )
+        # No ARM update/restart, key reads or callback registration in this
+        # request. Status reads and the next timer invocation read this blob.
 
         action = "enabled" if enabled else "stopped"
         logging.info("StopProcessing: Processing %s", action)

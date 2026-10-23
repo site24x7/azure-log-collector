@@ -68,9 +68,16 @@ preflight_checks() {
     # Auto-generate unique suffix from subscription ID if names are defaults
     local unique_suffix
     unique_suffix=$(echo "${SUBSCRIPTION_IDS}" | md5sum 2>/dev/null || md5 -q -s "${SUBSCRIPTION_IDS}" 2>/dev/null || echo "$$")
-    unique_suffix="${unique_suffix:0:6}"
+    unique_suffix="${DEPLOYMENT_SUFFIX:-${unique_suffix:0:6}}"
+    if [[ ! "$unique_suffix" =~ ^[a-z0-9]{1,13}$ ]]; then
+        log_error "DEPLOYMENT_SUFFIX must contain 1–13 lowercase letters or digits"
+        exit 1
+    fi
 
-    RG="${RESOURCE_GROUP_NAME:-s247-diag-logs-rg}"
+    # Same rule as the ARM template: one resource group per suffix, the legacy group without one.
+    default_rg="s247-diag-logs-rg"
+    [[ -n "${DEPLOYMENT_SUFFIX:-}" ]] && default_rg="s247-diag-logs-${unique_suffix}-rg"
+    RG="${RESOURCE_GROUP_NAME:-$default_rg}"
     FUNC_APP="${FUNCTION_APP_NAME:-s247-diag-func-${unique_suffix}}"
     STORAGE="${STORAGE_ACCOUNT_NAME:-s247diag${unique_suffix}}"
     REGION="${FUNCTION_APP_REGION:-eastus}"
@@ -134,19 +141,43 @@ preflight_checks() {
         exit 1
     fi
 
-    # Check storage account name availability (skip if it already belongs to our RG)
-    local sa_available
-    sa_available=$(az storage account check-name --name "$STORAGE" --query "nameAvailable" -o tsv 2>/dev/null || echo "true")
-    if [[ "$sa_available" == "false" ]]; then
-        if ! az storage account show --name "$STORAGE" --resource-group "$RG" &>/dev/null; then
-            log_error "Storage account name '${STORAGE}' is already taken globally."
-            log_error "Change STORAGE_ACCOUNT_NAME in config.env to something unique."
-            log_error "Tip: Try '${STORAGE}$(openssl rand -hex 2 2>/dev/null || echo $$)'"
+    # Keep the prior suffix inference for custom Function App names on upgrades.
+    DIAG_SUFFIX="${DEPLOYMENT_SUFFIX:-$(echo "$FUNC_APP" | grep -oE '[a-z0-9]{6}$' || echo '000000')}"
+    local sanitized_region
+    sanitized_region=$(echo "$REGION" | tr -dc 'a-z0-9')
+    if (( ${#DIAG_SUFFIX} > 6 )); then
+        SEED_STORAGE="s247dr${DIAG_SUFFIX}"
+        TENANT_STORAGE="s247dt${DIAG_SUFFIX}"
+    else
+        SEED_STORAGE="s247diag${sanitized_region}${DIAG_SUFFIX}"
+        SEED_STORAGE="${SEED_STORAGE:0:24}"
+        TENANT_STORAGE="s247diagtenant${DIAG_SUFFIX}"
+    fi
+    check_storage_name "$STORAGE"
+    check_storage_name "$SEED_STORAGE"
+    check_storage_name "$TENANT_STORAGE"
+    log_ok "Resource names look good"
+}
+
+# Check global availability, allowing reuse only within this resource group.
+check_storage_name() {
+    local name="$1" available
+    if ! available=$(az storage account check-name --name "$name" --query nameAvailable -o tsv); then
+        log_error "Unable to check storage name '$name'; no infrastructure was provisioned."
+        exit 1
+    fi
+    if [[ "$available" == "false" ]]; then
+        if ! az storage account show --name "$name" --resource-group "$RG" -o none &>/dev/null; then
+            log_error "Storage name '$name' is unavailable globally, even if not visible in your subscription."
+            log_error "For a fresh install, set DEPLOYMENT_SUFFIX to a new 12–13 character lowercase alphanumeric value."
+            log_error "For an existing deployment, keep its suffix and investigate ownership; do not rename it during an upgrade."
             exit 1
         fi
-        log_skip "Storage account ${STORAGE} already exists in our RG"
+        log_skip "Storage account $name already exists in our RG"
+    elif [[ "$available" != "true" ]]; then
+        log_error "Unexpected name-availability response for '$name'; stopping before provisioning."
+        exit 1
     fi
-    log_ok "Resource names look good"
 }
 
 # ============================================================
@@ -177,19 +208,32 @@ provision_infrastructure() {
     # ── Function App ─────────────────────────────────────────
     log_info "Creating Function App ${FUNC_APP} ..."
     if az functionapp show --name "$FUNC_APP" --resource-group "$RG" &>/dev/null; then
-        log_skip "Function App ${FUNC_APP} already exists"
+        # Only a Flex Consumption app on Python 3.13 can be reused. An app from an
+        # earlier version (Linux Consumption) cannot be moved in place.
+        local hosting
+        hosting=$(az functionapp show --name "$FUNC_APP" --resource-group "$RG" \
+            --query "[(sku || properties.sku), (functionAppConfig || properties.functionAppConfig).runtime.name, (functionAppConfig || properties.functionAppConfig).runtime.version]" \
+            -o tsv 2>/dev/null | tr '\t\n' '  ' | xargs)
+        if [[ "$hosting" != "FlexConsumption python 3.13" ]]; then
+            log_error "Function App ${FUNC_APP} exists but is not a Flex Consumption app on Python 3.13 (found: ${hosting:-unknown})."
+            log_error "Azure cannot move an app to Flex Consumption in place. Deploy this collector again"
+            log_error "with a new deployment suffix, then remove the old resource group with teardown.sh."
+            exit 1
+        fi
+        log_skip "Function App ${FUNC_APP} already exists (Flex Consumption, Python 3.13)"
     else
+        # Same hosting as the one-click template: Flex Consumption, Python 3.13.
         run_az "Create Function App" functionapp create \
             --name "$FUNC_APP" \
             --resource-group "$RG" \
             --storage-account "$STORAGE" \
-            --consumption-plan-location "$REGION" \
+            --flexconsumption-location "$REGION" \
             --runtime python \
-            --runtime-version 3.11 \
-            --os-type Linux \
-            --functions-version 4 \
+            --runtime-version 3.13 \
+            --instance-memory 2048 \
+            --maximum-instance-count 10 \
             -o none
-        log_ok "Created Function App ${FUNC_APP} (Linux Consumption)"
+        log_ok "Created Function App ${FUNC_APP} (Flex Consumption)"
     fi
 
     # ── Managed Identity ─────────────────────────────────────
@@ -289,9 +333,8 @@ provision_infrastructure() {
     local sanitized_region
     sanitized_region=$(echo "$REGION" | tr -dc 'a-z0-9')
     local diag_suffix
-    diag_suffix=$(echo "$FUNC_APP" | grep -oP '[a-z0-9]{6}$' || echo "000000")
-    local sa_name="s247diag${sanitized_region}${diag_suffix}"
-    sa_name="${sa_name:0:24}"
+    diag_suffix="$DIAG_SUFFIX"
+    local sa_name="$SEED_STORAGE"
 
     log_info "Creating per-region storage account ${sa_name} in ${REGION} ..."
     if az storage account show --name "$sa_name" --resource-group "$RG" &>/dev/null; then
@@ -329,24 +372,37 @@ provision_infrastructure() {
 
     # ── Function App Settings ────────────────────────────────
     log_info "Configuring Function App settings ..."
-    run_az "Set Function App settings" functionapp config appsettings set \
+    # Values go in a private file (mode 600), not on the command line, where the
+    # Device Key would be visible to other local users in the process list.
+    local settings_file
+    settings_file=$(mktemp)
+    chmod 600 "$settings_file"
+    SITE24X7_API_KEY="${SITE24X7_API_KEY}" jq -n \
+        --arg SUBSCRIPTION_IDS "${SUBSCRIPTION_IDS}" \
+        --arg SITE24X7_BASE_URL "https://www.${SITE24X7_DOMAIN:-site24x7.com}" \
+        --arg GENERAL_LOGTYPE_ENABLED "${GENERAL_LOGTYPE}" \
+        --arg TIMER_SCHEDULE "${TIMER}" \
+        --arg RESOURCE_GROUP_NAME "${RG}" \
+        --arg DIAG_STORAGE_SUFFIX "${diag_suffix}" \
+        --arg DIAG_SEED_REGION "${REGION}" \
+        --arg UPDATE_CHECK_URL "${UPDATE_CHECK_URL:-}" \
+        '{SUBSCRIPTION_IDS: $SUBSCRIPTION_IDS, SITE24X7_BASE_URL: $SITE24X7_BASE_URL,
+          GENERAL_LOGTYPE_ENABLED: $GENERAL_LOGTYPE_ENABLED, TIMER_SCHEDULE: $TIMER_SCHEDULE,
+          RESOURCE_GROUP_NAME: $RESOURCE_GROUP_NAME, PROCESSING_ENABLED: "true",
+          DIAG_STORAGE_SUFFIX: $DIAG_STORAGE_SUFFIX,
+          DIAG_SEED_REGION: $DIAG_SEED_REGION, UPDATE_CHECK_URL: $UPDATE_CHECK_URL,
+          SITE24X7_API_KEY: env.SITE24X7_API_KEY}
+         | to_entries | map({name: .key, value: .value, slotSetting: false})' > "$settings_file"
+    if ! run_az "Set Function App settings" functionapp config appsettings set \
         --name "$FUNC_APP" \
         --resource-group "$RG" \
-        --settings \
-            "SUBSCRIPTION_IDS=${SUBSCRIPTION_IDS}" \
-            "SITE24X7_API_KEY=${SITE24X7_API_KEY}" \
-            "SITE24X7_BASE_URL=https://www.${SITE24X7_DOMAIN:-site24x7.com}" \
-            "GENERAL_LOGTYPE_ENABLED=${GENERAL_LOGTYPE}" \
-            "TIMER_SCHEDULE=${TIMER}" \
-            "RESOURCE_GROUP_NAME=${RG}" \
-            "PROCESSING_ENABLED=true" \
-            "FUNCTIONS_WORKER_RUNTIME=python" \
-            "DIAG_STORAGE_SUFFIX=${diag_suffix}" \
-            "UPDATE_CHECK_URL=${UPDATE_CHECK_URL:-}" \
-            "ENABLE_ORYX_BUILD=true" \
-            "SCM_DO_BUILD_DURING_DEPLOYMENT=true" \
-        -o none
-    log_ok "Function App settings configured (storage account polling + remote build)"
+        --settings "@${settings_file}" \
+        -o none; then
+        rm -f "$settings_file"
+        return 1
+    fi
+    rm -f "$settings_file"
+    log_ok "Function App settings configured"
 }
 
 # ============================================================
@@ -356,7 +412,13 @@ deploy_function_app() {
     log_section "Function App Deployment"
 
     local func_src="${SCRIPT_DIR}/../function-app"
-    local zip_path="/tmp/s247-function-app.zip"
+    # A private temp directory: a fixed /tmp name could be replaced by another
+    # local user, or clash with a parallel deployment.
+    local zip_dir zip_path
+    zip_dir=$(mktemp -d)
+    chmod 700 "$zip_dir"
+    zip_path="${zip_dir}/s247-function-app.zip"
+    trap 'rm -rf "$zip_dir"' RETURN
 
     if [[ ! -d "$func_src" ]]; then
         log_error "Function App source not found at ${func_src}"
@@ -369,7 +431,7 @@ deploy_function_app() {
     local max_retries=12
     while [[ $retries -lt $max_retries ]]; do
         local state
-        state=$(az functionapp show --name "$FUNC_APP" --resource-group "$RG" --query "state" -o tsv 2>/dev/null || echo "Unknown")
+        state=$(az functionapp show --name "$FUNC_APP" --resource-group "$RG" --query "state || properties.state" -o tsv 2>/dev/null || echo "Unknown")
         if [[ "$state" == "Running" ]]; then
             log_ok "Function App is ready (state: ${state})"
             break
@@ -393,106 +455,39 @@ deploy_function_app() {
     log_debug "Zip contents:"
     unzip -l "$zip_path" >> "$LOG_FILE" 2>&1 || true
 
-    # Dev deploys push local code; clear the URL-based package setting (used by
-    # the customer-facing one-click ARM flow) and enable Oryx remote build so
-    # the zipdeploy below actually becomes the running code.
-    log_info "Switching to Oryx build mode for local code deploy ..."
-    az functionapp config appsettings delete \
-        --name "$FUNC_APP" \
-        --resource-group "$RG" \
-        --setting-names WEBSITE_RUN_FROM_PACKAGE \
-        -o none 2>/dev/null || true
-    az functionapp config appsettings set \
-        --name "$FUNC_APP" \
-        --resource-group "$RG" \
-        --settings ENABLE_ORYX_BUILD=true SCM_DO_BUILD_DURING_DEPLOYMENT=true \
-        -o none 2>/dev/null || true
-    log_ok "Function App switched to Oryx build mode"
-
-    # Deploy with full error output — try multiple methods
+    # Flex Consumption installs a zip with OneDeploy. Local source has no
+    # .python_packages, so Azure builds it (remote build) from requirements.txt.
     local deploy_output
     local deployed=false
 
-    # Method 0: Azure Functions Core Tools (most reliable for Linux Python)
-    if command -v func &>/dev/null; then
-        log_info "Deploying code (method 0: func azure functionapp publish) ..."
-        if deploy_output=$(cd "$func_src" && func azure functionapp publish "$FUNC_APP" --python 2>&1); then
-            log_ok "Function App code deployed successfully (func CLI)"
-            log_debug "Deploy response: ${deploy_output}"
-            deployed=true
-        else
-            log_info "Method 0 (func CLI) failed: ${deploy_output}"
-        fi
+    # Method 1: az CLI OneDeploy with remote build
+    log_info "Deploying code (az functionapp deployment source config-zip, remote build) ..."
+    if deploy_output=$(az functionapp deployment source config-zip \
+        --name "$FUNC_APP" \
+        --resource-group "$RG" \
+        --src "$zip_path" \
+        --build-remote true \
+        -o json 2>&1); then
+        log_ok "Function App code deployed successfully (config-zip)"
+        log_debug "Deploy response: ${deploy_output}"
+        deployed=true
     else
-        log_debug "func CLI not found, skipping method 0"
+        log_info "Method 1 failed: ${deploy_output}"
     fi
 
-    # Method 1: az functionapp deploy (newer az CLI command)
+    # Method 2: Azure Functions Core Tools (builds remotely by default)
     if [[ "$deployed" != "true" ]]; then
-        log_info "Deploying code (method 1: az functionapp deploy) ..."
-        if deploy_output=$(az functionapp deploy \
-            --name "$FUNC_APP" \
-            --resource-group "$RG" \
-            --src-path "$zip_path" \
-            --type zip \
-            --async true \
-            -o json 2>&1); then
-            log_ok "Function App code deployed successfully (az functionapp deploy)"
-            log_debug "Deploy response: ${deploy_output}"
-            deployed=true
-        else
-            log_info "Method 1 failed: ${deploy_output}"
-        fi
-    fi
-
-    # Method 2: config-zip (classic)
-    if [[ "$deployed" != "true" ]]; then
-        log_info "Trying method 2: az functionapp deployment source config-zip ..."
-        if deploy_output=$(az functionapp deployment source config-zip \
-            --name "$FUNC_APP" \
-            --resource-group "$RG" \
-            --src "$zip_path" \
-            -o json 2>&1); then
-            log_ok "Function App code deployed successfully (config-zip)"
-            log_debug "Deploy response: ${deploy_output}"
-            deployed=true
-        else
-            log_info "Method 2 failed: ${deploy_output}"
-        fi
-    fi
-
-    # Method 3: Direct Kudu API
-    if [[ "$deployed" != "true" ]]; then
-        log_info "Trying method 3: Kudu zipdeploy API ..."
-        local creds
-        creds=$(az functionapp deployment list-publishing-credentials \
-            --name "$FUNC_APP" \
-            --resource-group "$RG" \
-            -o json 2>>"$LOG_FILE")
-        local scm_uri username password
-        scm_uri=$(echo "$creds" | jq -r '.scmUri')
-        username=$(echo "$creds" | jq -r '.publishingUserName')
-        password=$(echo "$creds" | jq -r '.publishingPassword')
-
-        if deploy_output=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
-            -X POST \
-            -u "${username}:${password}" \
-            -H "Content-Type: application/zip" \
-            --data-binary "@${zip_path}" \
-            "${scm_uri}/api/zipdeploy?isAsync=true" 2>&1); then
-            local http_status
-            http_status=$(echo "$deploy_output" | grep "HTTP_STATUS:" | sed 's/HTTP_STATUS://')
-            local body
-            body=$(echo "$deploy_output" | grep -v "HTTP_STATUS:")
-            log_debug "Kudu response (HTTP ${http_status}): ${body}"
-            if [[ "$http_status" =~ ^2 ]]; then
-                log_ok "Function App code deployed successfully (Kudu API)"
+        if command -v func &>/dev/null; then
+            log_info "Deploying code (method 2: func azure functionapp publish) ..."
+            if deploy_output=$(cd "$func_src" && func azure functionapp publish "$FUNC_APP" --python 2>&1); then
+                log_ok "Function App code deployed successfully (func CLI)"
+                log_debug "Deploy response: ${deploy_output}"
                 deployed=true
             else
-                log_info "Method 3 failed (HTTP ${http_status}): ${body}"
+                log_info "Method 2 (func CLI) failed: ${deploy_output}"
             fi
         else
-            log_info "Method 3 curl failed: ${deploy_output}"
+            log_debug "func CLI not found, skipping method 2"
         fi
     fi
 
@@ -541,9 +536,9 @@ deploy_webapp() {
         --resource-group "$RG" \
         --query "[0].value" -o tsv)
 
-    if run_az "Upload webapp files" storage blob upload-batch \
+    # The key goes in the environment (only this user can read it), not on the command line.
+    if AZURE_STORAGE_KEY="$storage_key" run_az "Upload webapp files" storage blob upload-batch \
         --account-name "$STORAGE" \
-        --account-key "$storage_key" \
         --destination '$web' \
         --source "$webapp_src" \
         --overwrite \
@@ -581,7 +576,7 @@ verify() {
     func_state=$(az functionapp show \
         --name "$FUNC_APP" \
         --resource-group "$RG" \
-        --query "state" -o tsv 2>/dev/null || echo "NOT_FOUND")
+        --query "state || properties.state" -o tsv 2>/dev/null || echo "NOT_FOUND")
     if [[ "$func_state" == "Running" ]]; then
         log_ok "Function App ${FUNC_APP}: Running ✓"
     else
@@ -593,7 +588,8 @@ verify() {
         --name "$STORAGE" \
         --resource-group "$RG" \
         --query "primaryEndpoints.web" -o tsv 2>/dev/null || echo "N/A")
-    local func_url="https://${FUNC_APP}.azurewebsites.net"
+    local func_url
+    func_url="https://$(az functionapp show --name "$FUNC_APP" --resource-group "$RG" --query "defaultHostName || properties.defaultHostName" -o tsv 2>/dev/null)"
 
     log_section "Setup Complete"
     echo ""

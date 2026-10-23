@@ -93,6 +93,26 @@ class TestGetProvisionedRegions:
             result = rm.get_provisioned_regions("my-rg")
             assert result == {"eastus": "s247diageastusabc"}
 
+    def test_own_suffix_wins_over_leftover_account_in_same_region(self, rm):
+        # A failed earlier install (suffix qt4xn2) left a tagged account behind;
+        # the new deployment (suffix oct14) must use its own, whatever the order.
+        def acct(name):
+            a = MagicMock()
+            a.tags = {"managed-by": "s247-diag-logs", "purpose": "diag-logs-regional"}
+            a.primary_location = "westeurope"
+            a.name = name
+            return a
+
+        for order in (["s247diagwesteuropeoct14", "s247diagwesteuropeqt4xn2"],
+                      ["s247diagwesteuropeqt4xn2", "s247diagwesteuropeoct14"]):
+            with patch("shared.region_manager.StorageManagementClient") as mock_cls:
+                mock_cls.return_value.storage_accounts.list_by_resource_group.return_value = \
+                    [acct(n) for n in order]
+                assert rm.get_provisioned_regions("my-rg", suffix="oct14") == \
+                    {"westeurope": "s247diagwesteuropeoct14"}
+                assert rm.get_provisioned_regions("my-rg", suffix="") == \
+                    {"westeurope": "s247diagwesteuropeoct14"}  # deterministic fallback
+
     def test_api_error(self, rm):
         with patch("shared.region_manager.StorageManagementClient") as mock_cls:
             mock_cls.return_value.storage_accounts.list_by_resource_group.side_effect = Exception("Boom")
@@ -384,3 +404,19 @@ class TestRemoveLock:
             assert result is True
         finally:
             rm_mod.ManagementLockClient = original
+
+
+
+def test_storage_lock_is_removed_at_the_scope_it_was_created(rm):
+    import shared.region_manager as rm_mod
+    original = rm_mod.ManagementLockClient
+    rm_mod.ManagementLockClient = MagicMock()
+    try:
+        assert rm.remove_lock("rg", "s247-lock-x", resource_name="s247diagx",
+                              resource_type="Microsoft.Storage/storageAccounts")
+        locks = rm_mod.ManagementLockClient.return_value.management_locks
+        locks.delete_at_resource_level.assert_called_once()
+        locks.delete_at_resource_group_level.assert_not_called()
+        assert locks.delete_at_resource_level.call_args.kwargs["resource_name"] == "s247diagx"
+    finally:
+        rm_mod.ManagementLockClient = original

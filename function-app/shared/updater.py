@@ -1,7 +1,8 @@
 """Self-update logic for the Function App.
 
 Checks a remote endpoint for newer versions and deploys updates
-automatically using the Azure Management API.
+automatically using the Azure Management API (OneDeploy on the Flex
+Consumption plan).
 
 Supports two URL formats for UPDATE_CHECK_URL:
 
@@ -23,10 +24,13 @@ import json
 import logging
 import os
 import re
+import shutil
+import subprocess
+import sys
 import tempfile
-import time
+import uuid
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -316,13 +320,17 @@ def _release_too_young(published_at: str, min_age_minutes: int) -> bool:
     return age < min_age_minutes
 
 
-def validate_zip_package(zip_path: str) -> Tuple[bool, str]:
+def validate_zip_package(zip_path: str, expected_version: Optional[str] = None) -> Tuple[bool, str]:
     """Validate a downloaded update zip before deploying it.
 
     Refuses anything with:
       - syntax errors in any .py file
       - invalid JSON in host.json / function.json
       - missing critical files (host.json, VERSION, AutoUpdater, shared/updater.py)
+
+    With ``expected_version`` the package's VERSION must equal it: the
+    manifest's version is what the downgrade check compared, so a manifest
+    advertising a newer version cannot ship an older package.
 
     Returns ``(ok, reason)``. ``reason`` is empty on success.
     """
@@ -398,6 +406,8 @@ def validate_zip_package(zip_path: str) -> Tuple[bool, str]:
                 v = zf.read(version_path).decode("utf-8").strip()
                 if not v or len(v) > 64:
                     return False, "VERSION file empty or absurdly long"
+                if expected_version and v.lstrip("v") != expected_version.strip().lstrip("v"):
+                    return False, f"package VERSION {v} does not match the advertised {expected_version}"
             except Exception as e:
                 return False, f"cannot read VERSION: {e}"
 
@@ -410,49 +420,217 @@ def validate_zip_package(zip_path: str) -> Tuple[bool, str]:
         return False, f"validation crashed: {e}"
 
 
-def _post_deploy_health_check(func_app_name: str, checks: int = 3,
-                               interval_sec: int = 30) -> Dict:
-    """Ping our own /api/health a few times post-deploy and return the result.
+# Imports every function and shared module of an unpacked package, with the
+# package's own dependencies and this interpreter, and prints the first failure.
+_IMPORT_CHECK_SCRIPT = """
+import importlib, json, sys, traceback
+root, modules = sys.argv[1], json.loads(sys.argv[2])
+sys.path[:0] = [root, root + "/.python_packages/lib/site-packages"]
+for name in modules:
+    try:
+        importlib.import_module(name)
+    except BaseException as error:
+        print(json.dumps({"module": name, "error": type(error).__name__ + ": " + str(error)[:300]}))
+        sys.exit(1)
+"""
+IMPORT_CHECK_TIMEOUT_SEC = 180
 
-    Informational only — does NOT trigger a rollback. Gives ops visibility
-    (via debug_logger audit trail) into whether the newly-deployed build
-    actually starts.
+
+def _package_modules(names: List[str], prefix: str) -> List[str]:
+    """Function modules (folders with a function.json) and shared/*.py modules."""
+    functions = sorted({n[len(prefix):].split("/")[0] for n in names
+                        if n.startswith(prefix) and n.endswith("/function.json")
+                        and n[len(prefix):].count("/") == 1})
+    shared = sorted("shared." + n[len(prefix) + len("shared/"):-3] for n in names
+                    if n.startswith(prefix + "shared/") and n.endswith(".py")
+                    and n[len(prefix):].count("/") == 1 and not n.endswith("/__init__.py"))
+    return functions + shared
+
+
+def check_package_imports(zip_path: str) -> Tuple[bool, str]:
+    """Import the new version's code before installing it.
+
+    An update that cannot load (a missing dependency, a broken import, a build
+    for another Python) would leave a collector that can no longer update or
+    report, so it is refused here instead. Runs in a separate process, so
+    nothing of the new version is loaded into this one.
     """
-    hostname = f"{func_app_name}.azurewebsites.net"
-    url = f"https://{hostname}/api/health"
-    # Warm-up: newly-deployed Functions need time to cold-start + load deps
-    time.sleep(20)
+    work = tempfile.mkdtemp(prefix="s247-import-check-")
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            names = zf.namelist()
+            prefix = "function-app/" if any(n.startswith("function-app/") for n in names) else ""
+            root = os.path.realpath(work)
+            for name in names:
+                target = os.path.realpath(os.path.join(work, name))
+                if not target.startswith(root + os.sep) and target != root:
+                    return False, f"unsafe path in package: {name[:100]}"
+            zf.extractall(work)
+        modules = _package_modules(names, prefix)
+        if not modules:
+            return False, "package has no functions to import"
+        proc = subprocess.run(
+            # -I -S: no environment paths and no site-packages of this interpreter,
+            # so only the package's own dependencies count (as for the app on 3.13+).
+            [sys.executable, "-I", "-S", "-c", _IMPORT_CHECK_SCRIPT, os.path.join(work, prefix), json.dumps(modules)],
+            cwd=work, capture_output=True, text=True, timeout=IMPORT_CHECK_TIMEOUT_SEC,
+        )
+        if proc.returncode != 0:
+            try:
+                failure = json.loads(proc.stdout.strip().splitlines()[-1])
+                return False, f"{failure['module']} cannot be imported: {failure['error']}"
+            except (ValueError, IndexError, KeyError, TypeError):
+                return False, f"import check exited with {proc.returncode}: {(proc.stderr or '')[-300:]}"
+        logger.info("Update package imports cleanly (%d modules)", len(modules))
+        return True, ""
+    except subprocess.TimeoutExpired:
+        return False, f"import check took longer than {IMPORT_CHECK_TIMEOUT_SEC}s"
+    except Exception as e:
+        return False, f"import check could not run: {type(e).__name__}: {e}"
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
-    results = []
-    for i in range(checks):
-        try:
-            resp = requests.get(url, timeout=15)
-            results.append({"status": resp.status_code, "ok": resp.ok})
-            if resp.ok:
-                return {"healthy": True, "checks": results, "url": url}
-        except Exception as e:
-            results.append({"error": str(e)[:200]})
-        if i < checks - 1:
-            time.sleep(interval_sec)
 
-    return {"healthy": False, "checks": results, "url": url}
+# Verified packages are staged in the collector's own storage account and
+# deployed from that copy: Azure then installs exactly the bytes that were
+# checked, never the release URL again (it could change between the check and
+# the install).
+PACKAGE_CONTAINER = "s247-packages"
+# Azure reads the package once while deploying it, so the link is short-lived.
+PACKAGE_LINK_HOURS = 6
+# ARM API version of the Flex Consumption OneDeploy extension.
+ONEDEPLOY_API_VERSION = "2024-04-01"
+UPDATE_STATE_BLOB = "update-state.json"
 
 
-def deploy_update(package_url: str, expected_sha256: Optional[str] = None) -> Dict:
-    """Download the package and deploy it to this Function App.
+def _stage_verified_package(zip_path: str, version: str, sha256: str) -> str:
+    """Upload the verified zip and return a read-only HTTPS link to it."""
+    from azure.core.exceptions import ResourceExistsError
+    from azure.storage.blob import BlobSasPermissions, BlobServiceClient, generate_blob_sas
 
-    The customer-facing one-click ARM template deploys the Function App with
-    ``WEBSITE_RUN_FROM_PACKAGE`` pointing at a release zip URL. In that mode the
-    correct way to push a new version is to update that app setting to the new
-    URL and restart — zipdeploy is ignored when run-from-package-URL is active.
+    service = BlobServiceClient.from_connection_string(os.environ["AzureWebJobsStorage"])
+    container = service.get_container_client(PACKAGE_CONTAINER)
+    try:
+        container.create_container()
+    except ResourceExistsError:
+        pass
+    # Flex Consumption documents this file name for OneDeploy packages.
+    name = f"{(version or 'unknown').lstrip('v')}-{sha256[:16]}/released-package.zip"
+    blob = container.get_blob_client(name)
+    with open(zip_path, "rb") as f:
+        blob.upload_blob(f, overwrite=True)
+    sas = generate_blob_sas(
+        account_name=service.account_name, container_name=PACKAGE_CONTAINER, blob_name=name,
+        account_key=service.credential.account_key, permission=BlobSasPermissions(read=True),
+        expiry=datetime.now(timezone.utc) + timedelta(hours=PACKAGE_LINK_HOURS), protocol="https",
+    )
+    return f"{blob.url}?{sas}"
 
-    For dev deploys (set up via ``setup.sh``) the URL setting is cleared in
-    favour of Oryx build, so we fall back to the classic zipdeploy path.
 
-    Before anything is deployed the package passes three gates: (1) the URL must
+# A submitted update that has neither confirmed nor failed blocks another one
+# for this long (the deploy and restart take a few minutes).
+UPDATE_IN_PROGRESS_MINUTES = 30
+
+
+def _read_update_state_with_etag() -> Tuple[Dict, Optional[str], bool]:
+    """The update state, its ETag and whether it could be read (missing counts as read)."""
+    try:
+        from shared.config_store import _read_blob_with_etag
+        raw, etag = _read_blob_with_etag(UPDATE_STATE_BLOB, strict=True)
+        return (json.loads(raw) if raw else {}), etag, True
+    except Exception:
+        return {}, None, False
+
+
+def _write_update_state_if_unchanged(state: Dict, etag: Optional[str]) -> Tuple[bool, bool]:
+    """Write the state only if nobody changed it since it was read (``etag``
+    None: only if there is none yet). Returns ``(written, conflict)``."""
+    try:
+        from shared.config_store import _write_blob_conditional
+        written, conflict = _write_blob_conditional(UPDATE_STATE_BLOB, json.dumps(state, indent=2), etag)
+        if not written:
+            logger.warning("Could not record the update state%s", " (changed meanwhile)" if conflict else "")
+        return written, conflict
+    except Exception as e:
+        logger.warning("Could not record the update state: %s", type(e).__name__)
+        return False, False
+
+
+def _read_update_state() -> Tuple[Dict, bool]:
+    """The update state and whether it could be read (missing counts as read)."""
+    state, _etag, readable = _read_update_state_with_etag()
+    return state, readable
+
+
+def _record_failed_attempt(attempt: Dict, error: str) -> None:
+    """Mark this attempt failed, unless another attempt has replaced it."""
+    for _ in range(3):
+        state, etag, readable = _read_update_state_with_etag()
+        if not readable or state.get("attempt_id") != attempt["attempt_id"] or state.get("confirmed_at"):
+            return
+        state.update(failed_at=datetime.now(timezone.utc).isoformat(), error=error)
+        written, conflict = _write_update_state_if_unchanged(state, etag)
+        if written or not conflict:
+            return
+
+
+def get_update_state() -> Dict:
+    """The last update this collector submitted: ``pending_version``, when it
+    was submitted, and then ``confirmed_at`` (the new version is running) or
+    ``failed_at`` with ``error`` (Azure refused the install)."""
+    return _read_update_state()[0]
+
+
+def _update_in_progress(state: Dict) -> bool:
+    if not state.get("pending_version") or state.get("confirmed_at") or state.get("failed_at"):
+        return False
+    try:
+        submitted = datetime.fromisoformat(str(state.get("submitted_at", "")))
+    except ValueError:
+        return False
+    return datetime.now(timezone.utc) - submitted < timedelta(minutes=UPDATE_IN_PROGRESS_MINUTES)
+
+
+_confirmation_checked = False
+
+
+def confirm_running_version() -> None:
+    """Called by the new version on its first processing run: an update counts
+    as done only once the new code actually runs. Tried again on later runs
+    until the state could be read and, when needed, written."""
+    global _confirmation_checked
+    if _confirmation_checked:
+        return
+    state, etag, readable = _read_update_state_with_etag()
+    if not readable:
+        return
+    if state.get("pending_version") and not state.get("confirmed_at") and \
+            (get_local_version() or "").lstrip("v") == str(state["pending_version"]).lstrip("v"):
+        state["confirmed_at"] = datetime.now(timezone.utc).isoformat()
+        state.pop("failed_at", None)
+        state.pop("error", None)
+        written, _conflict = _write_update_state_if_unchanged(state, etag)
+        if not written:
+            return
+        logger.info("Update to %s confirmed: the new version is running", state["pending_version"])
+    _confirmation_checked = True
+
+
+def deploy_update(package_url: str, expected_sha256: Optional[str] = None,
+                  expected_version: Optional[str] = None) -> Dict:
+    """Download the package, verify it and install it on this Function App.
+
+    The collector runs on the Flex Consumption plan, where code is installed
+    with OneDeploy (``Microsoft.Web/sites/extensions/onedeploy``): Azure copies
+    the package into the app's deployment container and restarts the app on
+    it. The package is prebuilt (its dependencies are in ``.python_packages``),
+    so no remote build runs.
+
+    Before anything is deployed the package passes four gates: (1) the URL must
     be HTTPS and from a trusted host, (2) its SHA-256 must match the digest
-    published in ``version.json`` (unless ``REQUIRE_PACKAGE_SHA256=false``), and
-    (3) the zip must be structurally valid. Any failure refuses the deploy.
+    published in ``version.json`` (unless ``REQUIRE_PACKAGE_SHA256=false``), (3)
+    the zip must be structurally valid, and (4) every function and shared module
+    must import with the package's own dependencies. Any failure refuses the deploy.
     """
     resource_group = os.environ.get(
         "RESOURCE_GROUP_NAME", os.environ.get("RESOURCE_GROUP", "s247-diag-logs-rg")
@@ -484,8 +662,8 @@ def deploy_update(package_url: str, expected_sha256: Optional[str] = None) -> Di
 
     tmp_path = None
     try:
-        # Download once — reused for the integrity check, structural validation,
-        # and (in Oryx/zipdeploy mode) the actual upload.
+        # Download once — reused for the integrity check, structural validation
+        # and the staged copy that is installed.
         logger.info(f"Downloading update from {package_url} ...")
         with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
             resp = requests.get(package_url, timeout=300, stream=True)
@@ -508,7 +686,7 @@ def deploy_update(package_url: str, expected_sha256: Optional[str] = None) -> Di
 
         # ── Gate 3: never deploy a zip that won't import / parse.
         # This is what prevents AutoUpdater from bricking itself.
-        ok, reason = validate_zip_package(tmp_path)
+        ok, reason = validate_zip_package(tmp_path, expected_version=expected_version)
         if not ok:
             logger.error("Refusing to deploy — package validation failed: %s", reason)
             return {
@@ -516,6 +694,30 @@ def deploy_update(package_url: str, expected_sha256: Optional[str] = None) -> Di
                 "error": f"package validation failed: {reason}",
                 "validation_failed": True,
             }
+
+        # ── Gate 4: the new code must load with its own dependencies on this
+        # Python, or the collector could not start (and so not update) again.
+        ok, reason = check_package_imports(tmp_path)
+        if not ok:
+            logger.error("Refusing to deploy — package import check failed: %s", reason)
+            return {
+                "success": False,
+                "error": f"package import check failed: {reason}",
+                "validation_failed": True,
+            }
+
+        # One update at a time: a second request must not replace the state of
+        # an install that is still restarting the app.
+        current, etag, readable = _read_update_state_with_etag()
+        if not readable:
+            return {"success": False, "error": "could not read the update state; nothing was installed"}
+        if _update_in_progress(current):
+            return {"success": False, "in_progress": True,
+                    "error": f"an update to {current['pending_version']} is already in progress"}
+
+        # Install our own copy of the verified bytes, not the release URL.
+        staged_url = _stage_verified_package(
+            tmp_path, expected_version or "", expected_sha256 or _sha256_of_file(tmp_path))
 
         credential = DefaultAzureCredential()
         token = credential.get_token("https://management.azure.com/.default")
@@ -526,78 +728,43 @@ def deploy_update(package_url: str, expected_sha256: Optional[str] = None) -> Di
         )
         auth_headers = {"Authorization": f"Bearer {token.token}"}
 
-        # Detect deployment mode — URL-based run-from-package vs Oryx build.
-        settings_resp = requests.post(
-            f"{site_base}/config/appsettings/list?api-version=2023-01-01",
-            headers={**auth_headers, "Content-Length": "0"},
-            timeout=30,
-        )
-        current_pkg_url = ""
-        if settings_resp.ok:
-            current_pkg_url = (
-                settings_resp.json().get("properties", {}).get("WEBSITE_RUN_FROM_PACKAGE", "")
-            )
-
-        if current_pkg_url and current_pkg_url.lower().startswith(("http://", "https://")):
-            logger.info(
-                "Run-from-package (URL) mode detected — updating WEBSITE_RUN_FROM_PACKAGE"
-            )
-            patch_resp = requests.patch(
-                f"{site_base}/config/appsettings?api-version=2023-01-01",
+        # Recorded first: the deploy restarts this app, possibly before we return.
+        attempt = {
+            "attempt_id": uuid.uuid4().hex,
+            "pending_version": expected_version or "",
+            "previous_version": get_local_version() or "",
+            "submitted_at": datetime.now(timezone.utc).isoformat(),
+        }
+        # Claimed atomically: of two simultaneous requests only one gets here.
+        claimed, conflict = _write_update_state_if_unchanged(attempt, etag)
+        if not claimed:
+            if conflict:
+                return {"success": False, "in_progress": True, "error": "another update started meanwhile"}
+            return {"success": False, "error": "could not record the update state; nothing was installed"}
+        try:
+            deploy_resp = requests.put(
+                f"{site_base}/extensions/onedeploy?api-version={ONEDEPLOY_API_VERSION}",
                 headers={**auth_headers, "Content-Type": "application/json"},
-                json={"properties": {**settings_resp.json().get("properties", {}),
-                                     "WEBSITE_RUN_FROM_PACKAGE": package_url}},
-                timeout=60,
+                json={"properties": {"packageUri": staged_url, "remoteBuild": False}},
+                timeout=120,
+                allow_redirects=False,
             )
-            if not patch_resp.ok:
-                error_msg = patch_resp.text[:500]
-                logger.error(
-                    f"App setting update failed (HTTP {patch_resp.status_code}): {error_msg}"
-                )
-                return {
-                    "success": False,
-                    "status_code": patch_resp.status_code,
-                    "error": error_msg,
-                }
-            # Restart the Function App so it picks up the new package
-            restart_resp = requests.post(
-                f"{site_base}/restart?api-version=2023-01-01",
-                headers={**auth_headers, "Content-Length": "0"},
-                timeout=60,
-            )
-            if restart_resp.status_code not in (200, 204):
-                logger.warning(
-                    "Restart returned HTTP %s — new package will be picked up on next "
-                    "worker recycle",
-                    restart_resp.status_code,
-                )
-            logger.info("Update deployed successfully (run-from-package URL swap)")
-            return {"success": True, "status_code": patch_resp.status_code, "mode": "run-from-package"}
-
-        # Fallback: zipdeploy (dev / Oryx build mode) — reuse the already
-        # downloaded + integrity-verified package; don't fetch it twice.
-        logger.info("Oryx build mode detected — using zipdeploy")
-        with open(tmp_path, "rb") as f:
-            deploy_resp = requests.post(
-                f"{site_base}/extensions/zipdeploy?api-version=2023-01-01",
-                headers={**auth_headers, "Content-Type": "application/octet-stream"},
-                data=f,
-                timeout=600,
-            )
-
-        if deploy_resp.status_code in (200, 202):
-            logger.info("Update deployed successfully (zipdeploy)")
-            return {"success": True, "status_code": deploy_resp.status_code, "mode": "zipdeploy"}
-        else:
+        except requests.RequestException as e:
+            # Azure may or may not have started the install. Recorded as failed so a
+            # retry is possible; the new version still confirms itself if it starts.
+            _record_failed_attempt(attempt, f"no answer from Azure ({type(e).__name__}); the install may still complete")
+            logger.error("Deploy request failed: %s", type(e).__name__)
+            return {"success": False, "error": f"deploy request failed: {type(e).__name__}"}
+        if deploy_resp.status_code not in (200, 201, 202):
             error_msg = deploy_resp.text[:500]
-            logger.error(
-                f"Deploy failed (HTTP {deploy_resp.status_code}): {error_msg}"
-            )
-            return {
-                "success": False,
-                "status_code": deploy_resp.status_code,
-                "error": error_msg,
-            }
+            logger.error("Deploy failed (HTTP %s): %s", deploy_resp.status_code, error_msg)
+            _record_failed_attempt(attempt, f"Azure refused the install (HTTP {deploy_resp.status_code})")
+            return {"success": False, "status_code": deploy_resp.status_code, "error": error_msg}
+
+        # Submitted, not yet done: the new version confirms itself on its first run.
+        logger.info("Update submitted (OneDeploy of the verified copy)")
+        return {"success": True, "status_code": deploy_resp.status_code, "mode": "onedeploy",
+                "submitted": True, "confirmed": False, "attempt_id": attempt["attempt_id"]}
 
     except Exception as e:
         logger.error(f"Update deployment failed: {e}")
@@ -720,7 +887,8 @@ def check_and_apply_update(auto_apply: bool = False) -> Dict:
     if has_update and auto_apply:
         logger.info(f"Applying update: {local_ver} → {remote_ver}")
         deploy_result = deploy_update(
-            remote_info["package_url"], expected_sha256=remote_info.get("sha256")
+            remote_info["package_url"], expected_sha256=remote_info.get("sha256"),
+            expected_version=remote_ver,
         )
         result["deploy_result"] = deploy_result
         result["action"] = "deployed" if deploy_result["success"] else "deploy_failed"

@@ -17,12 +17,40 @@ import logging
 import calendar
 import datetime
 import traceback
+import urllib.error
 import urllib.parse
 import urllib.request
 from base64 import b64decode
 from typing import Optional, Dict, List, Any, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects on requests that carry the Device Key: urllib would
+    resend the key (header or query) to whatever host a 3xx names, even over
+    plain HTTP. A redirect surfaces as an HTTPError instead."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_KEYED_OPENER = urllib.request.build_opener(_NoRedirect())
+
+# Site24x7 refused the payload itself; resending the same records cannot succeed.
+# 413 is split by the caller first; 401/403 (Device Key) are retried, as every upload fails alike.
+REJECTED_UPLOAD_STATUSES = frozenset({400, 404, 413, 415, 422})
+# A log upload never waits longer than this, nor past the run's deadline.
+UPLOAD_TIMEOUT_SEC = 120
+# Below this much time left in the run, an upload is not started.
+MIN_UPLOAD_SEC = 5
+
+
+def _require_https(url: str) -> str:
+    """Requests that carry the Device Key go over HTTPS only."""
+    if not url.lower().startswith("https://"):
+        raise ValueError("Site24x7 endpoint must use HTTPS")
+    return url
 
 
 class CircuitBreaker:
@@ -143,16 +171,21 @@ class CircuitBreaker:
             pass
 
     def record_success(self):
-        prev = self.state
+        prev_state, prev_failures = self.state, self.failure_count
         self.failure_count = 0
         self.state = "closed"
-        if prev != "closed":
+        if prev_state != "closed":
             logger.info("Circuit breaker CLOSED — S247 recovered")
+        if prev_state != "closed" or prev_failures:
             self._save_state()
 
     def record_failure(self):
         self.failure_count += 1
         self.last_failure_time = time.time()
+        if self.failure_count < self.failure_threshold or self.state == "open":
+            # Saved every time: a run with fewer failures than the threshold
+            # would otherwise start the next run from zero, and never trip.
+            self._save_state()
         if self.failure_count >= self.failure_threshold and self.state != "open":
             self.state = "open"
             logger.warning(
@@ -218,6 +251,9 @@ class Site24x7Client:
         )
         self.circuit_breaker = CircuitBreaker()
         self.rate_limiter = RateLimiter()
+        # Why the last Site24x7 API call failed (None after a success); the scan
+        # reports it so a rejected Device Key is not shown as "no log types".
+        self.last_error: Optional[Dict] = None
 
     def _make_s247_request(
         self, path: str, params: Optional[Dict] = None, method: str = "GET"
@@ -225,6 +261,8 @@ class Site24x7Client:
         """Make an authenticated request to the Site24x7 AppLog servlet."""
         if not self.device_key:
             logger.error("SITE24X7_API_KEY not configured")
+            self.last_error = {"path": path, "http_status": None,
+                               "message": "Site24x7 Device Key is not configured."}
             return None
 
         url_params = {"deviceKey": self.device_key}
@@ -234,18 +272,26 @@ class Site24x7Client:
         url = f"{self._get_api_base_url()}{path}?{urllib.parse.urlencode(url_params)}"
 
         try:
-            req = urllib.request.Request(url, method=method)
+            req = urllib.request.Request(_require_https(url), method=method)
             req.add_header("Accept", "application/json")
-            resp = urllib.request.urlopen(req, timeout=120)
-            return json.loads(resp.read().decode("utf-8"))
+            resp = _KEYED_OPENER.open(req, timeout=120)
+            result = json.loads(resp.read().decode("utf-8"))
+            if isinstance(result, dict) and str(result.get("status", "")).upper() in ("ERROR", "FAILURE", "FAILED"):
+                self.last_error = {"path": path, "http_status": getattr(resp, "status", 200),
+                                   "message": "Site24x7 rejected the API request."}
+            else:
+                self.last_error = None
+            return result
         except Exception as e:
-            logger.error("Site24x7 API request failed (%s): %s", path, e)
+            self.last_error = _describe_api_error(path, e, self.s247_base_url, (self.device_key,))
+            logger.error("Site24x7 API request failed (%s): %s", path, self.last_error["message"])
             try:
                 from shared.debug_logger import log_event
                 log_event("error", "Site24x7Client",
-                          f"API request failed: {path}",
+                          f"API request failed: {path} — {self.last_error['message']}",
                           {"url": path, "method": method, "error": str(e),
-                           "error_type": type(e).__name__})
+                           "error_type": type(e).__name__,
+                           "http_status": self.last_error.get("http_status")})
             except Exception:
                 pass
             return None
@@ -525,6 +571,38 @@ class Site24x7Client:
             return [{"category": None, "sourceConfig": None, "_errors": errors}]
         return None
 
+    def register_collector(self, fields: Dict[str, str], timeout: float = 60) -> bool:
+        """POST this collector's details to Site24x7 (see shared/registration.py).
+
+        Unlike the GET helpers, the Device Key and function key go in the
+        form body so they never appear in URLs or access logs.
+        """
+        if not self.device_key:
+            logger.error("SITE24X7_API_KEY not configured")
+            return False
+        body = urllib.parse.urlencode({"deviceKey": self.device_key, **fields}).encode()
+        req = urllib.request.Request(
+            f"{self._get_api_base_url()}/applog/azure/register_collector",
+            data=body, method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded",
+                     "Accept": "application/json"},
+        )
+        try:
+            _require_https(req.full_url)
+            with _KEYED_OPENER.open(req, timeout=timeout) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+            if str(result.get("status", "")).lower() == "success":
+                return True
+            logger.error("Site24x7 collector registration rejected: %s",
+                         str(result.get("message", ""))[:200])
+            return False
+        except urllib.error.HTTPError as e:
+            logger.error("Site24x7 collector registration failed: HTTP %s", e.code)
+            return False
+        except Exception as e:
+            logger.error("Site24x7 collector registration failed: %s", type(e).__name__)
+            return False
+
     def preflight_check(self) -> Dict:
         """Quick connectivity check — call before a scan to validate the
         full relay/API chain. Uses the supported-types endpoint because it
@@ -551,6 +629,17 @@ class Site24x7Client:
 
     # ─── Log Upload (from log_sender.py) ─────────────────────────────────
 
+    last_unparsed = 0
+    # HTTP status of a batch Site24x7 refused for good (a retry cannot fix it), else 0.
+    last_rejected = 0
+    # True once Site24x7 refused the Device Key (401/403) during this client's lifetime.
+    upload_refused = False
+    # Last actual upload attempt only; config errors/empty runs are not connectivity probes.
+    last_upload_status = None
+    last_upload_http_status = None
+    # time.monotonic() after which no upload may still be running (set by the processor).
+    upload_deadline: Optional[float] = None
+
     def post_logs(self, source_config_b64: str, log_events: List[Dict]) -> bool:
         """Parse and POST logs to Site24x7 using the log_sender.py flow.
 
@@ -558,6 +647,9 @@ class Site24x7Client:
             source_config_b64: Base64-encoded sourceConfig JSON
             log_events: Raw log event records from Azure diagnostic logs
         """
+        self.last_rejected = 0
+        self.last_upload_status = None
+        self.last_upload_http_status = None
         if not self.circuit_breaker.can_execute():
             logger.warning("Circuit breaker OPEN — skipping log POST")
             return False
@@ -608,34 +700,71 @@ class Site24x7Client:
             parsed_lines, log_size = _json_log_parser(
                 log_events, config, masking_config, hashing_config, derived_fields
             )
+            # Reported to the processor as dropped (they will never be sent).
+            self.last_unparsed = _json_log_parser.unparsed
 
             if not parsed_lines:
                 logger.info("No parsed lines to upload after filtering")
                 self.circuit_breaker.record_success()
                 return True
 
+        except Exception as e:
+            # The log type's own configuration is broken: only this batch waits (it is
+            # re-read next run), and Site24x7 is not blamed, so other uploads go on.
+            self._report_upload_failure(e, len(log_events), "configuration")
+            return False
+
+        timeout = UPLOAD_TIMEOUT_SEC
+        if self.upload_deadline is not None:
+            remaining = self.upload_deadline - time.monotonic()
+            if remaining < MIN_UPLOAD_SEC:
+                # Too little time left to finish: retried next run, not counted against Site24x7.
+                logger.info("Run deadline reached — upload left for the next run")
+                return False
+            timeout = min(timeout, remaining)
+
+        try:
             # Compress and upload
             gzipped = gzip.compress(json.dumps(parsed_lines).encode())
-            _send_logs_to_s247(config, gzipped, log_size)
-
-            self.circuit_breaker.record_success()
-            logger.info("Uploaded %d log records to Site24x7", len(parsed_lines))
-            return True
-
-        except Exception as e:
-            self.circuit_breaker.record_failure()
-            logger.error("Failed to post logs to Site24x7: %s", e)
-            traceback.print_exc()
-            try:
-                from shared.debug_logger import log_event
-                log_event("error", "Site24x7Client",
-                          f"Log upload failed: {e}",
-                          {"error": str(e), "error_type": type(e).__name__,
-                           "record_count": len(log_events),
-                           "circuit_breaker_state": self.circuit_breaker.state})
-            except Exception:
-                pass
+            _send_logs_to_s247(config, gzipped, log_size, timeout)
+        except urllib.error.HTTPError as e:
+            self.last_upload_status = "refused" if e.code in (401, 403) else "failed"
+            self.last_upload_http_status = e.code
+            if e.code in REJECTED_UPLOAD_STATUSES:
+                self.last_upload_status = "rejected"
+                # Site24x7 answered and refused this payload: it is reachable, so the
+                # breaker is not tripped, and the caller drops (or splits) the batch.
+                self.last_rejected = e.code
+                self.circuit_breaker.record_success()
+            else:
+                if e.code in (401, 403):
+                    self.upload_refused = True
+                self.circuit_breaker.record_failure()
+            self._report_upload_failure(e, len(log_events), f"HTTP {e.code}")
             return False
+        except Exception as e:
+            self.last_upload_status = "failed"
+            self.circuit_breaker.record_failure()
+            self._report_upload_failure(e, len(log_events), "connection")
+            return False
+
+        self.circuit_breaker.record_success()
+        self.last_upload_status = "ok"
+        self.last_upload_http_status = 200
+        logger.info("Uploaded %d log records to Site24x7", len(parsed_lines))
+        return True
+
+    def _report_upload_failure(self, error: Exception, record_count: int, cause: str) -> None:
+        logger.error("Failed to post logs to Site24x7 (%s): %s", cause, error)
+        try:
+            from shared.debug_logger import log_event
+            log_event("error", "Site24x7Client",
+                      f"Log upload failed ({cause}): {error}",
+                      {"error": str(error), "error_type": type(error).__name__, "cause": cause,
+                       "record_count": record_count,
+                       "circuit_breaker_state": self.circuit_breaker.state})
+        except Exception:
+            pass
 
     def get_general_log_type_config(self) -> Optional[str]:
         """Get the general catch-all log type config (base64)."""
@@ -645,11 +774,64 @@ class Site24x7Client:
 # ─── Log Parsing Functions (extracted from log_sender.py) ────────────────
 
 
-def _get_timestamp(datetime_string: str, format_string: str) -> int:
+_ISO_TIMESTAMP = re.compile(
+    r"^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:?\d{2})?$"
+)
+
+
+def _describe_api_error(path: str, error: Exception, base_url: str, secrets=()) -> Dict:
+    """Actionable, secret-free description of a failed Site24x7 API call."""
+    from shared.redaction import redact_text
+
+    status, body = None, ""
+    if isinstance(error, urllib.error.HTTPError):
+        status = error.code
+        try:
+            body = error.read(300).decode("utf-8", "replace").strip()
+        except Exception:
+            body = ""
+    if "INVALID_DEVICE_KEY" in body.upper():
+        message = (f"Site24x7 rejected the Device Key (INVALID_DEVICE_KEY). Use a Device Key "
+                   f"from the Site24x7 data centre this collector points to ({base_url}).")
+    elif status is not None:
+        message = f"Site24x7 returned HTTP {status} for {path}" + (f": {body[:120]}" if body else "")
+    else:
+        message = f"Site24x7 API call to {path} failed: {type(error).__name__}"
+    for secret in secrets:
+        if secret:
+            message = message.replace(secret, "***")
+    return {"path": path, "http_status": status, "message": redact_text(message)}
+
+
+def _parse_iso_timestamp(datetime_string) -> Optional[datetime.datetime]:
+    """Azure emits ISO-8601 with 0-7 fraction digits; strptime %f needs 1-6."""
+    match = _ISO_TIMESTAMP.match(str(datetime_string).strip())
+    if not match:
+        return None
+    day, clock, fraction, zone = match.groups()
+    zone = "+00:00" if zone in (None, "Z") else zone
+    if ":" not in zone:
+        zone = zone[:3] + ":" + zone[3:]
+    fraction = ((fraction or "") + "000000")[:6]
     try:
-        datetime_data = datetime.datetime.strptime(
-            datetime_string[:26], format_string
-        )
+        return datetime.datetime.fromisoformat(f"{day}T{clock}.{fraction}{zone}")
+    except ValueError:
+        return None
+
+
+def _get_timestamp(datetime_string: str, format_string: str) -> int:
+    """Epoch millis, or 0 when the value cannot be parsed (caller must not send 0)."""
+    try:
+        # ISO 8601 first, with its offset: cutting the string to 26 characters
+        # for strptime dropped "+05:30" and read local time as UTC.
+        datetime_data = _parse_iso_timestamp(datetime_string)
+        if datetime_data is None:
+            try:
+                datetime_data = datetime.datetime.strptime(
+                    datetime_string[:26], format_string
+                )
+            except (TypeError, ValueError):
+                return 0
         timestamp = (
             calendar.timegm(datetime_data.utctimetuple()) * 1000
             + int(datetime_data.microsecond / 1000)
@@ -660,10 +842,18 @@ def _get_timestamp(datetime_string: str, format_string: str) -> int:
 
 
 def _get_json_value(obj, key, datatype=None):
-    if key in obj or key.lower() in obj:
+    """Resolve literal or dotted diagnostic fields without depending on key casing."""
+    if not isinstance(obj, dict):
+        return None
+    resolved_key = key if key in obj else next(
+        (candidate for candidate in obj
+         if isinstance(candidate, str) and candidate.lower() == key.lower()),
+        None,
+    )
+    if resolved_key is not None:
         if datatype and datatype == "json-object":
             arr_json = []
-            child_obj = obj[key]
+            child_obj = obj[resolved_key]
             if isinstance(child_obj, str):
                 try:
                     child_obj = json.loads(child_obj, strict=False)
@@ -675,14 +865,13 @@ def _get_json_value(obj, key, datatype=None):
                 arr_json.append({"key": child_key, "value": str(child_obj[child_key])})
             return arr_json
         else:
-            return obj[key] if key in obj else obj[key.lower()]
+            return obj[resolved_key]
     elif "." in key:
         parent_key = key[: key.index(".")]
         child_key = key[key.index(".") + 1 :]
-        parent_val = parent_key if parent_key in obj else parent_key.capitalize()
-        if parent_val not in obj:
+        child_obj = _get_json_value(obj, parent_key)
+        if child_obj is None:
             return None
-        child_obj = obj[parent_val]
         if isinstance(child_obj, str):
             try:
                 child_obj = json.loads(child_obj, strict=False)
@@ -690,7 +879,7 @@ def _get_json_value(obj, key, datatype=None):
                 child_obj = json.loads(
                     child_obj.replace("\\", "\\\\"), strict=False
                 )
-        return _get_json_value(child_obj, child_key)
+        return _get_json_value(child_obj, child_key, datatype)
     return None
 
 
@@ -710,65 +899,55 @@ def _is_filters_matched(formatted_line: Dict, config: Dict) -> bool:
     return True
 
 
-def _apply_masking(formatted_line: Dict, masking_config: Dict) -> int:
+def _replace_matches(value: str, regex, replace) -> str:
+    """Replace each capture group of every match (the whole match when the
+    pattern has no groups) with ``replace(matched_text)``."""
+    groups = range(1, regex.groups + 1) if regex.groups else (0,)
+    spans = []
+    for matcher in regex.finditer(value):
+        for g in groups:
+            if matcher.group(g):
+                spans.append((matcher.start(g), matcher.end(g)))
+    for start, end in sorted(set(spans), reverse=True):
+        value = value[:start] + replace(value[start:end]) + value[end:]
+    return value
+
+
+def _transform_fields(formatted_line: Dict, rules: Dict, replace, fallback) -> int:
+    """Apply masking/hashing rules field by field. Fails closed: if a rule
+    cannot be applied, the whole field is replaced by ``fallback(value)`` so the
+    original value is never sent. Returns the size change (old - new)."""
     adjust_total = 0
-    try:
-        for config_key in masking_config:
-            adjust_length = 0
-            mask_regex = masking_config[config_key]["regex"]
-            if config_key in formatted_line:
-                field_value = str(formatted_line[config_key])
-                for matcher in re.finditer(mask_regex, field_value):
-                    for i in range(mask_regex.groups):
-                        matched_value = matcher.group(i + 1)
-                        if matched_value:
-                            start = matcher.start(i + 1) - adjust_length
-                            end = matcher.end(i + 1) - adjust_length
-                            if start >= 0 and end > 0:
-                                adjust_length += (end - start) - len(
-                                    masking_config[config_key]["string"]
-                                )
-                                field_value = (
-                                    field_value[:start]
-                                    + masking_config[config_key]["string"]
-                                    + field_value[end:]
-                                )
-                formatted_line[config_key] = field_value
-                adjust_total += adjust_length
-    except Exception:
-        traceback.print_exc()
+    for field, rule in rules.items():
+        if field not in formatted_line:
+            continue
+        original = str(formatted_line[field])
+        try:
+            transformed = _replace_matches(original, rule["regex"], lambda text: replace(rule, text))
+        except Exception as e:
+            logger.warning("Masking/hashing rule for field %s failed (%s); field withheld",
+                           field, type(e).__name__)
+            transformed = fallback(rule, original)
+        formatted_line[field] = transformed
+        adjust_total += len(original) - len(transformed)
     return adjust_total
+
+
+def _apply_masking(formatted_line: Dict, masking_config: Dict) -> int:
+    return _transform_fields(
+        formatted_line, masking_config,
+        replace=lambda rule, text: str(rule.get("string", "")),
+        fallback=lambda rule, text: str(rule.get("string", "")) if isinstance(rule, dict) else "",
+    )
 
 
 def _apply_hashing(formatted_line: Dict, hashing_config: Dict) -> int:
-    adjust_total = 0
-    try:
-        for config_key in hashing_config:
-            adjust_length = 0
-            mask_regex = hashing_config[config_key]["regex"]
-            if config_key in formatted_line:
-                field_value = str(formatted_line[config_key])
-                for matcher in re.finditer(mask_regex, field_value):
-                    for i in range(mask_regex.groups):
-                        matched_value = matcher.group(i + 1)
-                        if matched_value:
-                            start = matcher.start(i + 1) - adjust_length
-                            end = matcher.end(i + 1) - adjust_length
-                            if start >= 0 and end > 0:
-                                hash_string = hashlib.sha256(
-                                    matched_value.encode("utf-8")
-                                ).hexdigest()
-                                adjust_length += (end - start) - len(hash_string)
-                                field_value = (
-                                    field_value[:start]
-                                    + hash_string
-                                    + field_value[end:]
-                                )
-                formatted_line[config_key] = field_value
-                adjust_total += adjust_length
-    except Exception:
-        traceback.print_exc()
-    return adjust_total
+    sha = lambda text: hashlib.sha256(text.encode("utf-8")).hexdigest()  # noqa: E731
+    return _transform_fields(
+        formatted_line, hashing_config,
+        replace=lambda rule, text: sha(text),
+        fallback=lambda rule, text: sha(text),
+    )
 
 
 def _apply_derived_fields(
@@ -798,11 +977,18 @@ def _json_log_parser(
     hashing_config: Optional[Dict],
     derived_fields: Optional[Dict],
 ) -> Tuple[List[Dict], int]:
-    """Parse raw Azure diagnostic log events using jsonPath config."""
+    """Parse raw Azure diagnostic log events using jsonPath config.
+
+    Events that cannot be parsed are counted in ``_json_log_parser.unparsed``
+    of the last call (they are skipped: a retry cannot fix them)."""
     log_size = 0
     parsed_lines = []
+    _json_log_parser.unparsed = 0
     date_format = config.get("dateFormat", "%Y-%m-%dT%H:%M:%S.%f")
     date_field = config.get("dateField", "time")
+    # The log source in AppLogs is this collector's Function App, so the logs
+    # one collector pushed can be queried on their own (s247agentuid="<app>").
+    source = os.environ.get("WEBSITE_SITE_NAME", "").strip()
 
     for event_obj in log_events:
         try:
@@ -823,15 +1009,21 @@ def _json_log_parser(
             log_size += json_log_size
 
             # Add timestamp
-            if date_field in event_obj:
-                formatted_line["_zl_timestamp"] = _get_timestamp(
-                    event_obj[date_field], date_format
-                )
+            event_time = _get_json_value(formatted_line, date_field)
+            if event_time is None:
+                event_time = _get_json_value(event_obj, date_field)
+            if event_time is not None:
+                event_ms = _get_timestamp(event_time, date_format)
+                if event_ms > 0:  # epoch 0 would file the record under 1970
+                    formatted_line["_zl_timestamp"] = event_ms
 
-            # Extract resource group as agent uid
+            # Source = the Function App; outside Azure (no WEBSITE_SITE_NAME)
+            # fall back to the record's resource group.
+            if source:
+                formatted_line["s247agentuid"] = source
             if "resourceId" in event_obj:
                 parts = event_obj["resourceId"].split("/")
-                if len(parts) > 4:
+                if not source and len(parts) > 4:
                     formatted_line["s247agentuid"] = parts[4]
                 event_obj["resourceId"] = event_obj["resourceId"].lower()
 
@@ -846,12 +1038,15 @@ def _json_log_parser(
             parsed_lines.append(formatted_line)
 
         except Exception as e:
-            logger.warning("Unable to parse event: %s — %s", event_obj, e)
+            # Never log the record itself: it is customer data, not yet masked.
+            logger.warning("Unable to parse event (%s)", type(e).__name__)
+            _json_log_parser.unparsed += 1
 
     return parsed_lines, log_size
 
 
-def _send_logs_to_s247(config: Dict, gzipped_data: bytes, log_size: int) -> None:
+def _send_logs_to_s247(config: Dict, gzipped_data: bytes, log_size: int,
+                       timeout: float = 120) -> None:
     """POST gzipped log data to Site24x7 upload endpoint."""
     header_obj = {
         "X-DeviceKey": config["apiKey"],
@@ -865,16 +1060,13 @@ def _send_logs_to_s247(config: Dict, gzipped_data: bytes, log_size: int) -> None
     upload_domain = config['uploadDomain']
     upload_url = f"https://{upload_domain}/upload"
     request = urllib.request.Request(upload_url, headers=header_obj)
-    response = urllib.request.urlopen(request, data=gzipped_data, timeout=120)
+    response = _KEYED_OPENER.open(request, data=gzipped_data, timeout=timeout)
     resp_headers = dict(response.getheaders())
     upload_id = resp_headers.get("x-uploadid", "unknown")
 
     if response.status == 200:
         logger.info("%s: Logs uploaded to Site24x7 successfully", upload_id)
     else:
-        logger.error(
-            "%s: Upload failed — status=%d, reason=%s",
-            upload_id,
-            response.status,
-            response.read(),
-        )
+        # Only 200 means accepted; anything else must not advance the checkpoint.
+        logger.error("%s: Upload failed — status=%d", upload_id, response.status)
+        raise RuntimeError(f"Site24x7 upload answered HTTP {response.status}")

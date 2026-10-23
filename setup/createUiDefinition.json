@@ -1,0 +1,207 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/0.1.2-preview/CreateUIDefinition.MultiVm.json#",
+  "handler": "Microsoft.Azure.CreateUIDef",
+  "version": "0.1.2-preview",
+  "parameters": {
+    "config": {
+      "isWizard": false,
+      "basics": {
+        "description": "Deploys the Site24x7 Azure Diagnostic Logs collector: a Function App that finds your resources, sets up their diagnostic settings and sends the logs to Site24x7 AppLogs.",
+        "location": {
+          "label": "Region",
+          "toolTip": "Region for the collector's Function App and storage. Only regions that offer the Azure Functions Flex Consumption plan are listed. The collector collects from resources in every region.",
+          "allowedValues": [
+            "australiaeast",
+            "australiasoutheast",
+            "austriaeast",
+            "belgiumcentral",
+            "brazilsouth",
+            "canadacentral",
+            "canadaeast",
+            "centralindia",
+            "centralus",
+            "eastasia",
+            "eastus",
+            "eastus2",
+            "eastus2euap",
+            "francecentral",
+            "francesouth",
+            "germanynorth",
+            "germanywestcentral",
+            "indonesiacentral",
+            "israelcentral",
+            "italynorth",
+            "japaneast",
+            "japanwest",
+            "jioindiacentral",
+            "jioindiawest",
+            "koreacentral",
+            "koreasouth",
+            "malaysiawest",
+            "mexicocentral",
+            "newzealandnorth",
+            "northcentralus",
+            "northeurope",
+            "norwayeast",
+            "norwaywest",
+            "polandcentral",
+            "southafricanorth",
+            "southafricawest",
+            "southcentralus",
+            "southeastasia",
+            "southindia",
+            "spaincentral",
+            "swedencentral",
+            "switzerlandnorth",
+            "switzerlandwest",
+            "uaecentral",
+            "uaenorth",
+            "uksouth",
+            "ukwest",
+            "westcentralus",
+            "westeurope",
+            "westus",
+            "westus2",
+            "westus3"
+          ],
+          "visible": true
+        }
+      }
+    },
+    "basics": [
+      {
+        "name": "site24x7DeviceKey",
+        "type": "Microsoft.Common.PasswordBox",
+        "label": {
+          "password": "Site24x7 Device Key",
+          "confirmPassword": "Confirm Device Key"
+        },
+        "toolTip": "In Site24x7: Admin > Developer > Device Key.",
+        "constraints": {
+          "required": true,
+          "regex": "^([a-z]{2}_)?[0-9a-fA-F]{20,100}$",
+          "validationMessage": "Paste the Device Key from Site24x7."
+        },
+        "options": {
+          "hideConfirmation": true
+        },
+        "visible": true
+      },
+      {
+        "name": "site24x7Domain",
+        "type": "Microsoft.Common.DropDown",
+        "label": "Site24x7 data center",
+        "toolTip": "The data center of your Site24x7 account, as in the address you sign in at.",
+        "defaultValue": "United States (site24x7.com)",
+        "constraints": {
+          "allowedValues": [
+            {
+              "label": "United States (site24x7.com)",
+              "value": "site24x7.com"
+            },
+            {
+              "label": "India (site24x7.in)",
+              "value": "site24x7.in"
+            },
+            {
+              "label": "Europe (site24x7.eu)",
+              "value": "site24x7.eu"
+            },
+            {
+              "label": "Australia (site24x7.net.au)",
+              "value": "site24x7.net.au"
+            },
+            {
+              "label": "China (site24x7.cn)",
+              "value": "site24x7.cn"
+            },
+            {
+              "label": "Japan (site24x7.jp)",
+              "value": "site24x7.jp"
+            }
+          ],
+          "required": true
+        },
+        "visible": true
+      },
+      {
+        "name": "confirmAfterDiscovery",
+        "type": "Microsoft.Common.OptionsGroup",
+        "label": "Confirm after discovery",
+        "toolTip": "Recommended. After its first resource scan, the collector waits for an admin to confirm in Site24x7 before it sets up storage, log types and diagnostic settings.",
+        "defaultValue": "Yes (recommended)",
+        "constraints": {
+          "allowedValues": [
+            {
+              "label": "Yes (recommended)",
+              "value": "true"
+            },
+            {
+              "label": "No, start right away",
+              "value": "false"
+            }
+          ],
+          "required": true
+        },
+        "visible": true
+      },
+      {
+        "name": "generalLogTypeEnabled",
+        "type": "Microsoft.Common.OptionsGroup",
+        "label": "Collect categories without a log type",
+        "toolTip": "Send logs from categories that have no Site24x7 log type to a general log type. You can change this later in Site24x7.",
+        "defaultValue": "No",
+        "constraints": {
+          "allowedValues": [
+            {
+              "label": "Yes",
+              "value": "true"
+            },
+            {
+              "label": "No",
+              "value": "false"
+            }
+          ],
+          "required": true
+        },
+        "visible": true
+      },
+      {
+        "name": "resourceGroupName",
+        "type": "Microsoft.Common.TextBox",
+        "label": "Resource group name (optional)",
+        "toolTip": "Leave empty to use s247-diag-logs-SUFFIX-rg, where SUFFIX is the deployment suffix (s247-diag-logs-rg without a suffix). To update an existing collector, enter the resource group it uses.",
+        "defaultValue": "",
+        "constraints": {
+          "required": false,
+          "regex": "^[-\\w._()]{0,90}$",
+          "validationMessage": "Up to 90 letters, digits, underscores, hyphens, periods and parentheses."
+        },
+        "visible": true
+      },
+      {
+        "name": "deploymentSuffix",
+        "type": "Microsoft.Common.TextBox",
+        "label": "Deployment suffix (optional)",
+        "toolTip": "Added to the names of the collector's resources, so that more than one collector can run in a subscription. Use letters and digits; other characters and spaces are removed.",
+        "defaultValue": "",
+        "constraints": {
+          "required": false,
+          "regex": "^[A-Za-z0-9 ._-]{0,13}$",
+          "validationMessage": "Up to 13 characters."
+        },
+        "visible": true
+      }
+    ],
+    "steps": [],
+    "outputs": {
+      "location": "[location()]",
+      "site24x7DeviceKey": "[basics('site24x7DeviceKey')]",
+      "site24x7Domain": "[basics('site24x7Domain')]",
+      "confirmAfterDiscovery": "[basics('confirmAfterDiscovery')]",
+      "generalLogTypeEnabled": "[basics('generalLogTypeEnabled')]",
+      "resourceGroupName": "[basics('resourceGroupName')]",
+      "deploymentSuffix": "[basics('deploymentSuffix')]"
+    }
+  }
+}

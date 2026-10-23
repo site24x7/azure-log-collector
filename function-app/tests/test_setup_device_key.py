@@ -30,17 +30,23 @@ set -euo pipefail
 az() {
     if [[ "$*" == *"appsettings set"* ]]; then
         printf '%s\\n' "$@" > "$CAPTURE"
+        for arg in "$@"; do
+            if [[ "$arg" == @* ]]; then cat "${arg#@}" > "$CAPTURE.settings"; fi
+        done
     elif [[ "$*" == *"check-name"* ]]; then
         echo true
     fi
 }
-jq() { :; }
 zip() { :; }
 source "$SETUP"
 LOG_FILE="$SETUP_LOG"
 preflight_checks
 diag_suffix=test
-''' + settings)
+apply_settings() {
+''' + settings + '''
+}
+apply_settings
+''')
     env = {k: v for k, v in os.environ.items() if not k.startswith('SITE24X7_')}
     env.update(SETUP=str(setup), CAPTURE=str(capture), SETUP_LOG=str(tmp_path / "setup.log"))
     result = subprocess.run(['bash', str(runner)], env=env, capture_output=True, text=True)
@@ -51,7 +57,62 @@ diag_suffix=test
         return
     assert result.returncode == 0, result.stderr
     args = capture.read_text().splitlines()
-    assert 'SITE24X7_API_KEY=test-device-key' in args
-    assert not any(arg.startswith('SITE24X7_API_TOKEN=') for arg in args)
+    # The key reaches Azure through a private settings file, never a command-line argument.
+    assert not any('test-device-key' in arg for arg in args)
+    import json
+    settings = {s['name']: s['value'] for s in json.loads(Path(str(capture) + '.settings').read_text())}
+    assert settings['SITE24X7_API_KEY'] == 'test-device-key'
+    assert 'SITE24X7_API_TOKEN' not in settings
     assert 'test-device-key' not in result.stdout
     assert 'test-device-key' not in (tmp_path / 'setup.log').read_text()
+
+
+@pytest.mark.parametrize(('suffix', 'outcome'), [
+    ('c9a6f201a4d9', 'available'),
+    ('qt4xn2', 'available'),
+    ('bad-name', 'invalid'),
+    ('c9a6f201a4d9', 'seed_taken'),
+    ('c9a6f201a4d9', 'check_error'),
+])
+def test_setup_suffix_and_name_preflight(tmp_path, suffix, outcome):
+    script = (Path(__file__).parents[2] / 'setup/setup.sh').read_text()
+    setup = tmp_path / 'setup.sh'
+    setup.write_text(script.rsplit('main "$@"', 1)[0])
+    (tmp_path / 'config.env').write_text(
+        f'SUBSCRIPTION_IDS="test-subscription"\nSITE24X7_API_KEY="test-key"\nDEPLOYMENT_SUFFIX="{suffix}"\n')
+    runner = tmp_path / 'run.sh'
+    runner.write_text('''#!/usr/bin/env bash
+set -euo pipefail
+az() {
+    if [[ "$*" == *"check-name"* ]]; then
+        echo "$*" >> "$CHECKS"
+        [[ "$OUTCOME" != check_error ]] || return 1
+        if [[ "$OUTCOME" == seed_taken && "$*" == *s247dr* ]]; then echo false; else echo true; fi
+    elif [[ "$*" == *"storage account show"* ]]; then
+        return 1
+    fi
+}
+jq() { :; }
+zip() { :; }
+source "$SETUP"
+LOG_FILE="$SETUP_LOG"
+preflight_checks
+printf '%s\\n' "$DIAG_SUFFIX" "$SEED_STORAGE"
+''')
+    env = os.environ.copy()
+    env.update(SETUP=str(setup), SETUP_LOG=str(tmp_path / 'setup.log'),
+               CHECKS=str(tmp_path / 'checks'), OUTCOME=outcome)
+    result = subprocess.run(['bash', str(runner)], env=env, capture_output=True, text=True)
+    if outcome != 'available':
+        assert result.returncode != 0
+        if outcome == 'seed_taken':
+            assert 'DEPLOYMENT_SUFFIX' in result.stdout
+        if outcome == 'check_error':
+            assert 'Unable to check' in result.stdout
+        return
+    assert result.returncode == 0, result.stderr
+    names = (tmp_path / 'checks').read_text()
+    assert f's247diag{suffix}' in names
+    assert (f's247dr{suffix}' if len(suffix) > 6 else f's247diageastus{suffix}') in names
+    assert (f's247dt{suffix}' if len(suffix) > 6 else f's247diagtenant{suffix}') in names
+    assert f'\n{suffix}\n' in result.stdout

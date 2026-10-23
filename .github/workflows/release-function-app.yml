@@ -10,8 +10,18 @@ on:
     inputs:
       force_release:
         description: 'Force a release even if VERSION unchanged'
+        type: boolean
         required: false
-        default: 'false'
+        default: false
+      stable_validation_confirmed:
+        description: 'Confirm matching candidate passed fresh install, repeat deploy, upgrade, rollback and real ingestion'
+        type: boolean
+        required: false
+        default: false
+      validation_report_url:
+        description: 'HTTPS evidence report URL for stable release validation'
+        type: string
+        required: false
 
 permissions:
   contents: write
@@ -22,20 +32,25 @@ jobs:
 
   release:
     needs: validate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - name: Set up Python 3.13
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.11'
+          python-version: '3.13'
 
       - name: Read version
         id: version
         run: |
           VERSION=$(cat function-app/VERSION | tr -d '[:space:]')
+          # Checked before any step uses it: later steps put it in shell commands.
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-z]+[0-9]*)?$ ]]; then
+            echo "::error::function-app/VERSION is not a version (x.y.z or x.y.z-betaN)"
+            exit 1
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
           echo "Version: $VERSION"
@@ -51,11 +66,20 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Require production validation approval for stable releases
+        if: steps.check_release.outputs.exists == 'false' || inputs.force_release == true
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_EVENT: ${{ github.event_name }}
+          STABLE_VALIDATION_CONFIRMED: ${{ inputs.stable_validation_confirmed }}
+          VALIDATION_REPORT_URL: ${{ inputs.validation_report_url }}
+        run: python3 setup/check-release-approval.py
+
       - name: Verify ARM template pins to this tag
-        if: steps.check_release.outputs.exists == 'false' || github.event.inputs.force_release == 'true'
+        if: steps.check_release.outputs.exists == 'false' || inputs.force_release == true
         run: |
           TAG="${{ steps.version.outputs.tag }}"
-          EXPECTED="releases/download/${TAG}/s247-function-app.zip"
+          EXPECTED="https://github.com/${{ github.repository }}/releases/download/${TAG}/released-package.zip"
           if ! grep -q "$EXPECTED" setup/azuredeploy.json; then
             echo "::error::setup/azuredeploy.json functionZipUrl must be pinned to ${EXPECTED}"
             grep functionZipUrl setup/azuredeploy.json
@@ -64,25 +88,26 @@ jobs:
           echo "functionZipUrl OK: pinned to ${TAG}"
 
       - name: Build function app zip
-        if: steps.check_release.outputs.exists == 'false' || github.event.inputs.force_release == 'true'
+        if: steps.check_release.outputs.exists == 'false' || inputs.force_release == true
         run: |
           cd function-app
           # Pre-install pip dependencies into .python_packages so that the zip is
-          # self-contained and can be deployed via WEBSITE_RUN_FROM_PACKAGE.
+          # self-contained: the template and the AutoUpdater deploy it with
+          # OneDeploy and remoteBuild=false (no build on Azure).
           # Force manylinux2014 (glibc 2.17) wheels so binaries run on the Azure
-          # Functions Linux Consumption worker (Debian 11 / glibc 2.31), not on
-          # the GH runner's glibc. Without --platform we get manylinux_2_34
-          # wheels that fail with "GLIBC_2.33 not found".
+          # Functions Flex Consumption worker, not only on the GH runner's
+          # glibc. Without --platform we get manylinux_2_34 wheels that can fail
+          # with "GLIBC_2.3x not found".
           python3 -m pip install --upgrade pip
           python3 -m pip install \
             --platform manylinux2014_x86_64 \
-            --python-version 3.11 \
+            --python-version 3.13 \
             --implementation cp \
             --only-binary=:all: \
             --target=".python_packages/lib/site-packages" \
             --no-compile \
-            --upgrade \
-            -r requirements.txt
+            --require-hashes \
+            -r requirements.lock
           zip -r ../s247-function-app.zip . \
             -x "*.pyc" \
             -x "__pycache__/*" \
@@ -90,14 +115,29 @@ jobs:
             -x ".pytest_cache/*" \
             -x "tests/*" \
             -x "local.settings.json" \
-            -x "requirements-dev.txt"
+            -x "requirements-dev.txt" \
+            -x "requirements.lock"
           cd ..
           echo "Zip size: $(du -h s247-function-app.zip | cut -f1)"
           echo "Contents:"
           unzip -l s247-function-app.zip | tail -5
 
+      # The same check the AutoUpdater runs before installing an update: every
+      # function and shared module must import with only the zip's own
+      # dependencies, on the runtime's Python (Linux x86_64).
+      - name: Check the package imports
+        if: steps.check_release.outputs.exists == 'false' || inputs.force_release == true
+        run: |
+          PYTHONPATH="function-app/.python_packages/lib/site-packages:function-app" python3 - <<'PY'
+          import sys
+          from shared.updater import check_package_imports
+          ok, reason = check_package_imports("s247-function-app.zip")
+          print("Package import check:", "OK" if ok else reason)
+          sys.exit(0 if ok else 1)
+          PY
+
       - name: Generate version.json
-        if: steps.check_release.outputs.exists == 'false' || github.event.inputs.force_release == 'true'
+        if: steps.check_release.outputs.exists == 'false' || inputs.force_release == true
         run: |
           REPO="${{ github.repository }}"
           VERSION="${{ steps.version.outputs.version }}"
@@ -116,27 +156,62 @@ jobs:
           cat version.json
 
       - name: Create GitHub Release
-        if: steps.check_release.outputs.exists == 'false' || github.event.inputs.force_release == 'true'
+        if: steps.check_release.outputs.exists == 'false' || inputs.force_release == true
         run: |
           TAG="${{ steps.version.outputs.tag }}"
           VERSION="${{ steps.version.outputs.version }}"
 
+          NOTES="Auto-release of Site24x7 Diagnostic Logs Function App version $VERSION"
+          if [[ "$VERSION" != *-* ]]; then
+            NOTES="$NOTES. Production validation evidence: $VALIDATION_REPORT_URL"
+          fi
+
+          RELEASE_FLAGS=()
+          if [[ "$VERSION" == *-* ]]; then
+            RELEASE_FLAGS+=(--prerelease)
+          fi
+
           # Delete existing release if force
-          if [ "${{ github.event.inputs.force_release }}" = "true" ]; then
+          if [ "$FORCE_RELEASE" = "true" ]; then
             gh release delete "$TAG" --yes 2>/dev/null || true
             git push --delete origin "$TAG" 2>/dev/null || true
           fi
 
+          # The template installs released-package.zip (the file name Flex
+          # Consumption documents for OneDeploy); the AutoUpdater downloads
+          # s247-function-app.zip. Same bytes. Created as a draft with every file,
+          # then published, so a published release never changes afterwards
+          # (required when the repository makes releases immutable).
+          cp s247-function-app.zip released-package.zip
           gh release create "$TAG" \
+            --draft \
             --title "Function App $VERSION" \
-            --notes "Auto-release of Site24x7 Diagnostic Logs Function App version $VERSION" \
+            --notes "$NOTES" \
             --target "${{ github.sha }}" \
-            $(echo "$VERSION" | grep -qE 'alpha|beta|rc' && echo --prerelease) \
+            "${RELEASE_FLAGS[@]}" \
             s247-function-app.zip \
+            released-package.zip \
             version.json \
             setup/azuredeploy.json
+          gh release edit "$TAG" --draft=false
+
+          # Prove the address the template installs from serves the exact zip.
+          URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/released-package.zip"
+          WANT="$(sha256sum s247-function-app.zip | cut -d' ' -f1)"
+          for attempt in $(seq 1 10); do
+            if curl -sfL -o "$RUNNER_TEMP/check.zip" "$URL" && [ "$(sha256sum "$RUNNER_TEMP/check.zip" | cut -d' ' -f1)" = "$WANT" ]; then
+              echo "Package URL OK: $URL"
+              exit 0
+            fi
+            echo "Attempt $attempt: package not served yet; retrying"
+            sleep 10
+          done
+          echo "::error::$URL does not serve the release zip"
+          exit 1
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VALIDATION_REPORT_URL: ${{ inputs.validation_report_url }}
+          FORCE_RELEASE: ${{ inputs.force_release }}
 
       - name: Summary
         run: |

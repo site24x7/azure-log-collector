@@ -54,10 +54,16 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             status_code=400,
         )
 
+    if not isinstance(body, dict):
+        return func.HttpResponse(
+            json.dumps({"error": "Body must be a JSON object"}),
+            mimetype="application/json",
+            status_code=400,
+        )
     key = body.get("key", "")
     value = body.get("value")
 
-    if key not in ALLOWED_SETTINGS:
+    if not isinstance(key, str) or key not in ALLOWED_SETTINGS:
         return func.HttpResponse(
             json.dumps({"error": f"Setting '{key}' is not configurable from the dashboard"}),
             mimetype="application/json",
@@ -74,10 +80,9 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     meta = ALLOWED_SETTINGS[key]
 
     # Validate type and range
+    # Exact JSON types: no coercion of strings, numbers or containers.
     if meta["type"] == "int":
-        try:
-            value = int(value)
-        except (ValueError, TypeError):
+        if isinstance(value, bool) or not isinstance(value, int):
             return func.HttpResponse(
                 json.dumps({"error": f"'{key}' must be an integer"}),
                 mimetype="application/json",
@@ -96,15 +101,22 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 status_code=400,
             )
     elif meta["type"] == "bool":
-        if isinstance(value, str):
-            value = value.lower() in ("true", "1", "yes")
-        else:
-            value = bool(value)
+        if not isinstance(value, bool):
+            return func.HttpResponse(
+                json.dumps({"error": f"'{key}' must be true or false"}),
+                mimetype="application/json",
+                status_code=400,
+            )
 
     try:
         azure_mgr = AzureManager()
         str_value = str(value).lower() if meta["type"] == "bool" else str(value)
-        azure_mgr.update_app_setting(key, str_value)
+        if not azure_mgr.update_app_setting(key, str_value):
+            return func.HttpResponse(
+                json.dumps({"error": f"Failed to update setting '{key}'"}),
+                mimetype="application/json",
+                status_code=500,
+            )
         os.environ[key] = str_value
 
         logging.info("UpdateSettings: Set %s = %s", key, str_value)

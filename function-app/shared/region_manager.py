@@ -6,13 +6,16 @@ gets an ``insights-logs`` container for blob-based log collection.
 """
 
 import logging
+import os
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 
 from azure.identity import DefaultAzureCredential
 from azure.mgmt.storage import StorageManagementClient
 from azure.mgmt.resource import ResourceManagementClient
+from azure.core.exceptions import ResourceNotFoundError
+from shared.storage_names import legacy_regional_storage_name, regional_storage_name, tenant_storage_name
 
 # ManagementLockClient may not be available in all azure-mgmt-resource versions
 try:
@@ -69,8 +72,7 @@ def _storage_account_name(region: str, suffix: str) -> str:
     Azure storage account names: 3-24 chars, lowercase alphanumeric only.
     Format: s247diag{region}{suffix}  (e.g., s247diageastus<suffix>)
     """
-    name = f"{STORAGE_PREFIX}{_sanitize_region(region)}{suffix}"
-    return name[:24]
+    return regional_storage_name(region, suffix, os.environ.get("DIAG_SEED_REGION", ""))
 
 
 def _tenant_storage_name(suffix: str) -> str:
@@ -78,8 +80,71 @@ def _tenant_storage_name(suffix: str) -> str:
 
     Format: s247diagtenant{suffix}  (<= 24 chars). One per deployment.
     """
-    name = f"{STORAGE_PREFIX}tenant{_sanitize_region(suffix)}"
-    return name[:24]
+    return tenant_storage_name(_sanitize_region(suffix))
+
+
+# Every storage account records the collector that created it, so collectors
+# sharing a resource group never read, adopt or delete each other's accounts.
+COLLECTOR_TAG = "s247-collector"
+REGIONAL_PURPOSE = "diag-logs-regional"
+
+
+def collector_id() -> str:
+    """This collector's identity on its storage accounts: the Function App name."""
+    return os.environ.get("WEBSITE_SITE_NAME", "").strip().lower()
+
+
+def _expected_names(purpose: str, region: str, suffix: str) -> set:
+    seed = os.environ.get("DIAG_SEED_REGION", "")
+    try:
+        if purpose == REGIONAL_PURPOSE:
+            return {regional_storage_name(region, suffix, seed), legacy_regional_storage_name(region, suffix, seed)}
+        return {tenant_storage_name(_sanitize_region(suffix))}
+    except ValueError:
+        return set()
+
+
+def is_own_account(name: str, tags: Optional[Dict], purpose: str, region: str,
+                   suffix: Optional[str] = None) -> bool:
+    """Whether a storage account belongs to this collector.
+
+    Tagged accounts belong to the collector named in ``s247-collector``.
+    Accounts created before that tag belong to this collector only when their
+    name is one this collector generates (any untagged account, for installs
+    without a suffix, which predate several collectors per group).
+    """
+    tags = tags or {}
+    if tags.get("managed-by") != "s247-diag-logs" or tags.get("purpose") != purpose:
+        return False
+    owner = (tags.get(COLLECTOR_TAG) or "").strip().lower()
+    if owner:
+        return owner == collector_id() != ""
+    if suffix is None:
+        suffix = os.environ.get("DIAG_STORAGE_SUFFIX", "")
+    if not suffix:
+        return True
+    return name.lower() in _expected_names(purpose, region, suffix)
+
+
+def _check_storage_name(client, resource_group: str, name: str, region: str) -> None:
+    """Fail before creation on unavailable names or unreadable ownership."""
+    availability = client.storage_accounts.check_name_availability(
+        {"name": name, "type": "Microsoft.Storage/storageAccounts"}
+    )
+    if availability.name_available is False:
+        try:
+            existing = client.storage_accounts.get_properties(resource_group, name)
+        except ResourceNotFoundError as error:
+            raise RuntimeError(
+                f"Storage name '{name}' is unavailable globally. For a fresh install, "
+                "choose another deploymentSuffix/DEPLOYMENT_SUFFIX; do not change a live collector's suffix."
+            ) from error
+        tags = existing.tags or {}
+        owner = (tags.get(COLLECTOR_TAG) or "").strip().lower()
+        if tags.get("managed-by") != "s247-diag-logs" or (owner and owner != collector_id()):
+            raise RuntimeError(f"Storage account '{name}' is not owned by this collector")
+        if _sanitize_region(existing.primary_location or "") != _sanitize_region(region):
+            raise RuntimeError(f"Storage account '{name}' already exists in a different region")
 
 
 class RegionManager:
@@ -108,22 +173,44 @@ class RegionManager:
         logger.info(f"Active regions: {regions}")
         return regions
 
-    def get_provisioned_regions(self, resource_group: str) -> Dict[str, str]:
+    def get_provisioned_regions(self, resource_group: str,
+                                suffix: Optional[str] = None) -> Dict[str, str]:
         """List per-region storage accounts in the RG.
 
         Returns a dict mapping region → storage account name.
         Identifies our accounts by the ``managed-by: s247-diag-logs`` tag.
+
+        A failed earlier install can leave tagged accounts with another suffix
+        in the same RG. When a region has several, this deployment's own name
+        (from ``suffix``, default ``DIAG_STORAGE_SUFFIX``) wins; otherwise the
+        choice is the lowest name so it never depends on listing order.
         """
+        if suffix is None:
+            suffix = os.environ.get("DIAG_STORAGE_SUFFIX", "")
+        candidates: Dict[str, List[str]] = {}
         region_map: Dict[str, str] = {}
         try:
             client = StorageManagementClient(
                 self.credential, self.subscription_id
             )
             for acct in client.storage_accounts.list_by_resource_group(resource_group):
-                tags = acct.tags or {}
-                if tags.get("managed-by") == "s247-diag-logs" and tags.get("purpose") == "diag-logs-regional":
-                    if acct.primary_location:
-                        region_map[acct.primary_location.lower()] = acct.name
+                if not acct.primary_location or not is_own_account(
+                        acct.name, acct.tags, REGIONAL_PURPOSE, acct.primary_location, suffix):
+                    continue  # another collector's, or not ours at all
+                self._adopt(client, resource_group, acct)
+                candidates.setdefault(acct.primary_location.lower(), []).append(acct.name)
+            for region, names in candidates.items():
+                try:
+                    own = _storage_account_name(region, suffix) if suffix else ""
+                except ValueError:
+                    own = ""
+                region_map[region] = own if own in names else sorted(names)[0]
+                if len(names) > 1:
+                    logger.warning(
+                        "Region %s has %d tagged diag storage accounts %s — using %s; "
+                        "the others are likely left over from an earlier deployment",
+                        region, len(names), sorted(names), region_map[region],
+                    )
             logger.info(
                 f"Provisioned diag storage accounts in '{resource_group}': {region_map}"
             )
@@ -132,6 +219,18 @@ class RegionManager:
                 f"Failed to list storage accounts in '{resource_group}': {e}"
             )
         return region_map
+
+    def _adopt(self, client, resource_group: str, acct) -> None:
+        """Record this collector on an own account created before the tag."""
+        me = collector_id()
+        tags = dict(acct.tags or {})
+        if not me or tags.get(COLLECTOR_TAG):
+            return
+        tags[COLLECTOR_TAG] = me
+        try:
+            client.storage_accounts.update(resource_group, acct.name, {"tags": tags})
+        except Exception as e:
+            logger.warning("Could not tag storage account %s with its collector: %s", acct.name, type(e).__name__)
 
     def get_subscription_name(self, subscription_id: str) -> str:
         """Resolve a subscription's display name (as shown in the Azure portal).
@@ -168,9 +267,8 @@ class RegionManager:
         try:
             client = StorageManagementClient(self.credential, self.subscription_id)
             for acct in client.storage_accounts.list_by_resource_group(resource_group):
-                tags = acct.tags or {}
-                if tags.get("managed-by") == "s247-diag-logs" and \
-                        tags.get("purpose") == TENANT_STORAGE_PURPOSE:
+                if is_own_account(acct.name, acct.tags, TENANT_STORAGE_PURPOSE, acct.primary_location or ""):
+                    self._adopt(client, resource_group, acct)
                     sa_id = (
                         f"/subscriptions/{self.subscription_id}/resourceGroups/{resource_group}"
                         f"/providers/Microsoft.Storage/storageAccounts/{acct.name}"
@@ -199,6 +297,7 @@ class RegionManager:
         storage_client = StorageManagementClient(self.credential, self.subscription_id)
 
         try:
+            _check_storage_name(storage_client, resource_group, sa_name, region)
             poller = storage_client.storage_accounts.begin_create(
                 resource_group_name=resource_group,
                 account_name=sa_name,
@@ -213,6 +312,7 @@ class RegionManager:
                     "tags": {
                         "managed-by": "s247-diag-logs",
                         "purpose": TENANT_STORAGE_PURPOSE,
+                        COLLECTOR_TAG: collector_id(),
                     },
                 },
             )
@@ -287,6 +387,7 @@ class RegionManager:
 
         # 1. Create storage account
         try:
+            _check_storage_name(storage_client, resource_group, sa_name, region)
             poller = storage_client.storage_accounts.begin_create(
                 resource_group_name=resource_group,
                 account_name=sa_name,
@@ -300,8 +401,9 @@ class RegionManager:
                     },
                     "tags": {
                         "managed-by": "s247-diag-logs",
-                        "purpose": "diag-logs-regional",
+                        "purpose": REGIONAL_PURPOSE,
                         "region": region,
+                        COLLECTOR_TAG: collector_id(),
                     },
                 },
             )
@@ -434,7 +536,10 @@ class RegionManager:
         #   2. Attempt delete
         #   3. If delete fails, restore the lock so the SA isn't left
         #      unprotected with unprocessed logs inside it.
-        self.remove_lock(resource_group, lock_nm)
+        if not self.remove_lock(resource_group, lock_nm, resource_name=sa_name,
+                                resource_type="Microsoft.Storage/storageAccounts"):
+            logger.error(f"Could not remove the lock on '{sa_name}'; not deleting it")
+            return False
         try:
             storage_client.storage_accounts.delete(
                 resource_group_name=resource_group,
@@ -511,14 +616,17 @@ class RegionManager:
         active_regions: Set[str],
         provisioned_map: Dict[str, str],
         suffix: str,
+        allow_remove: bool = True,
     ) -> Dict:
         """Add/remove per-region storage accounts to match active regions.
 
+        ``allow_remove=False`` (an incomplete discovery) only adds: a region
+        that merely failed to list must not lose its storage account.
         Returns a summary dict with ``added``, ``removed``, and ``errors``.
         """
         provisioned_regions = set(provisioned_map.keys())
         to_add = active_regions - provisioned_regions
-        to_remove = provisioned_regions - active_regions
+        to_remove = provisioned_regions - active_regions if allow_remove else set()
 
         summary: Dict = {"added": [], "removed": [], "errors": []}
 
@@ -599,8 +707,14 @@ class RegionManager:
             logger.error(f"Failed to apply lock on {resource_name}: {e}")
             return False
 
-    def remove_lock(self, resource_group: str, lock_name: str) -> bool:
-        """Remove a management lock by name from a resource group."""
+    def remove_lock(self, resource_group: str, lock_name: str, resource_name: str = "",
+                    resource_type: str = "") -> bool:
+        """Remove a management lock by name.
+
+        With ``resource_name``/``resource_type`` the lock is removed from that
+        resource, the scope apply_lock created it at; without them, from the
+        resource group.
+        """
         if ManagementLockClient is None:
             logger.warning("ManagementLockClient unavailable — skipping lock removal")
             return False
@@ -608,11 +722,22 @@ class RegionManager:
             self.credential, self.subscription_id
         )
         try:
-            lock_client.management_locks.delete_at_resource_group_level(
-                resource_group_name=resource_group,
-                lock_name=lock_name,
-            )
-            logger.info(f"Removed lock '{lock_name}' from RG '{resource_group}'")
+            if resource_name:
+                provider_namespace, resource_type_short = resource_type.split("/", 1)
+                lock_client.management_locks.delete_at_resource_level(
+                    resource_group_name=resource_group,
+                    resource_provider_namespace=provider_namespace,
+                    parent_resource_path="",
+                    resource_type=resource_type_short,
+                    resource_name=resource_name,
+                    lock_name=lock_name,
+                )
+            else:
+                lock_client.management_locks.delete_at_resource_group_level(
+                    resource_group_name=resource_group,
+                    lock_name=lock_name,
+                )
+            logger.info(f"Removed lock '{lock_name}' from '{resource_name or resource_group}'")
             return True
         except Exception as e:
             if "NotFound" in str(type(e).__name__) or "not found" in str(e).lower():

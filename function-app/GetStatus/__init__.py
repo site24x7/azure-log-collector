@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
-    logger.info("GetStatus: Starting request")
+    logger.debug("GetStatus: Starting request")
 
     try:
         subscription_ids = [
@@ -22,7 +22,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             "RESOURCE_GROUP_NAME", os.environ.get("RESOURCE_GROUP", "s247-diag-logs-rg")
         )
         general_enabled = os.environ.get("GENERAL_LOGTYPE_ENABLED", "false").lower() == "true"
-        processing_enabled = os.environ.get("PROCESSING_ENABLED", "true").lower() == "true"
+        from shared.config_store import get_processing_enabled
+        processing_enabled = get_processing_enabled()
         monitor_pipeline = os.environ.get("MONITOR_PIPELINE_RESOURCES", "false").lower() == "true"
         auto_scan = os.environ.get("AUTO_SCAN_ENABLED", "true").lower() == "true"
         try:
@@ -83,7 +84,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             except Exception:
                 return []
 
-        logger.info(
+        logger.debug(
             "GetStatus: Config loaded — subs=%s, rg=%s, processing=%s",
             subscription_ids, resource_group, processing_enabled,
         )
@@ -101,6 +102,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             "subscription_ids": subscription_ids,
             "general_logtype_enabled": general_enabled,
             "processing_enabled": processing_enabled,
+            "review_pending": _review_pending(),
+            "update_state": _update_state(),
             "monitor_pipeline_resources": monitor_pipeline,
             "auto_scan_enabled": auto_scan,
             "safe_delete_days": safe_delete_days,
@@ -109,6 +112,14 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             "resources": {"total": 0, "active": 0, "ignored": 0},
             "errors": [],
         }
+
+        # Live operational snapshot lets Site24x7 read outbound failures even when
+        # this collector cannot send a registration through the outbound path.
+        try:
+            from shared.registration import build_status_summary
+            status["operational_status"] = build_status_summary(include_names=False)
+        except Exception:
+            pass  # No snapshot means unknown, never a fabricated healthy result.
 
         # Entra ID (tenant-scoped) log collection status. Our MI cannot create
         # the Entra diagnostic setting — a tenant admin does it manually and
@@ -150,7 +161,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         try:
             from shared.ignore_list import load_ignore_list
             ignore_list = load_ignore_list()
-            logger.info("GetStatus: Ignore list loaded OK")
+            logger.debug("GetStatus: Ignore list loaded OK")
         except Exception as e:
             logger.error("GetStatus: Failed to load ignore list: %s\n%s", e, traceback.format_exc())
             ignore_list = {"resource_groups": [], "locations": [], "resource_ids": []}
@@ -165,7 +176,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 {"region": region, "storage_account": sa_name}
                 for region, sa_name in provisioned_map.items()
             ]
-            logger.info("GetStatus: Provisioned regions: %s", provisioned_map)
+            logger.debug("GetStatus: Provisioned regions: %s", provisioned_map)
         except Exception as e:
             logger.error("GetStatus: Failed to get regions: %s\n%s", e, traceback.format_exc())
             status["errors"].append(f"provisioned_regions: {e}")
@@ -182,7 +193,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                     "active": scan_state.get("active_resources", 0),
                     "ignored": scan_state.get("ignored_resources", 0),
                 }
-            logger.info("GetStatus: Resources from scan state — %s", status["resources"])
+            logger.debug("GetStatus: Resources from scan state — %s", status["resources"])
         except Exception as e:
             logger.error("GetStatus: Failed to get resource counts: %s", e)
             status["errors"].append(f"resources: {e}")
@@ -221,3 +232,23 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             mimetype="application/json",
             status_code=500,
         )
+
+
+def _review_pending() -> bool:
+    """New deployments only discover resources until an admin starts collecting."""
+    try:
+        from shared.config_store import is_collection_active
+        return not is_collection_active()
+    except Exception:
+        return False
+
+
+def _update_state() -> dict:
+    """The last update submitted, and whether the new version confirmed it runs."""
+    try:
+        from shared.updater import get_update_state
+        state = get_update_state()
+        return {k: state.get(k, "") for k in ("pending_version", "previous_version", "submitted_at",
+                                              "confirmed_at", "failed_at", "error")}
+    except Exception:
+        return {}

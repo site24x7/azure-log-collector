@@ -30,8 +30,10 @@ for arg in "$@"; do
             echo "Usage: $(basename "$0") [--clean-diag-settings]"
             echo ""
             echo "Options:"
-            echo "  --clean-diag-settings   Remove s247-diag-logs diagnostic settings from"
-            echo "                          all resources in the configured subscriptions"
+            echo "  --clean-diag-settings   Remove this collector's diagnostic setting"
+            echo "                          (s247-diag-logs-<suffix>) from the resources in the"
+            echo "                          configured subscriptions, when it sends to this"
+            echo "                          deployment's storage"
             exit 0
             ;;
         *)
@@ -55,13 +57,23 @@ load_config() {
     source "$config_file"
     log_ok "Loaded config.env"
 
-    RG="${RESOURCE_GROUP_NAME:-s247-diag-logs-rg}"
+    # Same rule as the ARM template: one resource group per suffix, the legacy group without one.
+    default_rg="s247-diag-logs-rg"
+    [[ -n "${DEPLOYMENT_SUFFIX:-}" ]] && default_rg="s247-diag-logs-${DEPLOYMENT_SUFFIX}-rg"
+    RG="${RESOURCE_GROUP_NAME:-$default_rg}"
 
     if [[ -z "${SUBSCRIPTION_IDS:-}" ]]; then
         log_error "SUBSCRIPTION_IDS is not set in config.env"
         exit 1
     fi
     IFS=',' read -ra SUBS <<< "$SUBSCRIPTION_IDS"
+    # The collector's resource group lives in the subscription setup.sh deployed to
+    # (the first one), unless DEPLOYMENT_SUBSCRIPTION_ID says otherwise. Every
+    # group/lock command names it, so the CLI's current subscription never matters.
+    DEPLOY_SUB="$(echo "${DEPLOYMENT_SUBSCRIPTION_ID:-${SUBS[0]}}" | xargs)"
+    # This collector's own diagnostic setting (same rule as the collector).
+    SETTING_NAME="s247-diag-logs"
+    [[ -n "${DEPLOYMENT_SUFFIX:-}" ]] && SETTING_NAME="s247-diag-logs-$(echo "$DEPLOYMENT_SUFFIX" | tr '[:upper:]' '[:lower:]')"
 
     # Check az CLI login
     if ! az account show &>/dev/null; then
@@ -69,6 +81,17 @@ load_config() {
         exit 1
     fi
     log_ok "Azure CLI is authenticated"
+
+    # Only a group this collector created (the template tags it) is unlocked or deleted.
+    if az group show --name "$RG" --subscription "$DEPLOY_SUB" &>/dev/null; then
+        local managed_by
+        managed_by=$(az group show --name "$RG" --subscription "$DEPLOY_SUB" --query "tags.\"managed-by\"" -o tsv 2>/dev/null)
+        if [[ "$managed_by" != "s247-diag-logs" ]]; then
+            log_error "Resource group ${RG} in subscription ${DEPLOY_SUB} is not tagged managed-by=s247-diag-logs; not touching it."
+            exit 1
+        fi
+    fi
+    log_info "Resource group: ${RG} (subscription ${DEPLOY_SUB}); diagnostic setting: ${SETTING_NAME}"
 }
 
 # ── Remove all locks in the resource group ───────────────────
@@ -76,13 +99,13 @@ remove_locks() {
     log_section "Removing Resource Locks"
 
     # Check if resource group exists
-    if ! az group show --name "$RG" &>/dev/null; then
+    if ! az group show --name "$RG" --subscription "$DEPLOY_SUB" &>/dev/null; then
         log_skip "Resource group ${RG} does not exist — nothing to unlock"
         return
     fi
 
     local lock_ids
-    lock_ids=$(az lock list --resource-group "$RG" -o json | jq -r '.[].id')
+    lock_ids=$(az lock list --resource-group "$RG" --subscription "$DEPLOY_SUB" -o json | jq -r '.[].id')
 
     if [[ -z "$lock_ids" ]]; then
         log_skip "No locks found in resource group ${RG}"
@@ -125,10 +148,20 @@ clean_diagnostic_settings() {
             id=$(echo "$resources" | jq -r ".[$i].id")
             name=$(echo "$resources" | jq -r ".[$i].name")
 
-            # Check if the diagnostic setting exists before deleting
-            if az monitor diagnostic-settings show --name "s247-diag-logs" --resource "$id" &>/dev/null; then
+            # Only this collector's setting, and only when it sends to this
+            # deployment's storage (another collector may use the same name).
+            local destination
+            destination=$(az monitor diagnostic-settings show --name "$SETTING_NAME" --resource "$id" \
+                --query storageAccountId -o tsv 2>/dev/null || true)
+            local dest_lc rg_lc
+            dest_lc=$(echo "$destination" | tr '[:upper:]' '[:lower:]')
+            rg_lc=$(echo "$RG" | tr '[:upper:]' '[:lower:]')
+            if [[ -n "$destination" && "$dest_lc" != *"/resourcegroups/${rg_lc}/"* ]]; then
+                log_skip "${name}: ${SETTING_NAME} sends to another deployment's storage; left in place"
+                total_skipped=$((total_skipped + 1))
+            elif [[ -n "$destination" ]]; then
                 if az monitor diagnostic-settings delete \
-                        --name "s247-diag-logs" \
+                        --name "$SETTING_NAME" \
                         --resource "$id" \
                         -o none 2>/dev/null; then
                     log_ok "Removed diagnostic setting from ${name}"
@@ -159,13 +192,13 @@ remove_subscription_role_assignments() {
     log_section "Removing Subscription-Scoped Role Assignments"
 
     # Collect principal IDs of any managed identities on Function Apps in the RG
-    if ! az group show --name "$RG" &>/dev/null; then
+    if ! az group show --name "$RG" --subscription "$DEPLOY_SUB" &>/dev/null; then
         log_skip "Resource group ${RG} does not exist — skipping role assignment cleanup"
         return
     fi
 
     local principal_ids
-    principal_ids=$(az functionapp list --resource-group "$RG" \
+    principal_ids=$(az functionapp list --resource-group "$RG" --subscription "$DEPLOY_SUB" \
         --query "[?identity.principalId!=null].identity.principalId" -o tsv 2>/dev/null || true)
 
     if [[ -z "$principal_ids" ]]; then
@@ -203,13 +236,13 @@ remove_subscription_role_assignments() {
 delete_resource_group() {
     log_section "Deleting Resource Group"
 
-    if ! az group show --name "$RG" &>/dev/null; then
+    if ! az group show --name "$RG" --subscription "$DEPLOY_SUB" &>/dev/null; then
         log_skip "Resource group ${RG} does not exist — nothing to delete"
         return
     fi
 
     log_info "Deleting resource group ${RG} (--no-wait) ..."
-    az group delete --name "$RG" --yes --no-wait
+    az group delete --name "$RG" --subscription "$DEPLOY_SUB" --yes --no-wait
     log_ok "Resource group ${RG} deletion initiated (async)"
     log_info "It may take a few minutes for Azure to fully remove all resources."
     log_info "Check status: az group show --name ${RG} --query properties.provisioningState -o tsv"
