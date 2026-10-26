@@ -284,19 +284,19 @@ az functionapp config appsettings list -g s247-diag-logs-rg -n <func-app-name> \
 
 **Symptoms:** After a scheduled update the Function App returns 503, or one of the functions stops working.
 
-**Rollback (no redeploy required):**
+**Recovery:** `PINNED_VERSION` cannot roll back (it only freezes updates and never fetches an older release), and a collector that does not start cannot update itself.
 
 ```bash
-# Pin to the previous known-good version
-az functionapp config appsettings set -g s247-diag-logs-rg -n <func-app-name> \
-  --settings PINNED_VERSION=<known-good-version>
-
-# Or halt AutoUpdater entirely while you investigate
-az functionapp config appsettings set -g s247-diag-logs-rg -n <func-app-name> \
+# 1. Stop further updates while you investigate
+az functionapp config appsettings set -g <resource-group> -n <func-app-name> \
   --settings SKIP_AUTO_UPDATE=true
+
+# 2. Install the previous known-good package again (Flex Consumption keeps no earlier packages)
+az functionapp deploy -g <resource-group> -n <func-app-name> --type zip \
+  --src-url https://github.com/site24x7/azure-log-collector/releases/download/v<known-good-version>/released-package.zip
 ```
 
-Then tag a new release from the last-good commit; AutoUpdater will reconcile on its next run.
+Check `/api/health` afterwards (Azure CLI 2.79 may print a JSON parsing error although the install succeeded). Then release the fix as a new, higher version and set `SKIP_AUTO_UPDATE=false`.
 
 **Prevention:** `validate_zip_package()` now refuses packages with Python syntax errors, malformed JSON, or missing required files. `MIN_RELEASE_AGE_MINUTES=60` gives you a grace window to delete a bad release.
 
@@ -322,7 +322,7 @@ Check these in order:
 
 ### "Health check failed after deploy"
 
-Look for `event == "auto_update_health_check"` with `healthy: false`. The new build is likely crashing at startup. Check App Insights `exceptions` and `traces` for import errors; roll back with `PINNED_VERSION` per above.
+Look for `event == "auto_update_health_check"` with `healthy: false`. The new build is likely crashing at startup. Check App Insights `exceptions` and `traces` for import errors; reinstall the previous package per above.
 
 ---
 

@@ -246,10 +246,10 @@ Check GitHub's "Set as a pre-release" box when creating alpha/beta tags. With de
 
 ### Rollback
 
-1. Delete or un-publish the bad release on GitHub (or mark it a pre-release), so the previous
-   stable release is the latest again.
-2. Or release the known-good content as a new version (a released version's package is never
-   replaced).
+1. Set `SKIP_AUTO_UPDATE=true` on collectors that have not updated yet (a release is installed
+   only after it is 60 minutes old).
+2. Release the known-good content as a new, higher version. Published releases are never
+   replaced or deleted.
 3. A collector that cannot start after a bad update cannot update itself. Install the
    previous version's package again (Flex Consumption keeps no earlier packages):
 

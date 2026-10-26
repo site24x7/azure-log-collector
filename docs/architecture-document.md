@@ -506,7 +506,7 @@ Azure Diagnostic Settings require the destination Storage Account to be **in the
 | Downloaded zip has a syntax error | Refused at step 9 (action=deploy_failed); current version stays |
 | Release tagged as pre-release on GitHub | Skipped on stable channel (step 5) |
 | Bad release published | 60-min grace window (step 7) allows deletion before propagation |
-| Rollback needed | Set `PINNED_VERSION=<known-good>` — no redeploy required |
+| Rollback needed | `SKIP_AUTO_UPDATE=true`, then reinstall the previous release's package (README, Rollback). `PINNED_VERSION` only freezes updates |
 | Emergency halt | Set `SKIP_AUTO_UPDATE=true` — no redeploy required |
 | Post-deploy health fails | Logged via audit event; operator must redeploy or pin |
 

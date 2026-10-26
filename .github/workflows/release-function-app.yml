@@ -8,11 +8,6 @@ on:
       - main
   workflow_dispatch:
     inputs:
-      force_release:
-        description: 'Force a release even if VERSION unchanged'
-        type: boolean
-        required: false
-        default: false
       stable_validation_confirmed:
         description: 'Confirm matching candidate passed fresh install, repeat deploy, upgrade, rollback and real ingestion'
         type: boolean
@@ -55,19 +50,32 @@ jobs:
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
           echo "Version: $VERSION"
 
-      - name: Check if release already exists
+      # A published version is never replaced: customers may have installed it and the
+      # updater trusts its digest. Only a draft left by a failed run is rebuilt (a draft
+      # is never served and has no tag yet); anything else needs a new VERSION.
+      - name: Check the release state
         id: check_release
         run: |
-          if gh release view "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
+          TAG="${{ steps.version.outputs.tag }}"
+          if DRAFT="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null)"; then
+            if [ "$DRAFT" = "true" ]; then
+              echo "state=draft" >> "$GITHUB_OUTPUT"
+              echo "A draft of $TAG from a failed run exists; it is rebuilt."
+            else
+              echo "state=published" >> "$GITHUB_OUTPUT"
+              echo "::notice::$TAG is already published and is never replaced. Bump function-app/VERSION for a new release."
+            fi
+          elif git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::Tag $TAG exists without a release. Bump function-app/VERSION; existing tags are not reused."
+            exit 1
           else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "state=none" >> "$GITHUB_OUTPUT"
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Require production validation approval for stable releases
-        if: steps.check_release.outputs.exists == 'false' || inputs.force_release == true
+        if: steps.check_release.outputs.state != 'published'
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
           RELEASE_EVENT: ${{ github.event_name }}
@@ -76,7 +84,7 @@ jobs:
         run: python3 setup/check-release-approval.py
 
       - name: Verify ARM template pins to this tag
-        if: steps.check_release.outputs.exists == 'false' || inputs.force_release == true
+        if: steps.check_release.outputs.state != 'published'
         run: |
           TAG="${{ steps.version.outputs.tag }}"
           EXPECTED="https://github.com/${{ github.repository }}/releases/download/${TAG}/released-package.zip"
@@ -88,7 +96,7 @@ jobs:
           echo "functionZipUrl OK: pinned to ${TAG}"
 
       - name: Build function app zip
-        if: steps.check_release.outputs.exists == 'false' || inputs.force_release == true
+        if: steps.check_release.outputs.state != 'published'
         run: |
           cd function-app
           # Pre-install pip dependencies into .python_packages so that the zip is
@@ -126,7 +134,7 @@ jobs:
       # function and shared module must import with only the zip's own
       # dependencies, on the runtime's Python (Linux x86_64).
       - name: Check the package imports
-        if: steps.check_release.outputs.exists == 'false' || inputs.force_release == true
+        if: steps.check_release.outputs.state != 'published'
         run: |
           PYTHONPATH="function-app/.python_packages/lib/site-packages:function-app" python3 - <<'PY'
           import sys
@@ -137,7 +145,7 @@ jobs:
           PY
 
       - name: Generate version.json
-        if: steps.check_release.outputs.exists == 'false' || inputs.force_release == true
+        if: steps.check_release.outputs.state != 'published'
         run: |
           REPO="${{ github.repository }}"
           VERSION="${{ steps.version.outputs.version }}"
@@ -156,7 +164,7 @@ jobs:
           cat version.json
 
       - name: Create GitHub Release
-        if: steps.check_release.outputs.exists == 'false' || inputs.force_release == true
+        if: steps.check_release.outputs.state != 'published'
         run: |
           TAG="${{ steps.version.outputs.tag }}"
           VERSION="${{ steps.version.outputs.version }}"
@@ -171,10 +179,10 @@ jobs:
             RELEASE_FLAGS+=(--prerelease)
           fi
 
-          # Delete existing release if force
-          if [ "$FORCE_RELEASE" = "true" ]; then
-            gh release delete "$TAG" --yes 2>/dev/null || true
-            git push --delete origin "$TAG" 2>/dev/null || true
+          # A draft from a failed run is unpublished and untagged: replace it. A published
+          # release never reaches this step (see "Check the release state").
+          if [ "${{ steps.check_release.outputs.state }}" = "draft" ]; then
+            gh release delete "$TAG" --yes
           fi
 
           # The template installs released-package.zip (the file name Flex
@@ -211,7 +219,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VALIDATION_REPORT_URL: ${{ inputs.validation_report_url }}
-          FORCE_RELEASE: ${{ inputs.force_release }}
 
       - name: Summary
         run: |

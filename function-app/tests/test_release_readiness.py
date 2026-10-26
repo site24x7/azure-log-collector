@@ -48,3 +48,16 @@ def test_release_installs_exact_hashed_dependencies():
     assert wanted <= pinned, wanted - pinned
     workflow = (root.parent / ".github/workflows/release-function-app.yml").read_text()
     assert "--require-hashes" in workflow and "-r requirements.lock" in workflow
+
+
+def test_release_workflow_never_replaces_a_published_release():
+    from pathlib import Path
+    workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/release-function-app.yml").read_text()
+    assert "force_release" not in workflow                        # no option to replace
+    assert "git push --delete" not in workflow                    # tags are never deleted
+    assert "state=published" in workflow and "state=draft" in workflow
+    # Every build/publish step is skipped for a published version
+    assert workflow.count("if: steps.check_release.outputs.state != 'published'") == 6
+    # Only a draft (never served, untagged) may be deleted before it is rebuilt
+    delete_at = workflow.index("gh release delete")
+    assert 'outputs.state }}" = "draft"' in workflow[delete_at - 200:delete_at]

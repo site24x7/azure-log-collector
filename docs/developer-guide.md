@@ -1185,7 +1185,7 @@ Used by `post_logs()` — when the circuit is open, log uploads are silently ski
 
 Each request's timeout is capped to the time left before the run's deadline.
 
-**Checkpoints never re-send what arrived.** Each blob's checkpoint records the exact position past what was handled (sent, or deliberately dropped):
+**Checkpoints resume exactly past what was handled** (sent, or deliberately dropped). Delivery is still at least once: a run that stops between an upload and saving its checkpoint, or a range whose records span blocks, can send some records again. Each blob's checkpoint records:
 
 | Blob kind | Position fields |
 |---|---|
@@ -1454,7 +1454,7 @@ The `AutoUpdater` function (timer-triggered, 3 AM UTC daily) and `CheckUpdate` e
    - Required files present: `host.json`, `VERSION`, `AutoUpdater/__init__.py`, `AutoUpdater/function.json`, `shared/updater.py`, `requirements.txt`
 7. **Import check:** `check_package_imports()` unpacks the zip and, in a separate `python -I -S` process, imports every function module and every `shared/*.py` module with only the package's `.python_packages`. Any failure refuses the deploy. The release workflow runs the same check on the built zip.
 8. **Deploy:** Only if validation passes, stage the verified zip in `s247-packages` and PUT the ARM `extensions/onedeploy` resource (`packageUri` = a 6-hour read-only link to that copy, `remoteBuild=false`) using the Function App's Managed Identity.
-9. **Post-deploy health check:** After a successful deploy, ping `https://{site}.azurewebsites.net/api/health` up to 3 times (with 20s warm-up + 30s between attempts) and write an `auto_update_health_check` audit event. Informational only — there is no automatic rollback; recovery is "revert + new release" or `PINNED_VERSION`.
+9. **Post-deploy health check:** After a successful deploy, ping `https://{site}.azurewebsites.net/api/health` up to 3 times (with 20s warm-up + 30s between attempts) and write an `auto_update_health_check` audit event. Informational only — there is no automatic rollback. Recovery is a new release with the known-good code, or installing the previous release's package again (README, Rollback).
 
 Every AutoUpdater run writes an `auto_update_run` audit event (via `debug_logger.log_event`) so operators can reconstruct history even if the new build breaks its own logging.
 
@@ -1465,7 +1465,7 @@ All four are app-settings overrides; no redeploy is needed to change them.
 | Env var | Default | Effect |
 |---|---|---|
 | `SKIP_AUTO_UPDATE` | `false` | When `true`, AutoUpdater returns `action=disabled` without contacting GitHub. Emergency switch. |
-| `PINNED_VERSION` | *(unset)* | When set to e.g. `1.2.3`, only that exact version may be deployed. Lets you roll back or freeze prod without touching code. |
+| `PINNED_VERSION` | *(unset)* | When set to e.g. `1.2.3`, only that exact version may be deployed, and only while it is the latest release. Freezes updates; it does not roll back (older releases are never fetched). |
 | `UPDATE_CHANNEL` | `stable` | `stable` refuses pre-releases (by version-string suffix or GitHub's `prerelease` flag). `prerelease` accepts alpha/beta/rc. Use the latter in test environments. |
 | `MIN_RELEASE_AGE_MINUTES` | `60` | Defer releases younger than N minutes. Set to `0` on test environments for instant pickup. |
 
@@ -1482,9 +1482,9 @@ All four are app-settings overrides; no redeploy is needed to change them.
 
 1. Tag a pre-release: `v1.3.0-alpha.1`; on the GitHub release form check **"Set as a pre-release"** → test env picks it up; customers skip it.
 2. Promote to stable: tag `v1.3.0` with the pre-release box **unchecked** → customers pick it up once it's ≥60 minutes old.
-3. If broken: delete the release on GitHub before the age gate opens, or set `PINNED_VERSION=<previous>` on affected apps.
+3. If broken: published releases are never replaced or deleted. Set `SKIP_AUTO_UPDATE=true` on collectors that have not updated yet (the 60-minute age gate gives time), release the known-good code as a new, higher version, and reinstall the previous package on collectors that no longer start (README, Rollback).
 
-The current version is stored in the `VERSION` file at the project root.
+The current version is stored in `function-app/VERSION`.
 
 ### Site24x7 Data Centers
 
@@ -1654,7 +1654,7 @@ curl http://localhost:7071/api/debug
 | `S247_GENERAL_LOGTYPE` | No | Base64-encoded general logtype sourceConfig |
 | `UPDATE_CHECK_URL` | No | URL or `owner/repo` shorthand for auto-update checks |
 | `UPDATE_CHANNEL` | No | `stable` (default) or `prerelease` — controls whether alpha/beta builds are accepted |
-| `PINNED_VERSION` | No | If set, AutoUpdater only deploys this exact version (rollback / freeze) |
+| `PINNED_VERSION` | No | If set, AutoUpdater only deploys this exact version, and only while it is the latest release (freeze, not rollback) |
 | `SKIP_AUTO_UPDATE` | No | `true` disables AutoUpdater entirely — emergency switch |
 | `MIN_RELEASE_AGE_MINUTES` | No | Grace period before a new release is eligible (default: `60`) |
 | `SITE24X7_UPLOAD_DOMAIN` | No | Override upload endpoint (for testing with mock server) |

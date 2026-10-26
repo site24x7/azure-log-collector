@@ -2,7 +2,7 @@
 
 **Audience:** Customer security, compliance and platform teams evaluating the collector before deploying it into their Azure tenant.
 
-**Summary:** The collector is an Azure Function App that runs in your subscription. It uses its managed identity for Azure Resource Manager (ARM), storage account keys for reading the logs it buffers, and your Site24x7 Device Key for Site24x7. It creates diagnostic settings, regional storage accounts and Site24x7 log types. On a new deployment it changes nothing until an admin starts collecting. This document states what it can do and what it holds, including the open items in section 12.
+**Summary:** The collector is an Azure Function App that runs in your subscription. It uses its managed identity for Azure Resource Manager (ARM), storage account keys for reading the logs it buffers, and your Site24x7 Device Key for Site24x7. It creates diagnostic settings, regional storage accounts and Site24x7 log types. A deployment from the Azure portal template changes nothing until an admin starts collecting (`confirmAfterDiscovery`, on by default; turning it off, or installing with `setup/setup.sh`, which does not set `REVIEW_BEFORE_COLLECTING`, starts collecting at once). This document states what it can do and what it holds, including the open items in section 12.
 
 ---
 
@@ -45,7 +45,7 @@ The Site24x7 addresses come from the `SITE24X7_BASE_URL` app setting. The upload
 | System-assigned managed identity | Azure-managed | All ARM calls |
 | `AzureWebJobsStorage` / `DEPLOYMENT_STORAGE_CONNECTION_STRING` | App settings (connection strings with the account key of the collector's own storage account) | Functions runtime, the collector's state, scan queue |
 | Regional storage account keys | Read at run time through ARM `listKeys` (Contributor on the collector's resource group), held in memory only | Reading the buffered log blobs |
-| Site24x7 Device Key | App setting `SITE24X7_API_KEY` (encrypted at rest by Azure) | Authenticating to Site24x7. It is not stored with the saved log type configurations, and it is never written to logs. |
+| Site24x7 Device Key | App setting `SITE24X7_API_KEY` (encrypted at rest by Azure) | Authenticating to Site24x7. It is not stored with the saved log type configurations, and the collector never writes it to its logs. (On the Site24x7 side, a request with an unknown Device Key is logged by Site24x7's own log-collection service; that is outside this collector.) |
 | Function App host keys | Azure-managed | Authorize every HTTP endpoint (section 7). Used by you, for example to open the dashboard. **Never sent to Site24x7.** |
 | `site24x7` function key | Azure-managed; created by the collector on the 14 functions Site24x7 calls | **Sent to Site24x7** at registration (section 6). It does not open the dashboard, debug data or health endpoint. |
 
@@ -162,7 +162,9 @@ All 18 HTTP functions use `authLevel: function`. Each needs a valid function or 
   - The collector never deletes blobs.
   - The lifecycle rule deletes them after `BLOB_RETENTION_DAYS`, whether or not they were sent.
   - If Site24x7 can't be reached for longer than that, the oldest logs are lost.
-- **Retries:** failed uploads are retried on the next run, every 2 minutes.
+- **Retries:** an upload that fails for a reason a retry can fix (Site24x7 unreachable, timeout, HTTP 408 / 429 / 5xx, or the Device Key refused with 401 / 403) is retried on the next run, every 2 minutes, while the logs are still kept.
+  - Records Site24x7 refuses for good (HTTP 400 / 404 / 415 / 422, or a single record still too large after splitting on 413) are dropped and counted, not retried.
+  - Delivery is at least once: a run that stops between an upload and saving its checkpoint, or a block range whose records cannot be split at block boundaries, can send some records again.
 - **What is sent:** only the fields the Site24x7 log type defines are taken from each record.
   - Masking, hashing and derived fields from the log type configuration are applied before sending.
   - Masking and hashing fail closed: if a rule cannot be applied, the whole field is withheld.
@@ -190,7 +192,8 @@ Every run and post-update health check is recorded as an event.
 **Release builds**
 - Releases are built by GitHub Actions from the tagged commit.
 - The workflow validates the version first and pins its actions to commit SHAs.
-- It refuses to replace the package of a version that is already released.
+- It never replaces a published release: a run for a version that is already published stops, a tag that exists without a release is refused, and only an unpublished draft left by a failed run is rebuilt. There is no option to force it.
+- The repository does not yet enforce this on its own: immutable releases are off (see section 12), so a repository admin could still edit a release by hand.
 
 **Controls**
 
@@ -236,9 +239,9 @@ Every run and post-update health check is recorded as an event.
 | Item | Status | Mitigation |
 |---|---|---|
 | Site24x7 holds a key to the collector's management endpoints (section 6) | By design (Site24x7 runs the admin actions) | Dedicated `site24x7` function key on 14 functions only; admin-only, server-built and audited actions in Site24x7; `SITE24X7_KEY_EXCLUDE` narrows or removes its reach. |
-| A failed update is not rolled back automatically | Mitigated | A package whose functions cannot load (missing dependency, broken import, wrong Python build) is refused before install, by the release workflow and again by the collector. Packages are also checked (digest, structure, version) before install, releases install only after `MIN_RELEASE_AGE_MINUTES`, and the update is reported as confirmed only when the new version runs. Every release keeps its package as a release asset to go back to; `PINNED_VERSION` and `SKIP_AUTO_UPDATE` control updates. |
+| A failed update is not rolled back automatically | Mitigated | A package whose functions cannot load (missing dependency, broken import, wrong Python build) is refused before install, by the release workflow and again by the collector. Packages are also checked (digest, structure, version) before install, releases install only after `MIN_RELEASE_AGE_MINUTES`, and the update is reported as confirmed only when the new version runs. The import check lowers the risk; it cannot prove the new version works at run time. Every release keeps its package as a release asset, and going back means installing the previous package again (README, Rollback). `SKIP_AUTO_UPDATE` stops updates; `PINNED_VERSION` only lets that exact version be installed, and only while it is the latest release: it freezes updates, it does not go back to an older version. |
 | Masking and filter patterns come from Site24x7 and run with Python's backtracking regular expressions | Accepted | Patterns are defined by Site24x7, not by log content. A rule that fails is applied fail-closed (the field is withheld). |
-| Release packages the template and updater install | Open (repository setting) | The template and the updater install release assets. The release workflow publishes each release once with all its files (draft, then publish) and never replaces them. Recommended: turn on immutable releases for the repository, so no one can change a published release's files or tag. |
+| Release packages the template and updater install | Open (repository setting) | The template and the updater install release assets. The release workflow publishes each release once with all its files (draft, then publish) and has no path to replace a published one. Immutable releases are not yet on for the repository; until a repository admin turns them on, an admin could still change a published release's files or tag by hand. |
 | No Key Vault, Private Endpoint or customer-managed key by default | By design (single template) | Key Vault references in app settings work for `SITE24X7_API_KEY`. The Flex Consumption plan supports virtual network integration; the template doesn't configure it. |
 
 ## 13. Common questions

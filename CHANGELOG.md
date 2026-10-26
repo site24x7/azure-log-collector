@@ -9,6 +9,17 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 
 ## [Unreleased]
 
+### Security
+- The release workflow can no longer replace a published release: the
+  `force_release` option, which deleted and recreated an existing release and
+  its tag, is removed. A run for a published version stops; a tag without a
+  release is refused; only an unpublished draft left by a failed run is rebuilt.
+- Documentation corrected: `PINNED_VERSION` freezes updates but cannot roll
+  back (recovery is reinstalling the previous release's package); review before
+  collecting applies to portal deployments with `confirmAfterDiscovery` on, not
+  to `setup.sh`; delivery is at least once; permanent upload refusals are
+  dropped, not retried.
+
 ### Fixed
 - Pause/resume uses shared storage state without restarting the Function App or
   waiting for registration/key lookups before answering.
