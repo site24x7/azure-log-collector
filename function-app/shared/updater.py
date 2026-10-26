@@ -777,6 +777,16 @@ def deploy_update(package_url: str, expected_sha256: Optional[str] = None,
                 pass
 
 
+def automatic_updates_enabled() -> bool:
+    """Whether the daily AutoUpdater may install updates on its own.
+
+    Off unless AUTO_UPDATE_ENABLED is true: the timer then only checks and
+    records what is available, and an admin installs it (Site24x7's Update
+    Collector, or POST /api/check-update?apply=1). SKIP_AUTO_UPDATE still turns
+    every update off, manual ones included."""
+    return os.environ.get("AUTO_UPDATE_ENABLED", "").strip().lower() in ("1", "true", "yes")
+
+
 def check_and_apply_update(auto_apply: bool = False) -> Dict:
     """Full update check workflow.
 

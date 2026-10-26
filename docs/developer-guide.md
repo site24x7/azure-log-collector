@@ -170,7 +170,7 @@ function-app/
 | **StopProcessing** | HTTP POST | Disable log processing |
 | **HealthCheck** | HTTP GET | Health probe endpoint |
 | **CheckUpdate** | HTTP GET | Check for available updates |
-| **AutoUpdater** | Timer | Periodically check and apply updates |
+| **AutoUpdater** | Timer | Daily update check; installs only when `AUTO_UPDATE_ENABLED=true` |
 | **Dashboard** | HTTP GET | Serve the management dashboard UI |
 
 ### Module Dependency Graph
@@ -1432,7 +1432,7 @@ The app runs on the Flex Consumption plan with Python 3.13 (`functionAppConfig.r
 
 ### How Auto-Update Works
 
-The `AutoUpdater` function (timer-triggered, 3 AM UTC daily) and `CheckUpdate` endpoint (HTTP) both use `shared/updater.py`. The flow has several hard safety gates so AutoUpdater cannot brick the Function App with a bad release.
+The `AutoUpdater` function (timer-triggered, 3 AM UTC daily) and `CheckUpdate` endpoint (HTTP) both use `shared/updater.py`. The timer installs only when `AUTO_UPDATE_ENABLED=true` (off by default; otherwise it reports `update_available`); `POST /api/check-update?apply=1` (Site24x7's Update Collector) installs regardless. The flow has several hard safety gates so AutoUpdater cannot brick the Function App with a bad release.
 
 **Pipeline:**
 
@@ -1464,6 +1464,7 @@ All four are app-settings overrides; no redeploy is needed to change them.
 
 | Env var | Default | Effect |
 |---|---|---|
+| `AUTO_UPDATE_ENABLED` | `false` | When `true`, the daily AutoUpdater installs updates; otherwise it only checks and an admin installs. |
 | `SKIP_AUTO_UPDATE` | `false` | When `true`, AutoUpdater returns `action=disabled` without contacting GitHub. Emergency switch. |
 | `PINNED_VERSION` | *(unset)* | When set to e.g. `1.2.3`, only that exact version may be deployed, and only while it is the latest release. Freezes updates; it does not roll back (older releases are never fetched). |
 | `UPDATE_CHANNEL` | `stable` | `stable` refuses pre-releases (by version-string suffix or GitHub's `prerelease` flag). `prerelease` accepts alpha/beta/rc. Use the latter in test environments. |
@@ -1655,6 +1656,7 @@ curl http://localhost:7071/api/debug
 | `UPDATE_CHECK_URL` | No | URL or `owner/repo` shorthand for auto-update checks |
 | `UPDATE_CHANNEL` | No | `stable` (default) or `prerelease` — controls whether alpha/beta builds are accepted |
 | `PINNED_VERSION` | No | If set, AutoUpdater only deploys this exact version, and only while it is the latest release (freeze, not rollback) |
+| `AUTO_UPDATE_ENABLED` | No | `true` lets the daily AutoUpdater install updates (default `false`: check only) |
 | `SKIP_AUTO_UPDATE` | No | `true` disables AutoUpdater entirely — emergency switch |
 | `MIN_RELEASE_AGE_MINUTES` | No | Grace period before a new release is eligible (default: `60`) |
 | `SITE24X7_UPLOAD_DOMAIN` | No | Override upload endpoint (for testing with mock server) |

@@ -177,7 +177,7 @@ All 18 HTTP functions use `authLevel: function`. Each needs a valid function or 
 
 ## 9. Self-update
 
-Updates come from the GitHub releases of `UPDATE_CHECK_URL`, which the template sets to this repository.
+Updates come from the GitHub releases of `UPDATE_CHECK_URL`, which the template sets to this repository. **Automatic installs are off by default** (`AUTO_UPDATE_ENABLED=false`): the daily check only records what is available, and an update is installed when an admin asks for it from Site24x7. Every gate below applies to both.
 
 **Before deploying a release, the updater checks:**
 - the channel: pre-releases are refused unless `UPDATE_CHANNEL=prerelease`;
@@ -199,6 +199,7 @@ Every run and post-update health check is recorded as an event.
 
 | App setting | Effect |
 |---|---|
+| `AUTO_UPDATE_ENABLED=true` | The daily run installs updates on its own (default `false`: it only checks). |
 | `SKIP_AUTO_UPDATE=true` | No automatic or manual update is applied. |
 | `UPDATE_CHECK_URL` unset | No update checks at all. |
 | `UPDATE_CHANNEL=stable` | The default: pre-releases are refused. |

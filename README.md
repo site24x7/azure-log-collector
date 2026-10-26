@@ -219,23 +219,26 @@ No Event Hubs needed — storage-based polling eliminates the ~$11/region/month 
 
 ## Auto-Updates
 
-The Function App can self-update from GitHub Releases.
+The Function App updates from GitHub Releases. **Automatic installs are off by default:** the
+nightly check (3 AM UTC) only records whether a newer release exists, and an admin installs it
+with **Update Collector** in Site24x7 (Overview > Collector Details > Version). To let the collector install
+updates on its own, set `AUTO_UPDATE_ENABLED=true`.
 
 ### Basic setup
 
-1. Set `UPDATE_CHECK_URL` app setting to `site24x7/azure-log-collector`
-2. Bump `function-app/VERSION` and push to `main`
-3. GitHub Actions creates a release with the deployable zip
-4. The Function App detects the new version and deploys it on its next nightly run (3 AM UTC)
+1. The template sets `UPDATE_CHECK_URL` to `site24x7/azure-log-collector` and `AUTO_UPDATE_ENABLED` to `false`
+2. A release is published by the release workflow (manual dispatch; see `docs/release-validation.md` for stable releases)
+3. Site24x7 shows that an update is available; an admin installs it, or the nightly run does when `AUTO_UPDATE_ENABLED=true`
 
 ### Safety controls (app settings)
 
 | Setting | Default | Purpose |
 |---|---|---|
+| `AUTO_UPDATE_ENABLED` | `false` | `true` lets the nightly run install updates on its own. Off: it only checks, and admins install from Site24x7. |
 | `UPDATE_CHANNEL` | `stable` | `stable` refuses any alpha/beta/rc; `prerelease` accepts them. Use `prerelease` in test environments. |
 | `PINNED_VERSION` | *(unset)* | If set (e.g. `1.2.3`), only that version is deployed, and only while it is the latest release (older releases are not fetched). |
 | `SKIP_AUTO_UPDATE` | `false` | `true` applies no update at all, automatic or manual — emergency switch, no redeploy needed. |
-| `MIN_RELEASE_AGE_MINUTES` | `60` | Refuses releases younger than N minutes. Gives you a grace window to delete a bad release before it propagates. |
+| `MIN_RELEASE_AGE_MINUTES` | `60` | Refuses releases younger than N minutes, a grace window to stop a bad release before it is installed. |
 
 ### Separating alpha/beta from customer builds
 

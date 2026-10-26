@@ -7,7 +7,14 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
-## [Unreleased]
+## [1.0.1-beta15] — 2026-10-26
+
+### Changed
+- Automatic updates are off by default (`AUTO_UPDATE_ENABLED=false`, set by
+  the template). The daily AutoUpdater only checks and records what is
+  available; an admin installs it from Site24x7 (Update Collector). Set
+  `AUTO_UPDATE_ENABLED=true` to let the collector install updates on its own.
+  `SKIP_AUTO_UPDATE` still turns every update off.
 
 ### Security
 - The release workflow can no longer replace a published release: the
