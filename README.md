@@ -201,7 +201,7 @@ No Event Hubs needed — storage-based polling eliminates the ~$11/region/month 
 │   ├── BlobLogProcessor/     ← Timer: polls storage, forwards logs to S247
 │   ├── DiagSettingsManager/  ← Timer: 6h resource scan + config
 │   ├── Dashboard/            ← Web dashboard (single-page HTML)
-│   ├── tests/                ← 687 tests (pytest)
+│   ├── tests/                ← unit tests (pytest)
 │   └── ...                   ← 19 more functions (22 functions total)
 ├── docs/
 │   ├── architecture-document.md
@@ -275,7 +275,7 @@ See **[docs/security-overview.md](docs/security-overview.md)** for a customer-fa
 ```bash
 cd function-app
 pip install -r requirements-dev.txt
-python3 -m pytest tests/ -q     # 687 tests
+python3 -m pytest tests/ -q
 ```
 
 See [docs/developer-guide.md](docs/developer-guide.md) for detailed development setup.

@@ -20,7 +20,7 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 - Corrected the README, architecture, developer, troubleshooting, security and
   Entra ID documents against the code: tagged template URLs, function and
   endpoint names, schedules, registration retries, update controls and the
-  current test count. Removed instructions for test programs that are not in
+  test instructions. Removed instructions for test programs that are not in
   the repository.
 
 ## [1.0.1-beta15] — 2026-10-26

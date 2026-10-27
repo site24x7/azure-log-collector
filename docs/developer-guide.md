@@ -96,7 +96,7 @@ cd function-app
 python3 -m pytest tests/ -v
 ```
 
-This runs all 687 tests. See [Testing Guide](#7-testing-guide) for details.
+This runs the full test suite. See [Testing Guide](#7-testing-guide) for details.
 
 ## 2. Architecture Overview
 
@@ -944,7 +944,7 @@ python3 -m pytest tests/test_my_new_endpoint.py -v
 
 | Suite | Location | Runner | Tests | What It Covers |
 |-------|----------|--------|-------|----------------|
-| Unit tests | `function-app/tests/` | pytest | 687 | All shared modules + function endpoints |
+| Unit tests | `function-app/tests/` | pytest | all | All shared modules + function endpoints |
 
 ### Running Unit Tests
 
@@ -1462,7 +1462,7 @@ refactor: extract log parsing into shared/log_parser.py
 
 ### Pull Request Checklist
 
-- [ ] All 687 tests pass (`python3 -m pytest tests/ -v`)
+- [ ] All tests pass (`python3 -m pytest tests/ -v`)
 - [ ] No secrets or credentials in code
 - [ ] New functions are direct child folders with `function.json` + `__init__.py`
 - [ ] New shared functions have unit tests
