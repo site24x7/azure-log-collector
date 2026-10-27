@@ -26,3 +26,13 @@ def test_set_settings_are_reported(monkeypatch):
     current = json.loads(UpdateSettings.main(_get()).get_body())
     assert current == {"SAFE_DELETE_MAX_AGE_DAYS": 14, "MONITOR_PIPELINE_RESOURCES": True,
                        "AUTO_SCAN_ENABLED": False}
+
+
+def test_empty_settings_read_like_the_collector(monkeypatch):
+    # An empty yes/no setting is off at run time; empty days fall back to 7.
+    monkeypatch.setenv("AUTO_SCAN_ENABLED", "")
+    monkeypatch.setenv("MONITOR_PIPELINE_RESOURCES", "")
+    monkeypatch.setenv("SAFE_DELETE_MAX_AGE_DAYS", "")
+    current = json.loads(UpdateSettings.main(_get()).get_body())
+    assert current == {"SAFE_DELETE_MAX_AGE_DAYS": 7, "MONITOR_PIPELINE_RESOURCES": False,
+                       "AUTO_SCAN_ENABLED": False}

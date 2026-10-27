@@ -26,16 +26,18 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     if req.method == "GET":
         current = {}
         for key, meta in ALLOWED_SETTINGS.items():
-            raw = os.environ.get(key, "")
+            # Read each setting exactly as the collector does: the default
+            # only when it is unset; an empty yes/no setting counts as off.
+            raw = os.environ.get(key)
             if meta["type"] == "int":
                 try:
-                    current[key] = int(raw) if raw else meta["default"]
+                    current[key] = int(raw) if raw is not None else meta["default"]
                 except (ValueError, TypeError):
                     current[key] = meta["default"]
             elif meta["type"] == "bool":
-                current[key] = raw.lower() == "true" if raw else meta["default"]
+                current[key] = raw.lower() == "true" if raw is not None else meta["default"]
             else:
-                current[key] = raw
+                current[key] = raw or ""
         return func.HttpResponse(
             json.dumps(current, indent=2),
             mimetype="application/json",
