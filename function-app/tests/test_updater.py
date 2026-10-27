@@ -506,6 +506,23 @@ class TestPinnedVersion:
         mock_deploy.assert_called_once_with("pkg", expected_sha256="abc", expected_version="1.5.0")
 
 
+    @patch("shared.updater.deploy_update")
+    @patch("shared.updater.fetch_remote_version")
+    @patch("shared.updater.get_local_version")
+    def test_pin_older_than_installed_never_downgrades(
+        self, mock_local, mock_remote, mock_deploy, monkeypatch
+    ):
+        monkeypatch.setenv("UPDATE_CHECK_URL", "https://example.com/v.json")
+        monkeypatch.setenv("PINNED_VERSION", "1.0.0")
+        monkeypatch.setenv("MIN_RELEASE_AGE_MINUTES", "0")
+        mock_local.return_value = "1.5.0"
+        mock_remote.return_value = {"version": "1.0.0", "package_url": "pkg", "sha256": "abc"}
+        result = check_and_apply_update(auto_apply=True)
+        assert result["action"] == "pinned_older"
+        assert result["update_available"] is False
+        mock_deploy.assert_not_called()
+
+
 class TestReleaseAgeGate:
     @patch("shared.updater.deploy_update")
     @patch("shared.updater.fetch_remote_version")

@@ -1,6 +1,6 @@
 # Site24x7 Azure Diagnostic Logs Collection — Architecture Document
 
-**Version:** 1.0.0  
+**Version:** 1.0.1-beta15
 **Last Updated:** March 2026  
 **Status:** Implementation Complete — Pending Deployment
 
@@ -91,7 +91,7 @@ This system automates the collection and forwarding of Azure diagnostic logs to 
 ║  │  │  4. Batch-create log types │    │  5. Apply masking/hashing/      │    │  ║
 ║  │  │  5. Store sourceConfig in  │    │     filtering/derived fields    │    │  ║
 ║  │  │     blob config store      │    │  6. Gzip + POST to Site24x7    │    │  ║
-║  │  │  6. Create diag settings   │    │  7. Delete processed blobs     │    │  ║
+║  │  │  6. Create diag settings   │    │  7. Retain processed blobs     │    │  ║
 ║  │  │     → regional storage     │    │  8. Update checkpoint           │    │  ║
 ║  │  └────────────┬───────────────┘    └──────────────┬──────────────────┘    │  ║
 ║  │               │                                   │                       │  ║
@@ -99,7 +99,7 @@ This system automates the collection and forwarding of Azure diagnostic logs to 
 ║  │  │  AutoUpdater               │                   │                       │  ║
 ║  │  │  (daily 3 AM UTC)          │                   │                       │  ║
 ║  │  │  Checks remote version.json│                   │                       │  ║
-║  │  │  Auto-deploys if newer     │                   │                       │  ║
+║  │  │  Installs only if enabled  │                   │                       │  ║
 ║  │  └────────────────────────────┘                   │                       │  ║
 ║  └───────────────────────────────────────────────────┼───────────────────────┘  ║
 ║                                                      │                          ║
@@ -120,31 +120,31 @@ This system automates the collection and forwarding of Azure diagnostic logs to 
 ║  │  GET  /api/dashboard             — Web UI                                  │  ║
 ║  │  GET  /api/status                — System overview + resource counts        │  ║
 ║  │  GET  /api/health                — Liveness probe + dependency checks      │  ║
-║  │  POST /api/scan                  — On-demand DiagSettingsManager run        │  ║
+║  │  POST /api/scan                  — Queue scan for ScanWorker                │  ║
 ║  │  GET  /api/ignore-list           — Excluded RGs/locations/resources         │  ║
 ║  │  PUT  /api/ignore-list           — Update exclusions + cleanup diag        │  ║
 ║  │  GET  /api/disabled-logtypes     — Disabled log categories                 │  ║
 ║  │  POST /api/disabled-logtypes     — Disable/enable + cleanup                │  ║
 ║  │  PUT  /api/processing            — Toggle BlobLogProcessor on/off          │  ║
-║  │  POST /api/remove-diag-settings  — Bulk remove all diagnostic settings     │  ║
+║  │  POST /api/remove-diagnostic-settings — Remove all diagnostic settings     │  ║
 ║  │  GET  /api/general-logtype       — General catch-all log type config       │  ║
 ║  │  PUT  /api/general-logtype       — Update general log type                 │  ║
 ║  │  GET  /api/check-update          — Check for available updates             │  ║
-║  │  POST /api/check-update          — Check and auto-apply update             │  ║
+║  │  POST /api/check-update?apply=1  — Apply update if allowed                 │  ║
 ║  └────────────────────────────────────────────────────────────────────────────┘  ║
 ╚══════════════════════════════════════════════════════════════════════════════════╝
             │                                   │
             │  GET /applog/azure/               │  POST https://{uploadDomain}
             │    logtype_supported              │    /upload
-            │  POST /applog/azure/              │  (gzip, X-DeviceKey,
-            │    logtype_create                 │   X-LogType, X-StreamMode)
+            │  GET /applog/logtype              │  (gzip, X-DeviceKey,
+            │    ?logType={category}            │   X-LogType, X-StreamMode)
             ▼                                   ▼
 ╔══════════════════════════════════════════════════════════════════════════════════╗
 ║  SITE24X7 SERVER (applogs)                                                       ║
 ║                                                                                  ║
 ║  ┌─── AppLogServlet (deviceKey auth) ─────────────────────────────────────────┐  ║
 ║  │  GET  /applog/azure/logtype_supported → azureLogTypes.json (50+ types)    │  ║
-║  │  POST /applog/azure/logtype_create    → LogTypeAPI → sourceConfig         │  ║
+║  │  GET /applog/logtype    → LogTypeAPI → sourceConfig                       │  ║
 ║  └────────────────────────────────────────────────────────────────────────────┘  ║
 ║                                                                                  ║
 ║  ┌─── Upload Endpoint ────────────────────────────────────────────────────────┐  ║
@@ -280,8 +280,8 @@ Azure Diagnostic Settings require the destination Storage Account to be **in the
 │  └─ Load ignore list + configured resources from blob                   │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  STEP 2: FETCH SUPPORTED LOG TYPES                                      │
-│  ├─ Check blob cache for azure-log-types.json                           │
-│  ├─ If missing: GET /applog/azure/logtype_supported (Site24x7 API)     │
+│  ├─ Load cached azure-log-types.json as outage fallback                 │
+│  ├─ Each scan: GET /applog/azure/logtype_supported                     │
 │  └─ Build normalized lookup map (remove hyphens, lowercase)             │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  STEP 3: DISCOVER RESOURCES                                             │
@@ -298,7 +298,7 @@ Azure Diagnostic Settings require the destination Storage Account to be **in the
 ├─────────────────────────────────────────────────────────────────────────┤
 │  STEP 5: CATEGORY COLLECTION                                            │
 │  ├─ For each resource:                                                   │
-│  │   ├─ Skip if already configured (in tracking blob OR has diag setting)│
+│  │   ├─ Skip unchanged tracking; verify Azure when reconciliation is due │
 │  │   ├─ Get diagnostic categories for resource                          │
 │  │   ├─ Filter out disabled categories                                   │
 │  │   ├─ Map resource → categories + storage account                     │
@@ -306,8 +306,8 @@ Azure Diagnostic Settings require the destination Storage Account to be **in the
 │  └─ Build resource_category_map and categories_to_create list           │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  STEP 6: BATCH LOG TYPE CREATION                                        │
-│  ├─ POST /applog/azure/logtype_create with categories list              │
-│  ├─ Site24x7 returns: [{category, sourceConfig (base64)}]              │
+│  ├─ GET /applog/logtype per category (parallel + fallback)              │
+│  ├─ Client builds: [{category, sourceConfig (base64)}]                 │
 │  ├─ Decode and save each sourceConfig to blob:                          │
 │  │   config/logtype-configs/S247_{category}.json                        │
 │  └─ Track logtypes_created count                                        │
@@ -317,13 +317,13 @@ Azure Diagnostic Settings require the destination Storage Account to be **in the
 │  │   ├─ Verify at least one category has config (specific or general)   │
 │  │   ├─ Build storage_account_id from region + suffix                   │
 │  │   ├─ MonitorManagementClient.diagnostic_settings.create_or_update()  │
-│  │   │   setting_name: "s247-diag-logs"                                 │
-│  │   │   category_group: "allLogs" (captures everything)                │
+│  │   │   setting_name: collector_setting_name()                         │
+│  │   │   categories: selected effective categories                      │
 │  │   │   storage_account_id: regional storage account                   │
 │  │   └─ Mark resource as configured in blob tracking                    │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  STEP 8: FINALIZE                                                       │
-│  ├─ Update LAST_SCAN_TIME app setting                                   │
+│  ├─ Save last_scan_time in config/scan-state.json                       │
 │  └─ Return summary with all stats                                       │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -359,7 +359,7 @@ Azure Diagnostic Settings require the destination Storage Account to be **in the
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  STEP 1: PRE-FLIGHT CHECKS                                             │
-│  ├─ If PROCESSING_ENABLED == false → skip entirely                     │
+│  ├─ Sync registration; shared processing flag → skip if off            │
 │  ├─ Load all logtype configs from blob: config/logtype-configs/*.json  │
 │  ├─ Load general config from S247_GENERAL_LOGTYPE env var              │
 │  └─ If no configs found and general not enabled → exit early           │
@@ -371,7 +371,7 @@ Azure Diagnostic Settings require the destination Storage Account to be **in the
 ├─────────────────────────────────────────────────────────────────────────┤
 │  STEP 3: PROCESS EACH REGIONAL ACCOUNT                                  │
 │  ├─ Get storage account keys                                            │
-│  ├─ Get last_processed timestamp from checkpoint                        │
+│  ├─ Load per-blob byte/block position and skip_records                  │
 │  │                                                                      │
 │  ├─ FOR EACH CONTAINER (matching insights-logs-*):                      │
 │  │   ├─ Extract category from name: insights-logs-{cat} → {cat}        │
@@ -382,8 +382,8 @@ Azure Diagnostic Settings require the destination Storage Account to be **in the
 │  │   │   └─ Skip container if neither found                            │
 │  │   │                                                                  │
 │  │   ├─ FOR EACH BLOB (.json files only):                              │
-│  │   │   ├─ Skip if blob.last_modified ≤ last_processed (checkpoint)   │
-│  │   │   ├─ Download blob content                                       │
+│  │   │   ├─ Resume per-blob byte offset / block position (checkpoint)  │
+│  │   │   ├─ Read bounded blob ranges (up to 50 MB)                      │
 │  │   │   ├─ Parse JSON → extract "records" array                       │
 │  │   │   ├─ POST to Site24x7 via client.post_logs()                    │
 │  │   │   │   ├─ Decode sourceConfig (base64 → JSON)                    │
@@ -392,15 +392,15 @@ Azure Diagnostic Settings require the destination Storage Account to be **in the
 │  │   │   │   ├─ Apply masking (regex → replacement string)             │
 │  │   │   │   ├─ Apply hashing (regex → SHA256 digest)                  │
 │  │   │   │   ├─ Apply derived fields (regex → named groups)            │
-│  │   │   │   ├─ Add _zl_timestamp (ms epoch) + s247agentuid (RG)      │
+│  │   │   │   ├─ Add _zl_timestamp + s247agentuid (app; RG fallback)   │
 │  │   │   │   ├─ Gzip compress JSON array                               │
 │  │   │   │   └─ POST to https://{uploadDomain}/upload                  │
-│  │   │   ├─ If success: mark blob for deletion                         │
-│  │   │   └─ Track latest blob timestamp for checkpoint                 │
+│  │   │   ├─ If handled: advance per-blob checkpoint                    │
+│  │   │   └─ Track handled byte/block position for checkpoint           │
 │  │   │                                                                  │
-│  │   └─ DELETE successfully processed blobs                            │
+│  │   └─ KEEP blobs until storage lifecycle expires them                │
 │  │                                                                      │
-│  └─ Update checkpoint with latest timestamp per account                │
+│  └─ Save per-blob progress (at-least-once delivery)                    │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  STEP 4: SAVE CHECKPOINTS                                               │
 │  └─ Write to s247-checkpoints/blob-processor-checkpoint.json           │
@@ -414,7 +414,7 @@ Azure Diagnostic Settings require the destination Storage Account to be **in the
   "uploaded": 1200,
   "general": 50,
   "dropped": 0,
-  "blobs_deleted": 45
+  "blobs_advanced": 45
 }
 ```
 
@@ -462,7 +462,7 @@ Azure Diagnostic Settings require the destination Storage Account to be **in the
 │  1. Save new ignore list to config/ignore-list.json                    │
 │  2. Load currently configured resources                                │
 │  3. For each configured resource:                                      │
-│     ├─ Check if now matches an ignore rule (RG, location, or ID)      │
+│     ├─ Check ID/subscription/RG; scan evaluates location/type/tags    │
 │     ├─ If newly ignored:                                               │
 │     │   ├─ DELETE diagnostic setting "s247-diag-logs"                  │
 │     │   └─ Remove from configured-resources.json                       │
@@ -478,23 +478,23 @@ Azure Diagnostic Settings require the destination Storage Account to be **in the
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  1. SKIP_AUTO_UPDATE=true? → exit (action=disabled)                    │
 │  2. Read UPDATE_CHECK_URL (skip if unset)                              │
-│  3. PINNED_VERSION set? → only proceed if remote == pin                │
+│  3. Pin freezes; older pin → pinned_older (never downgrade)            │
 │  4. Fetch remote release (owner/repo → /releases/latest on stable      │
 │     channel, /releases on prerelease channel)                          │
 │  5. UPDATE_CHANNEL=stable? → skip if version is pre-release            │
 │     (by -alpha/-beta suffix OR GitHub prerelease flag)                 │
 │  6. Compare semver: local VERSION vs remote                            │
 │  7. Release younger than MIN_RELEASE_AGE_MINUTES? → defer              │
-│  8. Download zip, run validate_zip_package():                          │
+│  8. If install enabled: validate zip and package imports:              │
 │     ├─ zipfile integrity                                               │
-│     ├─ ast.parse every .py file                                        │
+│     ├─ ast.parse app .py files (skip .python_packages)                 │
 │     ├─ json.loads every .json file                                     │
 │     └─ required files present                                          │
 │  9. Validation failed? → refuse to deploy (action=deploy_failed)       │
 │ 10. Stage verified copy, PUT ARM onedeploy (Managed Identity)            │
 │ 11. Function App restarts with new version                             │
-│ 12. Post-deploy: ping /api/health, write auto_update_health_check      │
-│     audit event (informational, no rollback)                           │
+│ 12. New worker records confirmed_at on its first processing run        │
+│     No automatic rollback                                              │
 │ 13. Every run writes auto_update_run audit event                       │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -508,7 +508,7 @@ Azure Diagnostic Settings require the destination Storage Account to be **in the
 | Bad release published | 60-min grace window (step 7) allows deletion before propagation |
 | Rollback needed | `SKIP_AUTO_UPDATE=true`, then reinstall the previous release's package (README, Rollback). `PINNED_VERSION` only freezes updates |
 | Emergency halt | Set `SKIP_AUTO_UPDATE=true` — no redeploy required |
-| Post-deploy health fails | Logged via audit event; operator must redeploy or pin |
+| New version fails to start | No automatic rollback; inspect startup errors and reinstall a known-good package. A pin cannot recover it |
 
 ---
 
@@ -524,7 +524,7 @@ Manages per-region Storage Account provisioning, deprovisioning, and reconciliat
 | `get_active_regions(resources)` | Extract unique regions from resource list |
 | `get_provisioned_regions(resource_group)` | List accounts by tag: `managed-by: s247-diag-logs` |
 | `provision_storage_account(rg, region, suffix)` | Create account + container + CanNotDelete lock |
-| `deprovision_storage_account(rg, region, name)` | Remove lock + delete account |
+| `deprovision_storage_account(rg, region, name)` | Check for recent blobs before removing lock and deleting account |
 | `reconcile_regions(rg, active, provisioned, suffix)` | Add missing / remove unused regions |
 | `apply_lock(rg, name, type)` | Apply `CanNotDelete` management lock |
 | `remove_lock(rg, lock_name)` | Remove lock before deletion |
@@ -539,7 +539,7 @@ Wraps all Azure Management SDK calls behind a clean interface.
 | `supports_diagnostic_logs(id, type)` | `MonitorManagementClient` | Check if resource type has log categories (cached) |
 | `get_diagnostic_categories(id)` | `MonitorManagementClient` | List log category names for a resource |
 | `get_diagnostic_setting(id)` | `MonitorManagementClient` | Check if `s247-diag-logs` setting exists |
-| `create_diagnostic_setting(id, sa_id)` | `MonitorManagementClient` | Create with `allLogs` category group |
+| `create_diagnostic_setting(id, sa_id, categories=None, setting_name=None)` | `MonitorManagementClient` | Enable selected categories; use `allLogs` only when categories is `None` |
 | `delete_diagnostic_setting(id)` | `MonitorManagementClient` | Remove `s247-diag-logs` setting |
 | `remove_all_diagnostic_settings(sub_ids)` | `MonitorManagementClient` | Bulk removal across all resources |
 | `update_app_setting(key, value)` | `WebSiteManagementClient` | Update Function App configuration |
@@ -557,15 +557,14 @@ All configuration stored in blobs for dynamic updates without redeployment.
 | `get_configured_resources()` | `config/configured-resources.json` | Resource tracking map |
 | `clear_cache()` | N/A | Reset in-memory cache per invocation |
 
-**Caching Strategy:** In-memory cache per function invocation. `clear_cache()` called at start of every scan. Reduces blob reads during a single invocation cycle.
+**Caching Strategy:** In-memory cache with a 30-second TTL. `clear_cache()` called at start of every scan. Reduces blob reads during a single invocation cycle.
 
 ### 6.4 site24x7_client.py — Site24x7 API Client
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
 | `get_supported_log_types()` | `GET /applog/azure/logtype_supported` | Fetch 50+ supported Azure log types |
-| `create_log_types(categories)` | `POST /applog/azure/logtype_create` | Batch-create log types, returns sourceConfig |
-| `check_log_type(category)` | `GET /applog/logtype` | Verify log type exists |
+| `create_log_types(categories)` | `GET /applog/logtype?logType=<category>` | Batch-create log types, returns sourceConfig |
 | `post_logs(config_b64, events)` | `POST https://{domain}/upload` | Full log upload pipeline |
 
 **Log Upload Pipeline (post_logs):**
@@ -578,7 +577,7 @@ Input: base64 sourceConfig + raw Azure log events
   ├─ 4. Apply masking: regex match → replace with mask string
   ├─ 5. Apply hashing: regex match → replace with SHA256 hex digest
   ├─ 6. Apply derived fields: regex named groups → new fields
-  ├─ 7. Add metadata: _zl_timestamp (ms epoch), s247agentuid (resource group)
+  ├─ 7. Add metadata: _zl_timestamp (ms epoch), s247agentuid (Function App name; resource-group fallback)
   ├─ 8. Gzip compress JSON array
   └─ 9. POST to https://{uploadDomain}/upload
          Headers: X-DeviceKey, X-LogType, X-StreamMode:1,
@@ -588,7 +587,7 @@ Input: base64 sourceConfig + raw Azure log events
 
 ### 6.5 ignore_list.py — Resource Filtering
 
-Multi-level filtering with case-insensitive matching:
+Resource matching is case-insensitive where implemented. Tag keys are case-sensitive; tag values are case-insensitive:
 
 ```
 Resource → is_ignored()?
@@ -631,7 +630,7 @@ Checks remote `version.json` and auto-deploys via ARM OneDeploy.
 |----------|----------|---------|
 | **DiagSettingsManager** | `%TIMER_SCHEDULE%` (configurable) | Resource discovery, region reconciliation, log type creation, diagnostic settings configuration |
 | **BlobLogProcessor** | `0 */2 * * * *` (every 2 min) | Poll regional storage accounts, parse log blobs, upload to Site24x7, cleanup |
-| **AutoUpdater** | `0 0 3 * * *` (3 AM UTC daily) | Check for remote updates, auto-deploy if newer version found |
+| **AutoUpdater** | `0 0 3 * * *` (3 AM UTC daily) | Check for updates; install only when `AUTO_UPDATE_ENABLED=true` |
 
 ### 7.2 HTTP-Triggered Functions
 
@@ -640,7 +639,7 @@ Checks remote `version.json` and auto-deploys via ARM OneDeploy.
 | **Dashboard** | GET | `/api/dashboard` | Web UI with status, controls, monitoring |
 | **GetStatus** | GET | `/api/status` | System overview: resources, regions, configs, errors |
 | **HealthCheck** | GET | `/api/health` | Liveness probe + dependency checks |
-| **TriggerScan** | POST | `/api/scan` | On-demand DiagSettingsManager execution |
+| **TriggerScan** | POST | `/api/scan` | Enqueue scan-requests for ScanWorker |
 | **GetIgnoreList** | GET | `/api/ignore-list` | List exclusion rules + available resources |
 | **UpdateIgnoreList** | PUT | `/api/ignore-list` | Update exclusions + cleanup diagnostic settings |
 | **GetDisabledLogTypes** | GET | `/api/disabled-logtypes` | List disabled categories + supported types |
@@ -648,14 +647,8 @@ Checks remote `version.json` and auto-deploys via ARM OneDeploy.
 | **GetGeneralLogType** | GET | `/api/general-logtype` | General catch-all log type status |
 | **UpdateGeneralLogType** | PUT | `/api/general-logtype` | Toggle general log type on/off |
 | **StopProcessing** | PUT | `/api/processing` | Toggle BlobLogProcessor on/off |
-| **RemoveDiagSettings** | POST | `/api/remove-diag-settings` | Bulk remove all diagnostic settings |
+| **RemoveDiagSettings** | POST | `/api/remove-diagnostic-settings` | Bulk remove all diagnostic settings |
 | **CheckUpdate** | GET/POST | `/api/check-update` | Check for updates / auto-apply |
-
-### 7.3 Event-Triggered Functions (Alternative)
-
-| Function | Trigger | Purpose |
-|----------|---------|---------|
-| **EventHubProcessor** | EventHub (`diag-logs`) | Alternative: process logs from Event Hub (requires `EVENTHUB_CONN`) |
 
 ---
 
@@ -677,7 +670,7 @@ Returns complete system status.
     {"region": "eastus", "storage_account": "s247diag<eastus><suffix>"},
     {"region": "westus", "storage_account": "s247diag<westus><suffix>"}
   ],
-  "resources": {"total": 150, "configured": 120, "ignored": 30},
+  "resources": {"total": 150, "active": 120, "ignored": 30},
   "logtypes": {
     "configured_count": 8,
     "configured_keys": ["S247_AuditEvent", "S247_SignInLogs", "..."],
@@ -693,7 +686,7 @@ Returns complete system status.
 
 Triggers an immediate resource discovery and configuration scan.
 
-**Response:** Same as DiagSettingsManager output statistics (see §5.1).
+**Response:** HTTP 202 with `{"status": "started", "message": "Scan queued. Poll /api/status for results."}`.
 
 ### 8.3 GET /api/ignore-list
 
@@ -708,9 +701,7 @@ Triggers an immediate resource discovery and configuration scan.
   "available": {
     "resource_groups": ["prod-rg", "staging-rg", "..."],
     "locations": ["eastus", "westus", "westeurope", "..."],
-    "resource_ids": [
-      {"id": "...", "name": "myVM", "type": "Microsoft.Compute/virtualMachines", "location": "eastus", "resource_group": "prod-rg"}
-    ]
+    "resource_ids": []
   }
 }
 ```
@@ -741,8 +732,8 @@ Triggers an immediate resource discovery and configuration scan.
 {
   "disabled_logtypes": ["AppServiceConsoleLogs"],
   "supported_types": [
-    {"logtype": "AuditEvent", "display_name": "Audit Event", "disabled": false},
-    {"logtype": "AppServiceConsoleLogs", "display_name": "App Service Console Logs", "disabled": true}
+    {"category": "AuditEvent", "category_key": "auditevent", "s247_logtype": "<catalog-logtype>", "s247_display_name": "<catalog-display-name>", "resource_types": [], "disabled": false},
+    {"category": "AppServiceConsoleLogs", "category_key": "appserviceconsolelogs", "s247_logtype": "<catalog-logtype>", "s247_display_name": "<catalog-display-name>", "resource_types": [], "disabled": true}
   ]
 }
 ```
@@ -838,7 +829,7 @@ AzureWebJobsStorage
 │       ├── S247_SQLSecurityAuditEvents.json
 │       └── ...
 ├── s247-checkpoints/                          ← Processing checkpoints
-│   └── blob-processor-checkpoint.json         ← {account_name: last_processed_timestamp}
+│   └── blob-processor-checkpoint.json         ← {account/container/blob: byte/block position, skip_records, last_seen}
 └── azure-webjobs-*/                           ← Function runtime (managed by Azure)
 ```
 
@@ -903,22 +894,20 @@ Response:
 }
 ```
 
-#### POST /applog/azure/logtype_create
+#### GET /applog/logtype
 
-Batch-creates log types for Azure resource categories.
+Creates or checks one Azure category per request; the collector batches these requests in parallel.
 
 ```
-POST /applog/azure/logtype_create?deviceKey={api_key}
-Body: categories=["AuditEvent","SignInLogs","SQLSecurityAuditEvents"]
+GET /applog/logtype?deviceKey={api_key}&logType=auditevent
 
-Response:
-[
-  {
-    "category": "S247_AuditEvent",
-    "sourceConfig": "eyJhcGlLZXkiOiAiLi4uIiwg..."  ← base64-encoded
-  },
-  ...
-]
+Response (excerpt):
+{
+  "logType": "<catalog-logtype>",
+  "apiUpload": true,
+  "jsonPath": [{"name": "Time", "key": "time"}]
+}
+The client builds sourceConfig from this response.
 ```
 
 ### 10.2 Authentication Flow
@@ -944,7 +933,7 @@ Function App                          Site24x7 Server
 POST https://{uploadDomain}/upload
 
 Headers:
-  X-DeviceKey: {apiKey from sourceConfig}
+  X-DeviceKey: {current SITE24X7_API_KEY}
   X-LogType: {logType from sourceConfig}
   X-StreamMode: 1
   Log-Size: {uncompressed byte size}
@@ -1053,19 +1042,19 @@ Behavior: Blocks until token available (prevents API throttling)
 ```
 States: CLOSED (normal) → OPEN (failing) → HALF_OPEN (testing)
 
-CLOSED → OPEN:    After 5 consecutive failures
+CLOSED → OPEN:    After 8 failures (persisted across runs)
 OPEN → HALF_OPEN: After 300 seconds (5 minutes)
 HALF_OPEN → CLOSED: On first success
 HALF_OPEN → OPEN:   On first failure
 
-When OPEN: post_logs() returns False immediately (logs are dropped to prevent backlog)
+When OPEN: post_logs() returns False immediately (records remain for retry within storage retention)
 ```
 
 ### 12.3 Checkpoint Recovery
 
-- BlobLogProcessor tracks last processed blob timestamp per storage account
+- BlobLogProcessor tracks byte/block positions and skip_records per blob
 - On function restart/retry, processing resumes from checkpoint
-- No duplicate uploads, no data loss (at-least-once delivery)
+- At-least-once delivery: interrupted checkpoint saves or unsplittable block ranges can duplicate records; retention and permanent refusals can lose records
 
 ### 12.4 Error Handling Patterns
 
@@ -1073,7 +1062,7 @@ When OPEN: post_logs() returns False immediately (logs are dropped to prevent ba
 |----------|---------|
 | Resource doesn't support diagnostic logs | Skip, continue scanning |
 | Storage account provisioning fails | Log error, continue with other regions |
-| Site24x7 API unavailable | Circuit breaker opens, logs dropped temporarily |
+| Site24x7 API unavailable | Circuit breaker opens; records remain for retry within storage retention |
 | Blob download fails | Skip blob, continue processing others |
 | Diagnostic setting creation fails | Log error, track in error count |
 | ManagementLockClient unavailable | Graceful fallback, proceed without locks |
@@ -1105,17 +1094,18 @@ When OPEN: post_logs() returns False immediately (logs are dropped to prevent ba
 | `S247_GENERAL_LOGTYPE` | (none) | Base64-encoded general sourceConfig |
 | `UPDATE_CHECK_URL` | (none) | URL or `owner/repo` shorthand for auto-updates |
 | `UPDATE_CHANNEL` | `stable` | `stable` or `prerelease` — release channel filter |
-| `PINNED_VERSION` | (none) | If set, AutoUpdater only deploys this version |
-| `SKIP_AUTO_UPDATE` | `false` | `true` disables AutoUpdater entirely |
+| `PINNED_VERSION` | (none) | A pin freezes the collector at that version and never downgrades (`pinned_older` if the pin is older than installed). A newer pin installs only if it matches the fetched release; older releases are not fetched. |
+| `SKIP_AUTO_UPDATE` | `false` | `true` blocks automatic and manual updates/checks; `AUTO_UPDATE_ENABLED=false` leaves checks and manual installs enabled |
 | `MIN_RELEASE_AGE_MINUTES` | `60` | Minimum age before a release is eligible |
-| `LAST_SCAN_TIME` | `never` | Last scan timestamp (auto-updated) |
-| `FUNCTION_APP_NAME` | `s247-diag-logs-func` | Function App name |
+| `LAST_SCAN_TIME` | `never` | Legacy read fallback; current timestamp is in scan-state.json |
+| `FUNCTION_APP_NAME` | `""` | Legacy fallback; Azure supplies `WEBSITE_SITE_NAME` |
 
 ### 13.3 Runtime Configuration (host.json)
 
 ```json
 {
   "version": "2.0",
+  "functionTimeout": "00:10:00",
   "logging": {
     "applicationInsights": {
       "samplingSettings": {
@@ -1124,14 +1114,22 @@ When OPEN: post_logs() returns False immediately (logs are dropped to prevent ba
       }
     },
     "logLevel": {
-      "default": "Information",
+      "default": "Warning",
       "Host.Results": "Error",
-      "Function": "Information"
+      "Host.Aggregator": "Information",
+      "Function": "Information",
+      "Azure.Core": "Warning"
     }
   },
   "extensionBundle": {
     "id": "Microsoft.Azure.Functions.ExtensionBundle",
     "version": "[4.*, 5.0.0)"
+  },
+  "extensions": {
+    "queues": {
+      "visibilityTimeout": "00:05:00",
+      "maxDequeueCount": 6
+    }
   }
 }
 ```
@@ -1242,10 +1240,9 @@ Deploy the updated `AppLogServlet.java` and `web.xml` to the Site24x7 applogs se
 | `StopProcessing/__init__.py` | HTTP Function | Toggle processing |
 | `RemoveDiagSettings/__init__.py` | HTTP Function | Bulk remove diagnostic settings |
 | `CheckUpdate/__init__.py` | HTTP Function | Check/apply updates |
-| `EventHubProcessor/__init__.py` | EventHub Function | Alternative: Event Hub log processing |
 | `requirements.txt` | Config | Python dependencies |
 | `host.json` | Config | Function App runtime settings |
-| `VERSION` | Config | Current version (1.0.0) |
+| `VERSION` | Config | Current version (1.0.1-beta15) |
 
 ---
 

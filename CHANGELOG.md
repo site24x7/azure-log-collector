@@ -7,6 +7,22 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [Unreleased]
+
+### Fixed
+- `PINNED_VERSION` older than the installed version no longer installs the
+  older release: a pin only freezes the collector and never downgrades
+  (`action: pinned_older`).
+- `GET /api/settings` reports the values the collector uses when a setting is
+  unset (automatic scans on, 7 days of storage protection), instead of off and 1.
+
+### Documentation
+- Corrected the README, architecture, developer, troubleshooting, security and
+  Entra ID documents against the code: tagged template URLs, function and
+  endpoint names, schedules, registration retries, update controls and the
+  current test count. Removed instructions for test programs that are not in
+  the repository.
+
 ## [1.0.1-beta15] — 2026-10-26
 
 ### Changed
@@ -64,7 +80,8 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
   alike, and the status now reports it (`upload_refused`).
 - A broken log-type configuration no longer trips the circuit breaker; only
   that blob waits.
-- A failed batch no longer makes earlier records arrive twice: checkpoints
+- Checkpoint progress avoids resending records already saved as handled; delivery
+  remains at least once after interrupted saves or unsplittable block ranges. Checkpoints
   record the exact position past what was handled, inside a block or an
   append envelope too (`skip_records`), and single-shot blobs remember how
   many records of that version were sent. Block positions are used only when
@@ -115,7 +132,7 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
   their CPython 3.13 wheels.
 - The template installs the release package with OneDeploy into a deployment
   container in the collector's storage account (`app-package-<function app>`),
-  from `packages/<tag>/released-package.zip` (the file name Flex Consumption
+  from the release's `releases/download/<tag>/released-package.zip` asset (the file name Flex Consumption
   documents; each release publishes it next to `s247-function-app.zip`).
   The settings Flex Consumption rejects are gone (`WEBSITE_RUN_FROM_PACKAGE`,
   `FUNCTIONS_WORKER_RUNTIME`, `FUNCTIONS_EXTENSION_VERSION`,
@@ -123,7 +140,7 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 - Updates install the verified copy with OneDeploy instead of switching
   `WEBSITE_RUN_FROM_PACKAGE`; the link to the copy is read-only and expires
   after 6 hours (it was valid for 10 years). `S247_PREVIOUS_PACKAGE` is no
-  longer kept: every released package stays on the `packages` branch.
+  longer kept: every release keeps its own package asset; the `packages` branch is no longer published.
 - Application Insights is connected with `APPLICATIONINSIGHTS_CONNECTION_STRING`
   instead of the retired instrumentation key.
 - The template first checks that the chosen region offers Flex Consumption, so
@@ -431,10 +448,10 @@ one-click ARM deployment.
 
 ### Deploy URLs
 - **Pinned (v1.0.0)**
-  - Raw template: <https://github.com/site24x7/azure-log-collector/releases/download/v1.0.0/azuredeploy.json>
-  - Portal button: <https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fgithub.com%2Fsite24x7%2Fazure-log-collector%2Freleases%2Fdownload%2Fv1.0.0%2Fazuredeploy.json>
-- **Latest stable** (auto-follows newest non-prerelease tag)
-  - Raw template: <https://github.com/site24x7/azure-log-collector/releases/latest/download/azuredeploy.json>
+  - Raw template: <https://raw.githubusercontent.com/site24x7/azure-log-collector/refs/tags/v1.0.0/setup/azuredeploy.json>
+  - Portal button: <https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fsite24x7%2Fazure-log-collector%2Frefs%2Ftags%2Fv1.0.0%2Fsetup%2Fazuredeploy.json>
+- **Stable v1.0.0** (pinned tag)
+  - Raw template: <https://raw.githubusercontent.com/site24x7/azure-log-collector/refs/tags/v1.0.0/setup/azuredeploy.json>
 
 Release zip:
 <https://github.com/site24x7/azure-log-collector/releases/download/v1.0.0/s247-function-app.zip>

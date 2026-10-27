@@ -856,8 +856,8 @@ def check_and_apply_update(auto_apply: bool = False) -> Dict:
         return result
     result["channel"] = channel
 
-    # ── Pinned version: stick to exactly this version, nothing else.
-    # Use for freezing prod or rolling back to a specific known-good release.
+    # ── Pinned version: never move past this version. A pin freezes the
+    # collector; it never installs an older version (no rollback).
     pinned = os.environ.get("PINNED_VERSION", "").strip().lstrip("v")
     if pinned:
         result["pinned_version"] = pinned
@@ -865,6 +865,13 @@ def check_and_apply_update(auto_apply: bool = False) -> Dict:
             result["action"] = "pinned_current"
             result["update_available"] = False
             result["message"] = f"PINNED_VERSION={pinned} already installed"
+            return result
+        if parse_version(pinned) < parse_version(local_ver):
+            result["action"] = "pinned_older"
+            result["update_available"] = False
+            result["message"] = (
+                f"PINNED_VERSION={pinned} is older than the installed {local_ver} — not downgrading"
+            )
             return result
         # Pinned differs from local — only deploy if remote matches the pin.
         if parse_version(remote_ver) != parse_version(pinned):

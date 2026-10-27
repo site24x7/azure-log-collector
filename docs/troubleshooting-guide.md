@@ -95,7 +95,7 @@ az monitor app-insights query -g s247-diag-logs-rg --app <app-insights-name> \
   --analytics-query "traces | where message contains 'Circuit breaker' or message contains 'S247' | where timestamp > ago(1h) | order by timestamp desc | take 10"
 ```
 
-If you see `"Circuit breaker OPEN"` — Site24x7 API has been unreachable for multiple attempts. The circuit breaker auto-recovers after 5 minutes. Check:
+If you see `"Circuit breaker OPEN"` — uploads have repeatedly failed or the Device Key was refused. After 5 minutes it permits a test attempt, which may still fail. Check:
 - Is `SITE24X7_API_KEY` configured correctly?
 - Is `SITE24X7_BASE_URL` pointing to the right data center?
 - Is the Site24x7 AppLogs endpoint operational?
@@ -171,7 +171,8 @@ az rest --method get \
   --headers "x-functions-key=$MASTER_KEY"
 ```
 
-If `"state": "Error"` with a message about missing connection strings (e.g., `EVENTHUB_CONN`):
+If `"state": "Error"` reports a missing storage connection string, verify
+`AzureWebJobsStorage`. EventHubProcessor and `EVENTHUB_CONN` are no longer used:
 ```bash
 # Disable the problematic function
 az functionapp config appsettings set -g s247-diag-logs-rg -n <func-app-name> \
@@ -190,9 +191,9 @@ az monitor app-insights query -g s247-diag-logs-rg --app <app-insights-name> \
 ```
 
 **Common causes**:
-- **Processing disabled**: Check `PROCESSING_ENABLED` app setting (should be `true`)
+- **Processing disabled**: Check the processing control in Site24x7 or the dashboard; the stored flag overrides `PROCESSING_ENABLED`
 - **BlobLogProcessor timing out**: If >500 blobs pending, processor may not finish in 2 min cycle
-- **No S247 config for category**: Blobs accumulate until a scan creates the config; stale blobs (>7 days) are auto-deleted
+- **No S247 config for category**: Blobs accumulate until a scan creates the config; storage lifecycle expires blobs after BLOB_RETENTION_DAYS (default 7 days)
 
 ---
 
@@ -265,7 +266,7 @@ Key settings to verify when troubleshooting:
 | `SUBSCRIPTION_IDS` | Yes | Comma-separated subscription IDs | Auto-set to deployment subscription |
 | `SITE24X7_API_KEY` | Yes | Site24x7 Device Key | Dashboard → Debug → Config Validation |
 | `SITE24X7_BASE_URL` | Yes | `https://www.site24x7.com` (or .in/.eu etc.) | Dashboard → Debug |
-| `PROCESSING_ENABLED` | Yes | `true` / `false` — toggles log forwarding | Dashboard → Controls |
+| `PROCESSING_ENABLED` | No | Legacy fallback only; shared processing-control.json controls pause/resume | Dashboard → Controls |
 | `GENERAL_LOGTYPE_ENABLED` | No | `true` — enables fallback log type | Dashboard → Controls |
 | `TIMER_SCHEDULE` | No | CRON for DiagSettingsManager (default: every 6h) | App Settings |
 | `DIAG_STORAGE_SUFFIX` | Yes | Unique suffix for storage account names | Auto-generated |
@@ -298,16 +299,16 @@ az functionapp deploy -g <resource-group> -n <func-app-name> --type zip \
 
 Check `/api/health` afterwards (Azure CLI 2.79 may print a JSON parsing error although the install succeeded). Then release the fix as a new, higher version and set `SKIP_AUTO_UPDATE=false`.
 
-**Prevention:** `validate_zip_package()` now refuses packages with Python syntax errors, malformed JSON, or missing required files. `MIN_RELEASE_AGE_MINUTES=60` gives you a grace window to delete a bad release.
+**Prevention:** `validate_zip_package()` now refuses packages with Python syntax errors, malformed JSON, or missing required files. `MIN_RELEASE_AGE_MINUTES=60` gives you a grace window to stop installs with `SKIP_AUTO_UPDATE`; recover with a higher release or a manual package install.
 
 ### "AutoUpdater didn't update us"
 
 Check these in order:
 
-1. **Is AutoUpdater disabled?**
+1. **Are automatic installs enabled?** `AUTO_UPDATE_ENABLED=false` is the default: the timer only checks; an admin uses **Update Collector** in Site24x7. `SKIP_AUTO_UPDATE=true` blocks manual and automatic updates.
    ```bash
    az functionapp config appsettings list -g s247-diag-logs-rg -n <func-app-name> \
-     --query "[?name=='SKIP_AUTO_UPDATE' || name=='PINNED_VERSION' || name=='UPDATE_CHANNEL' || name=='UPDATE_CHECK_URL' || name=='MIN_RELEASE_AGE_MINUTES'].{name:name,value:value}" -o table
+     --query "[?name=='AUTO_UPDATE_ENABLED' || name=='SKIP_AUTO_UPDATE' || name=='PINNED_VERSION' || name=='UPDATE_CHANNEL' || name=='UPDATE_CHECK_URL' || name=='MIN_RELEASE_AGE_MINUTES'].{name:name,value:value}" -o table
    ```
 
 2. **Is the remote release a pre-release?** On the `stable` channel (default), pre-releases are refused. Set `UPDATE_CHANNEL=prerelease` only on test environments.
@@ -318,11 +319,11 @@ Check these in order:
    ```
    event == "auto_update_run" | order by timestamp desc | take 10
    ```
-   The `action` field reveals the exact reason: `disabled`, `pinned_current`, `pinned_mismatch`, `prerelease_skipped`, `release_too_young`, `up_to_date`, `deployed`, `deploy_failed`.
+   The `action` field reveals the exact reason: `disabled`, `pinned_current`, `pinned_older`, `pinned_mismatch`, `update_available`, `prerelease_skipped`, `release_too_young`, `up_to_date`, `deployed`, `deploy_failed`.
 
 ### "Health check failed after deploy"
 
-Look for `event == "auto_update_health_check"` with `healthy: false`. The new build is likely crashing at startup. Check App Insights `exceptions` and `traces` for import errors; reinstall the previous package per above.
+Check `update_state.confirmed_at` / `failed_at` in `/api/status`, and App Insights `exceptions` and `traces` for startup errors. There is no automatic rollback; reinstall the previous package per above.
 
 ---
 
@@ -341,7 +342,8 @@ Before escalating, collect:
 
 Discovery and log processing are different schedules: discovery runs every six
 hours by default; processing is scheduled every two minutes. Registration updates
-Site24x7 after scans, worker startup, key changes and relevant management events.
+Site24x7 after scans and on a worker's first BlobLogProcessor run. Failed
+registration is retried and key changes are checked every 15 minutes.
 It is not repeated every processing cycle and there is no periodic full-registration
 heartbeat. Live authenticated status reads provide current health without rewriting
 the database registration row. Pause/resume returns the saved state directly and
@@ -374,9 +376,8 @@ upload attempt: empty runs do not clear an earlier error. The last observation i
 looked up in a bounded fifty-run history, so its absence means unknown. HTTP200
 is receiver acknowledgement and does not prove that records are indexed.
 
-The relay is development infrastructure. If it stops answering, both catalog
-calls and registrations through that relay can fail; Site24x7 must use its live
-read/freshness rules rather than wait for an error report over the broken path.
+A Site24x7 service outage can block both catalog calls and registration. Use
+live status and report freshness to check the collector while reporting fails.
 
 A failure of Site24x7's own collector-data REST endpoint is not evidence that
 the Function App is unreachable. The client requires a recognised proxy result

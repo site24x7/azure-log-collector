@@ -75,22 +75,22 @@ Avoid `_master`, which also grants key management.
 
 ### Option A — Deploy to Azure (portal)
 
-One-click ARM deployment. The public template is published as a release asset; no GitHub sign-in is required.
+One-click ARM deployment. The public template is available at a pinned Git tag; no GitHub sign-in is required.
 
 | Version | Button / URL |
 |---|---|
-| **Pinned — v1.0.0 (current stable)** | [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fgithub.com%2Fsite24x7%2Fazure-log-collector%2Freleases%2Fdownload%2Fv1.0.0%2Fazuredeploy.json) |
-| **Latest stable** (auto-follows newest stable release) | [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fgithub.com%2Fsite24x7%2Fazure-log-collector%2Freleases%2Flatest%2Fdownload%2Fazuredeploy.json) |
+| **Pinned — v1.0.1-beta15 (pre-release)** | [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fsite24x7%2Fazure-log-collector%2Frefs%2Ftags%2Fv1.0.1-beta15%2Fsetup%2Fazuredeploy.json) |
+| **Stable — v1.0.0** (pinned tag) | [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fsite24x7%2Fazure-log-collector%2Frefs%2Ftags%2Fv1.0.0%2Fsetup%2Fazuredeploy.json) |
 
 Raw URLs (if you prefer to paste directly into `Template spec deployment`):
 
-- **Pinned v1.0.0:**
-  `https://github.com/site24x7/azure-log-collector/releases/download/v1.0.0/azuredeploy.json`
-- **Latest stable:**
-  `https://github.com/site24x7/azure-log-collector/releases/latest/download/azuredeploy.json`
+- **Pinned v1.0.1-beta15 (pre-release):**
+  `https://raw.githubusercontent.com/site24x7/azure-log-collector/refs/tags/v1.0.1-beta15/setup/azuredeploy.json`
+- **Stable v1.0.0 (pinned tag):**
+  `https://raw.githubusercontent.com/site24x7/azure-log-collector/refs/tags/v1.0.0/setup/azuredeploy.json`
 
 Pre-release track (alpha/beta/rc) is only available via explicit version tag in the raw URL, e.g.
-`https://github.com/site24x7/azure-log-collector/releases/download/v1.0.1-beta1/azuredeploy.json`.
+`https://raw.githubusercontent.com/site24x7/azure-log-collector/refs/tags/v1.0.1-beta15/setup/azuredeploy.json`.
 
 ### Option B — Shell deploy
 
@@ -196,17 +196,13 @@ No Event Hubs needed — storage-based polling eliminates the ~$11/region/month 
 │   ├── teardown.sh           ← One-click cleanup
 │   └── azuredeploy.json      ← ARM template
 ├── function-app/
-│   ├── VERSION               ← Semantic version (triggers CI/CD releases)
+│   ├── VERSION               ← Semantic version (a change on main starts a release)
 │   ├── shared/               ← Core Python modules
 │   ├── BlobLogProcessor/     ← Timer: polls storage, forwards logs to S247
 │   ├── DiagSettingsManager/  ← Timer: 6h resource scan + config
 │   ├── Dashboard/            ← Web dashboard (single-page HTML)
-│   ├── tests/                ← 217 unit tests (pytest)
-│   └── ...                   ← 17 more endpoints (21 functions total)
-├── testing/
-│   ├── mock_s247_server.py   ← Mock S247 for local E2E testing
-│   ├── test_e2e.py           ← End-to-end test suite
-│   └── sample_blobs/         ← Sample Azure diagnostic log blobs
+│   ├── tests/                ← 687 tests (pytest)
+│   └── ...                   ← 19 more functions (22 functions total)
 ├── docs/
 │   ├── architecture-document.md
 │   ├── developer-guide.md
@@ -214,7 +210,7 @@ No Event Hubs needed — storage-based polling eliminates the ~$11/region/month 
 │   ├── entra-id-logs.md           ← Tenant (Entra ID) log collection setup
 │   └── security-overview.md       ← Customer-facing security brief
 └── .github/workflows/
-    └── release-function-app.yml  ← CI/CD: auto-release on VERSION bump
+    └── release-function-app.yml  ← Release workflow: VERSION change on main, or manual dispatch
 ```
 
 ## Auto-Updates
@@ -227,7 +223,7 @@ updates on its own, set `AUTO_UPDATE_ENABLED=true`.
 ### Basic setup
 
 1. The template sets `UPDATE_CHECK_URL` to `site24x7/azure-log-collector` and `AUTO_UPDATE_ENABLED` to `false`
-2. A release is published by the release workflow (manual dispatch; see `docs/release-validation.md` for stable releases)
+2. A release is published by the release workflow (on a `VERSION` change in `main`, or by manual dispatch; see `docs/release-validation.md` for stable releases)
 3. Site24x7 shows that an update is available; an admin installs it, or the nightly run does when `AUTO_UPDATE_ENABLED=true`
 
 ### Safety controls (app settings)
@@ -236,7 +232,7 @@ updates on its own, set `AUTO_UPDATE_ENABLED=true`.
 |---|---|---|
 | `AUTO_UPDATE_ENABLED` | `false` | `true` lets the nightly run install updates on its own. Off: it only checks, and admins install from Site24x7. |
 | `UPDATE_CHANNEL` | `stable` | `stable` refuses any alpha/beta/rc; `prerelease` accepts them. Use `prerelease` in test environments. |
-| `PINNED_VERSION` | *(unset)* | If set (e.g. `1.2.3`), only that version is deployed, and only while it is the latest release (older releases are not fetched). |
+| `PINNED_VERSION` | *(unset)* | A pin freezes the collector at that version and never downgrades (`pinned_older` if the pin is older than installed). A newer pin installs only if it matches the fetched release; older releases are not fetched. |
 | `SKIP_AUTO_UPDATE` | `false` | `true` applies no update at all, automatic or manual — emergency switch, no redeploy needed. |
 | `MIN_RELEASE_AGE_MINUTES` | `60` | Refuses releases younger than N minutes, a grace window to stop a bad release before it is installed. |
 
@@ -264,7 +260,7 @@ Check GitHub's "Set as a pre-release" box when creating alpha/beta tags. With de
    Azure CLI 2.79 may then print a JSON parsing error although the install
    succeeded; check `/api/health` or the app's deployment status.
 
-Every AutoUpdater run writes an audit event (`auto_update_run`) visible via the debug-logs endpoint; the new version records `confirmed_at` in `update_state` (`/api/status`) on its first run.
+Every AutoUpdater run writes an audit event (`auto_update_run`) visible via `/api/debug`; the new version records `confirmed_at` in `update_state` (`/api/status`) on its first run.
 
 ## Security
 
@@ -279,7 +275,7 @@ See **[docs/security-overview.md](docs/security-overview.md)** for a customer-fa
 ```bash
 cd function-app
 pip install -r requirements-dev.txt
-python3 -m pytest tests/ -q     # ~600 tests, under 10 s
+python3 -m pytest tests/ -q     # 687 tests
 ```
 
 See [docs/developer-guide.md](docs/developer-guide.md) for detailed development setup.

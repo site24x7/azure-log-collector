@@ -7,10 +7,11 @@ import azure.functions as func
 
 # Whitelisted settings that can be updated from the dashboard.
 # Maps setting key → { "type": "int"|"str"|"bool", "min": N, "max": N }
+# "default" is the value the collector uses when the setting is unset.
 ALLOWED_SETTINGS = {
-    "SAFE_DELETE_MAX_AGE_DAYS": {"type": "int", "min": 1, "max": 365},
-    "MONITOR_PIPELINE_RESOURCES": {"type": "bool"},
-    "AUTO_SCAN_ENABLED": {"type": "bool"},
+    "SAFE_DELETE_MAX_AGE_DAYS": {"type": "int", "min": 1, "max": 365, "default": 7},
+    "MONITOR_PIPELINE_RESOURCES": {"type": "bool", "default": False},
+    "AUTO_SCAN_ENABLED": {"type": "bool", "default": True},
 }
 
 
@@ -28,11 +29,11 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             raw = os.environ.get(key, "")
             if meta["type"] == "int":
                 try:
-                    current[key] = int(raw) if raw else meta.get("min", 0)
+                    current[key] = int(raw) if raw else meta["default"]
                 except (ValueError, TypeError):
-                    current[key] = meta.get("min", 0)
+                    current[key] = meta["default"]
             elif meta["type"] == "bool":
-                current[key] = raw.lower() == "true" if raw else False
+                current[key] = raw.lower() == "true" if raw else meta["default"]
             else:
                 current[key] = raw
         return func.HttpResponse(

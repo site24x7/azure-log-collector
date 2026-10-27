@@ -148,6 +148,6 @@ storage account, and the collector begins forwarding. Check the dashboard's
 - **Logs land but aren't forwarded** — the Site24x7 log type may not exist yet
   server-side (the sign-in family requires server-side log-type definitions).
   `auditlogs` works out of the box.
-- **Notes on `log_source`** — Entra records carry a tenant-style `resourceId`, so
-  the `log_source` field for these logs will not be an Azure resource group like it
-  is for resource logs.
+- **Log source** — For Entra and resource logs, `s247agentuid` is the Function
+  App name. Outside Azure it falls back to a resource group when `resourceId`
+  contains one.

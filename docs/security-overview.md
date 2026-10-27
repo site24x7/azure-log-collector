@@ -28,7 +28,6 @@ The Function App makes outbound HTTPS calls only:
 | `*.blob/queue/table.core.windows.net` | The collector's own storage (state, queues) and the regional log storage accounts |
 | Managed identity endpoint (local to the Function App) | Azure access tokens |
 | `api.github.com`, `github.com`, `objects.githubusercontent.com`, `release-assets.githubusercontent.com` | Update checks and update packages, only when `UPDATE_CHECK_URL` is set (the template sets it to this repository) |
-| `<function-app>.azurewebsites.net/api/health` | Health check after an update (its own endpoint) |
 
 `<dc>` is the Site24x7 data center chosen at deployment: `com` (US), `in`, `eu`, `net.au`, `cn` or `jp`.
 
@@ -79,7 +78,7 @@ Monitoring Contributor covers diagnostic settings on every resource in the subsc
 
 ## 4. Review before collecting
 
-A new deployment starts in review mode (`REVIEW_BEFORE_COLLECTING=true`; the template parameter `confirmAfterDiscovery` defaults to `true`).
+A new portal-template deployment starts in review mode (`REVIEW_BEFORE_COLLECTING=true`; the template parameter `confirmAfterDiscovery` defaults to `true`).
 
 **Until an admin starts collecting**, scans only:
 - discover resources;
@@ -184,10 +183,10 @@ Updates come from the GitHub releases of `UPDATE_CHECK_URL`, which the template 
 - the age: releases younger than `MIN_RELEASE_AGE_MINUTES` (60) are skipped;
 - the package host must belong to the configured repository, over HTTPS;
 - the package's SHA-256 must match the release's `version.json` (`REQUIRE_PACKAGE_SHA256`, on by default);
-- the zip: archive integrity, every `.py` file parses, every `.json` file is valid, and the required files are present;
+- the zip: archive integrity, application `.py` files parse (vendored `.python_packages` is excluded), every `.json` file is valid, and the required files are present;
 - the package's `VERSION` must equal the version the release advertises, so an older package can't pass the downgrade check.
 
-Every run and post-update health check is recorded as an event.
+AutoUpdater records each run as an event; the new version confirms the update on its first processing run.
 
 **Release builds**
 - Releases are built by GitHub Actions from the tagged commit.
@@ -203,12 +202,12 @@ Every run and post-update health check is recorded as an event.
 | `SKIP_AUTO_UPDATE=true` | No automatic or manual update is applied. |
 | `UPDATE_CHECK_URL` unset | No update checks at all. |
 | `UPDATE_CHANNEL=stable` | The default: pre-releases are refused. |
-| `PINNED_VERSION=x.y.z` | Deploys only that version, and only while it is the latest release. It does not fetch older releases. |
+| `PINNED_VERSION=x.y.z` | A pin freezes the collector at that version and never downgrades (`pinned_older` if the pin is older than installed). A newer pin installs only if it matches the fetched release; older releases are not fetched. |
 
-**Manual update:** `GET /api/check-update` reports what is available, and `POST /api/check-update?apply=1` applies it. Site24x7 admins can do the same from the collector's Settings tab.
+**Manual update:** `GET /api/check-update` reports what is available, and `POST /api/check-update?apply=1` applies it. Site24x7 admins use **Update Collector** (Overview > Collector Details > Version).
 
 **Installing the verified bytes:** after the checks, the collector copies the verified zip to its own storage account (`s247-packages`) and installs it with OneDeploy from a read-only link to that copy that expires after 6 hours, so Azure installs exactly the bytes that were checked.
-- Before installing, the collector imports every function and shared module of the new version in a separate process, using only the package's own dependencies; a package that cannot load is refused, so an update cannot leave a collector that is unable to start.
+- Before installing, the collector imports every function and shared module of the new version in a separate process, using only the package's own dependencies; a package that cannot load is refused. This catches package-loading errors but cannot guarantee startup or runtime health.
 - An update counts as done only when the new version confirms on its first run (`update_state` in `/api/status`, which also records the previous version).
 - A failed update is not rolled back automatically. To go back, install the previous release's package (`az functionapp deploy --type zip --src-url https://github.com/site24x7/azure-log-collector/releases/download/v<previous-version>/released-package.zip`).
 
@@ -240,7 +239,7 @@ Every run and post-update health check is recorded as an event.
 | Item | Status | Mitigation |
 |---|---|---|
 | Site24x7 holds a key to the collector's management endpoints (section 6) | By design (Site24x7 runs the admin actions) | Dedicated `site24x7` function key on 14 functions only; admin-only, server-built and audited actions in Site24x7; `SITE24X7_KEY_EXCLUDE` narrows or removes its reach. |
-| A failed update is not rolled back automatically | Mitigated | A package whose functions cannot load (missing dependency, broken import, wrong Python build) is refused before install, by the release workflow and again by the collector. Packages are also checked (digest, structure, version) before install, releases install only after `MIN_RELEASE_AGE_MINUTES`, and the update is reported as confirmed only when the new version runs. The import check lowers the risk; it cannot prove the new version works at run time. Every release keeps its package as a release asset, and going back means installing the previous package again (README, Rollback). `SKIP_AUTO_UPDATE` stops updates; `PINNED_VERSION` only lets that exact version be installed, and only while it is the latest release: it freezes updates, it does not go back to an older version. |
+| A failed update is not rolled back automatically | Mitigated | A package whose functions cannot load (missing dependency, broken import, wrong Python build) is refused before install, by the release workflow and again by the collector. Packages are also checked (digest, structure, version) before install, releases install only after `MIN_RELEASE_AGE_MINUTES`, and the update is reported as confirmed only when the new version runs. The import check lowers the risk; it cannot prove the new version works at run time. Every release keeps its package as a release asset, and going back means installing the previous package again (README, Rollback). `SKIP_AUTO_UPDATE` stops updates; `PINNED_VERSION` freezes the collector at the pin and never downgrades (`pinned_older` for an older pin); a newer pin installs only if it matches the fetched release, and older releases are not fetched. |
 | Masking and filter patterns come from Site24x7 and run with Python's backtracking regular expressions | Accepted | Patterns are defined by Site24x7, not by log content. A rule that fails is applied fail-closed (the field is withheld). |
 | Release packages the template and updater install | Open (repository setting) | The template and the updater install release assets. The release workflow publishes each release once with all its files (draft, then publish) and has no path to replace a published one. Immutable releases are not yet on for the repository; until a repository admin turns them on, an admin could still change a published release's files or tag by hand. |
 | No Key Vault, Private Endpoint or customer-managed key by default | By design (single template) | Key Vault references in app settings work for `SITE24X7_API_KEY`. The Flex Consumption plan supports virtual network integration; the template doesn't configure it. |
@@ -260,7 +259,8 @@ Every run and post-update health check is recorded as an event.
 
 Discovery and log processing are different schedules: discovery runs every six
 hours by default; processing is scheduled every two minutes. Registration updates
-Site24x7 after scans, worker startup, key changes and relevant management events.
+Site24x7 after scans and on a worker's first BlobLogProcessor run. Failed
+registration is retried and key changes are checked every 15 minutes.
 It is not repeated every processing cycle and there is no periodic full-registration
 heartbeat. Live authenticated status reads provide current health without rewriting
 the database registration row. Pause/resume returns the saved state directly and
@@ -293,9 +293,8 @@ upload attempt: empty runs do not clear an earlier error. The last observation i
 looked up in a bounded fifty-run history, so its absence means unknown. HTTP200
 is receiver acknowledgement and does not prove that records are indexed.
 
-The relay is development infrastructure. If it stops answering, both catalog
-calls and registrations through that relay can fail; Site24x7 must use its live
-read/freshness rules rather than wait for an error report over the broken path.
+A Site24x7 service outage can block both catalog calls and registration. Use
+live status and report freshness to check the collector while reporting fails.
 
 A failure of Site24x7's own collector-data REST endpoint is not evidence that
 the Function App is unreachable. The client requires a recognised proxy result

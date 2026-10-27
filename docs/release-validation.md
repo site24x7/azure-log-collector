@@ -19,7 +19,7 @@ Use unique test-event markers and retain evidence of the events in AppLogs.
 | Repeated deployment | Same template, suffix and location reuse resources; no duplicate storage, Function App or forwarding destinations appear. |
 | Name unavailable | Preflight rejects an unavailable name before provisioning, gives a naming override, and a fresh override succeeds. Availability-check errors never imply availability. |
 | Existing collector upgrade | Start with the published stable version; upgrade through the actual supported updater path. Config, filters, storage destinations and processing checkpoints survive; new uniquely marked events arrive. |
-| Rollback | Restore the known-good package using the tested deployment method and verify new events remain searchable. The current health check reports failures but does not automatically roll back. |
+| Rollback | Restore the known-good package using the tested deployment method and verify new events remain searchable. Check update confirmation and startup diagnostics; there is no automatic rollback. |
 | Resource logs | A real Azure resource emits a marked diagnostic record, it reaches regional storage, and the same record is searchable in Site24x7 with correct category/resource/time fields. |
 | Optional Entra logs | Verify AuditLogs end to end and each additional category actually advertised by the receiving server; unsupported categories must remain clearly unavailable. |
 | Site24x7 cannot read collector API | Simulate timeout, denied key/non-2xx and malformed 200 response. The detail page shows collector API failure; cached healthy status cannot override it. Outbound health stays last-known/unknown, never inferred from inbound failure. |
