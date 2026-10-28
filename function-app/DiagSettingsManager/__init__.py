@@ -541,7 +541,7 @@ def run_scan():
     phase_start = _time.monotonic()
 
     # Pre-flight check: validate S247 connectivity before attempting bulk creation.
-    # This catches relay outages, auth issues, and network problems up front
+    # This catches Site24x7 outages, auth issues, and network problems up front
     # instead of wasting time on per-category calls that will all fail.
     s247_reachable = True
     s247_errors = []  # structured error list for dashboard

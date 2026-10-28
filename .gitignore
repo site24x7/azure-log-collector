@@ -23,12 +23,6 @@ Thumbs.db
 # Deployment artifacts
 *.zip
 
-# Session state (internal)
-_session_state.md
-
-# Large test artifacts
-testing/relay/
-
 # Environment files
 .env
 .env.local

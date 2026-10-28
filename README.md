@@ -79,18 +79,15 @@ One-click ARM deployment. The public template is available at a pinned Git tag; 
 
 | Version | Button / URL |
 |---|---|
-| **Pinned — v1.0.1-beta15 (pre-release)** | [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fsite24x7%2Fazure-log-collector%2Frefs%2Ftags%2Fv1.0.1-beta15%2Fsetup%2Fazuredeploy.json) |
-| **Stable — v1.0.0** (pinned tag) | [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fsite24x7%2Fazure-log-collector%2Frefs%2Ftags%2Fv1.0.0%2Fsetup%2Fazuredeploy.json) |
+| **Stable — v1.0.1** | [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fsite24x7%2Fazure-log-collector%2Frefs%2Ftags%2Fv1.0.1%2Fsetup%2Fazuredeploy.json/createUIDefinitionUri/https%3A%2F%2Fraw.githubusercontent.com%2Fsite24x7%2Fazure-log-collector%2Frefs%2Ftags%2Fv1.0.1%2Fsetup%2FcreateUiDefinition.json) |
 
 Raw URLs (if you prefer to paste directly into `Template spec deployment`):
 
-- **Pinned v1.0.1-beta15 (pre-release):**
-  `https://raw.githubusercontent.com/site24x7/azure-log-collector/refs/tags/v1.0.1-beta15/setup/azuredeploy.json`
-- **Stable v1.0.0 (pinned tag):**
-  `https://raw.githubusercontent.com/site24x7/azure-log-collector/refs/tags/v1.0.0/setup/azuredeploy.json`
+- **Stable v1.0.1:**
+  `https://raw.githubusercontent.com/site24x7/azure-log-collector/refs/tags/v1.0.1/setup/azuredeploy.json`
 
-Pre-release track (alpha/beta/rc) is only available via explicit version tag in the raw URL, e.g.
-`https://raw.githubusercontent.com/site24x7/azure-log-collector/refs/tags/v1.0.1-beta15/setup/azuredeploy.json`.
+Pre-release versions (alpha/beta/rc) are available only by their tag, e.g.
+`https://raw.githubusercontent.com/site24x7/azure-log-collector/refs/tags/v<version>/setup/azuredeploy.json`.
 
 ### Option B — Shell deploy
 

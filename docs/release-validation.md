@@ -26,7 +26,6 @@ Use unique test-event markers and retain evidence of the events in AppLogs.
 | Collector cannot reach Site24x7 API/upload | Keep collector status API reachable, fail outbound API and upload paths independently. Live status shows API phase + HTTP status or last upload failure + observation time; empty runs do not establish recovery. A real successful upload clears the recorded upload failure. |
 | Both paths fail | With no recent report/live snapshot, status becomes unavailable within the 26-hour historical-report policy (live failures show immediately); old data remains historical. Recovery preserves the server's true last registration time. |
 | Client onboarding | Test the deployed client link, prerequisites, Device Key/DC guidance, Azure handoff, deployment Outputs, dashboard/scan flow, ingestion confirmation, management and cleanup. Opening Azure is not deployment success. |
-| Relay demo | Test both API queue/blob and actual log-upload blob forwarding. A local saved file, relay HTTP 200 or staging-blob acknowledgement does not establish AppLogs ingestion. |
 
 ## Publication gate
 
@@ -49,6 +48,4 @@ The Flex Consumption template must pass Azure preflight, then live OneDeploy
 startup, fresh install, upgrade, rollback and ingestion.
 Long-suffix naming requires the updated collector package and matching template
 pin. Legacy URL-mode updater behavior and transition from old deployment methods
-must be tested before customers receive the new stable version. The local demo
-also requires an AppLogs-enabled build, actual upload/index services and the
-queue/blob relay configuration.
+must be tested before customers receive the new stable version.
