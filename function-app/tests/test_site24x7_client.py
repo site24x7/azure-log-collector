@@ -552,7 +552,7 @@ class TestSite24x7Client:
         stale_config = {
             "apiKey": "old_stale_key",
             "logType": "TestLog",
-            "uploadDomain": "old.relay.domain.com",
+            "uploadDomain": "old.upload.example.com",
             "dateFormat": "%Y-%m-%dT%H:%M:%S.%f",
             "dateField": "time",
             "jsonPath": [{"name": "msg", "key": "message"}],
@@ -567,7 +567,7 @@ class TestSite24x7Client:
 
         result = client.post_logs(config_b64, events)
         assert result is True
-        # Verify the upload went to the correct domain (logc.site24x7.in, not old.relay.domain.com)
+        # Verify the upload went to the correct domain (logc.site24x7.in, not old.upload.example.com)
         call_args = mock_urlopen.call_args
         req = call_args[0][0]
         assert "logc.site24x7.in" in req.full_url

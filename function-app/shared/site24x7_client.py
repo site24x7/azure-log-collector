@@ -500,7 +500,7 @@ class Site24x7Client:
     ) -> Optional[List[Dict]]:
         """Create/check multiple Azure log types via /applog/logtype.
 
-        Uses parallel threads for speed (relay adds ~7s latency per call).
+        Uses parallel threads, since each call can take several seconds.
         When supported_types is provided, builds fallback names from the
         display_name so the server can match even if the primary name isn't
         recognized (e.g., 'joblogs' → fallback 'automationrunbookjobs').
@@ -605,8 +605,8 @@ class Site24x7Client:
 
     def preflight_check(self) -> Dict:
         """Quick connectivity check — call before a scan to validate the
-        full relay/API chain. Uses the supported-types endpoint because it
-        only validates the device key + relay reachability and never returns
+        Site24x7 API path. Uses the supported-types endpoint because it
+        only validates the device key + reachability and never returns
         "Log Type Not Found" for a probe value that may not exist on the
         server. Returns dict with 'ok' bool, 'latency_ms', and 'error'."""
         t0 = time.time()

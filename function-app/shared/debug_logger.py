@@ -383,7 +383,7 @@ def test_s247_connectivity() -> Dict:
 
     # Flatten into the format the dashboard expects
     lt_ok = results.get("logtype_supported", {}).get("status") == "ok"
-    # Fall back to logtype_check if logtype_supported fails (relay may not support it)
+    # Fall back to logtype_check if logtype_supported fails
     if not lt_ok:
         lt_ok = results.get("logtype_check", {}).get("status") == "ok"
     up_ok = results.get("upload_endpoint", {}).get("status") == "ok"

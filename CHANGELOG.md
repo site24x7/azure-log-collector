@@ -7,7 +7,7 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
-## [Unreleased]
+## [1.0.1-rc1] — 2026-10-28
 
 ### Fixed
 - `PINNED_VERSION` older than the installed version no longer installs the

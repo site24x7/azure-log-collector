@@ -1605,9 +1605,8 @@ upload attempt: empty runs do not clear an earlier error. The last observation i
 looked up in a bounded fifty-run history, so its absence means unknown. HTTP200
 is receiver acknowledgement and does not prove that records are indexed.
 
-The relay is development infrastructure. If it stops answering, both catalog
-calls and registrations through that relay can fail; Site24x7 must use its live
-read/freshness rules rather than wait for an error report over the broken path.
+A Site24x7 service outage can block both catalog calls and registration. Use
+live status and report freshness to check the collector while reporting fails.
 
 A failure of Site24x7's own collector-data REST endpoint is not evidence that
 the Function App is unreachable. The client requires a recognised proxy result
