@@ -192,7 +192,7 @@ AutoUpdater records each run as an event; the new version confirms the update on
 - Releases are built by GitHub Actions from the tagged commit.
 - The workflow validates the version first and pins its actions to commit SHAs.
 - It never replaces a published release: a run for a version that is already published stops, a tag that exists without a release is refused, and only an unpublished draft left by a failed run is rebuilt. There is no option to force it.
-- The repository does not yet enforce this on its own: immutable releases are off (see section 12), so a repository admin could still edit a release by hand.
+- The repository does not yet enforce this on its own: immutable releases are off (see section 12), so anyone with write access to the repository could still edit a release by hand.
 
 **Controls**
 
@@ -241,7 +241,7 @@ AutoUpdater records each run as an event; the new version confirms the update on
 | Site24x7 holds a key to the collector's management endpoints (section 6) | By design (Site24x7 runs the admin actions) | Dedicated `site24x7` function key on 14 functions only; admin-only, server-built and audited actions in Site24x7; `SITE24X7_KEY_EXCLUDE` narrows or removes its reach. |
 | A failed update is not rolled back automatically | Mitigated | A package whose functions cannot load (missing dependency, broken import, wrong Python build) is refused before install, by the release workflow and again by the collector. Packages are also checked (digest, structure, version) before install, releases install only after `MIN_RELEASE_AGE_MINUTES`, and the update is reported as confirmed only when the new version runs. The import check lowers the risk; it cannot prove the new version works at run time. Every release keeps its package as a release asset, and going back means installing the previous package again (README, Rollback). `SKIP_AUTO_UPDATE` stops updates; `PINNED_VERSION` freezes the collector at the pin and never downgrades (`pinned_older` for an older pin); a newer pin installs only if it matches the fetched release, and older releases are not fetched. |
 | Masking and filter patterns come from Site24x7 and run with Python's backtracking regular expressions | Accepted | Patterns are defined by Site24x7, not by log content. A rule that fails is applied fail-closed (the field is withheld). |
-| Release packages the template and updater install | Open (repository setting) | The template and the updater install release assets. The release workflow publishes each release once with all its files (draft, then publish) and has no path to replace a published one. Immutable releases are not yet on for the repository; until a repository admin turns them on, an admin could still change a published release's files or tag by hand. |
+| Release packages the template and updater install | Open (repository setting) | The template and the updater install release assets. The release workflow publishes each release once with all its files (draft, then publish) and has no path to replace a published one. Immutable releases are not yet on for the repository; until a repository admin turns them on, anyone with write access could still change a published release's files or move its tag by hand. |
 | No Key Vault, Private Endpoint or customer-managed key by default | By design (single template) | Key Vault references in app settings work for `SITE24X7_API_KEY`. The Flex Consumption plan supports virtual network integration; the template doesn't configure it. |
 
 ## 13. Common questions
