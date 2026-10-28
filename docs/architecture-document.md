@@ -1,6 +1,6 @@
 # Site24x7 Azure Diagnostic Logs Collection — Architecture Document
 
-**Version:** 1.0.1-beta15
+**Version:** 1.0.1
 **Last Updated:** March 2026  
 **Status:** Implementation Complete — Pending Deployment
 
@@ -1242,7 +1242,7 @@ Deploy the updated `AppLogServlet.java` and `web.xml` to the Site24x7 applogs se
 | `CheckUpdate/__init__.py` | HTTP Function | Check/apply updates |
 | `requirements.txt` | Config | Python dependencies |
 | `host.json` | Config | Function App runtime settings |
-| `VERSION` | Config | Current version (1.0.1-beta15) |
+| `VERSION` | Config | Current version (1.0.1) |
 
 ---
 

@@ -7,6 +7,16 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.0.1] — 2026-10-28
+
+First stable release of 1.0.1, with the same code as 1.0.1-rc1. Compared with
+1.0.0 it runs on the Flex Consumption plan with Python 3.13, registers with
+Site24x7 and supports its admin actions, delivers logs at least once with exact
+checkpoints, and installs updates only from verified packages (automatic
+installs are off by default). See the pre-release sections below for details.
+1.0.0 collectors run on the older Consumption plan and cannot be updated in
+place; deploy 1.0.1 instead.
+
 ## [1.0.1-rc1] — 2026-10-28
 
 ### Fixed
