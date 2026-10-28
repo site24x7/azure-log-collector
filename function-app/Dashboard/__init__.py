@@ -174,7 +174,7 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
       <button class="btn btn-primary" id="updateBtn" onclick="checkUpdate()">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M8 2v8m0 0l-3-3m3 3l3-3M3 13h10"/></svg>Check Update <i class="info-tip">i<span class="tip-text">Check if a newer version is available in the GitHub repository. If found, shows release notes and asks for confirmation before deploying.</span></i>
       </button>
-      <button class="btn btn-danger" id="removeBtn" onclick="removeDiagSettings()">&#10005; Remove All <i class="info-tip">i<span class="tip-text">Remove all s247-diag-logs diagnostic settings from every monitored resource. Does NOT delete storage accounts or log type configs. This action cannot be undone.</span></i></button>
+      <button class="btn btn-danger" id="removeBtn" onclick="removeDiagSettings()">&#10005; Remove All <i class="info-tip">i<span class="tip-text">Remove this collector&#39;s diagnostic settings from every monitored resource (other collectors&#39; settings are kept). Does NOT delete storage accounts or log type configs. This action cannot be undone.</span></i></button>
     </div>
   </div>
 </div>
@@ -418,6 +418,7 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
         <button class="btn btn-primary btn-sm" id="btnLoadDebug" onclick="loadDebugInfo(false)">🔄 Refresh Debug Info</button>
         <button class="btn btn-primary btn-sm" id="btnTestS247" onclick="loadDebugInfo(true)">🔌 Test S247 Connectivity</button>
         <button class="btn btn-primary btn-sm" id="btnExportDebug" onclick="exportDebugBundle()">📥 Export Debug Bundle</button>
+        <button class="btn btn-primary btn-sm" id="btnExportLog" onclick="exportDebugBundle('log')" title="Readable log with keys and tokens removed — safe to send to Site24x7 support">📄 Download Log File</button>
         <button class="btn btn-danger btn-sm" id="btnClearEvents" onclick="clearDebugEvents()">🗑 Clear Events</button>
       </div>
       <div id="debugS247Status" style="margin-top:10px"><span class="stat-label" style="font-size:11px">Run "Test S247 Connectivity" to check</span></div>
@@ -459,19 +460,57 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
 </div>
 
 <div class="toast" id="toast"></div>
+<div id="authBanner" class="badge-red" role="alert" style="display:none;position:fixed;top:0;left:0;right:0;z-index:101;padding:12px 20px;font-size:13px;line-height:1.5"></div>
+<div id="reviewBanner" role="status" style="display:none;margin:12px 20px;padding:12px 16px;border:1px solid var(--accent);border-radius:6px;font-size:13px;line-height:1.5">
+  <strong>Waiting for review.</strong> The collector has found your resources but has not changed anything yet:
+  no storage accounts, log types or diagnostic settings. Check the exclusions and log categories, then start collecting.
+  <button class="btn" id="startCollectingBtn" style="margin-left:12px" onclick="startCollecting()">Start Collecting</button>
+</div>
 
 <script>
 const BASE = window.location.origin;
-const FUNC_KEY = new URLSearchParams(window.location.search).get('code') || '';
+// The key arrives in the address (?code=) because the page is opened with it.
+// Keep it only for this tab, take it out of the address bar and history, and
+// send it in a header: never in a request URL, where it would reach logs and
+// the Referer header.
+const FUNC_KEY = (() => {
+  const params = new URLSearchParams(window.location.search);
+  let key = params.get('code') || '';
+  try {
+    if (key) { sessionStorage.setItem('s247-dashboard-key', key); }
+    else { key = sessionStorage.getItem('s247-dashboard-key') || ''; }
+  } catch (e) { /* storage blocked: the key lives in memory only */ }
+  if (params.has('code')) {
+    params.delete('code');
+    const rest = params.toString();
+    history.replaceState(null, '', window.location.pathname + (rest ? '?' + rest : '') + window.location.hash);
+  }
+  return key;
+})();
+const KEY_HEADERS = FUNC_KEY ? { 'x-functions-key': FUNC_KEY } : {};
 const api = (path, opts = {}) => {
-  opts.headers = Object.assign({'Content-Type': 'application/json'}, opts.headers || {});
-  const sep = path.includes('?') ? '&' : '?';
-  const url = FUNC_KEY ? `${BASE}/api/${path}${sep}code=${FUNC_KEY}` : `${BASE}/api/${path}`;
+  opts.headers = Object.assign({'Content-Type': 'application/json'}, KEY_HEADERS, opts.headers || {});
+  const url = `${BASE}/api/${path}`;
   return fetch(url, opts).then(r => {
+    if (r.status === 401) { showAuthHelp(); }
     if (!r.ok) { throw new Error(`API error: ${r.status}`); }
     return r.json();
   });
 };
+
+// The page opens with any key valid for the Dashboard function, but its API
+// calls need a key valid for every function. The portal's "Get function URL"
+// on Dashboard gives a Dashboard-only key, so explain instead of showing an
+// empty, "Unreachable" dashboard.
+function showAuthHelp() {
+  const b = document.getElementById('authBanner');
+  if (!b || b.style.display === 'block') return;
+  b.textContent = 'This link uses a key that only opens the Dashboard, so its data requests are refused (401). '
+    + 'Open it with the host key named default (not the Dashboard function key, also named default): use the Open Dashboard link in '
+    + 'Site24x7, or Azure portal > Function App > App keys > Host keys > default. '
+    + 'Avoid the _master key: it also grants key management.';
+  b.style.display = 'block';
+}
 
 function showToast(msg, type = 'success') {
   const t = document.getElementById('toast');
@@ -499,8 +538,16 @@ function switchTab(name) {
   if (name === 'debug' && !_debugLoaded) loadDebugInfo(false);
 }
 
-function escAttr(s) { return s.replace(/&/g,'&amp;').replace(/'/g,'&#39;').replace(/"/g,'&quot;'); }
-function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+// HTML-escape for text and attribute values alike.
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function escAttr(s) { return esc(s); }
+// A value passed to an inline handler: a JS string literal first, then HTML-escaped.
+// (The browser decodes the attribute before running it, so HTML-escaping alone
+// lets a quote end the string.)
+function jsArg(s) { return esc(JSON.stringify(String(s ?? ''))); }
 
 function copyField(elId, label) {
   const val = (document.getElementById(elId).textContent || '').trim();
@@ -533,7 +580,7 @@ function renderEntraLogTypes(logtypes) {
     const unsupported = lt.supported === false;
     const toggle = unsupported
       ? `<button class="toggle" disabled style="opacity:.4;cursor:not-allowed"></button>`
-      : `<button class="toggle ${lt.enabled ? 'on' : ''}" onclick="toggleEntraLogType('${escAttr(lt.normalized)}', ${lt.enabled})"></button>`;
+      : `<button class="toggle ${lt.enabled ? 'on' : ''}" onclick="toggleEntraLogType(${jsArg(lt.normalized)}, ${!!lt.enabled})"></button>`;
     return `
     <div class="toggle-row" style="padding:6px 10px;background:var(--bg);border-radius:6px;border:1px solid var(--border);${unsupported ? 'opacity:.65' : ''}">
       <div style="min-width:0">
@@ -599,6 +646,7 @@ async function loadStatus() {
       scanText = 'Scan in progress\u2026';
     }
     document.getElementById('lastScan').textContent = scanText;
+    document.getElementById('reviewBanner').style.display = s.review_pending ? 'block' : 'none';
 
     // Show the full phase stepper while a scan is running
     let phaseEl = document.getElementById('scanPhase');
@@ -635,7 +683,10 @@ async function loadStatus() {
     // Single guarded timer (cleared+reset each call) so it never multiplies,
     // and it stops on its own once the scan finishes.
     if (_statusPollTimer) { clearTimeout(_statusPollTimer); _statusPollTimer = null; }
+    // Otherwise keep checking every 15 s while the tab is visible, so a scan started
+    // elsewhere (Site24x7, the timer) shows up here too.
     if (inProgress) { _statusPollTimer = setTimeout(loadStatus, 4000); }
+    else if (!document.hidden) { _statusPollTimer = setTimeout(loadStatus, 15000); }
 
     // Reflect scan-in-progress state on the trigger button
     const scanBtn = document.getElementById('scanBtn');
@@ -651,6 +702,14 @@ async function loadStatus() {
     document.getElementById('diagConfigRes').textContent = s.configured_resources_count ?? '—';
     document.getElementById('configResCount').textContent = s.configured_resources_count ?? 0;
     document.getElementById('ignoredRes').textContent = s.resources?.ignored ?? '—';
+
+    // "Healthy" from /api/health only means the code and libraries loaded; a
+    // collector that Site24x7 rejects (e.g. wrong Device Key or data centre)
+    // collects nothing, so report it as Degraded with the reason.
+    _s247Problem = s.s247_reachable === false
+      ? 'Site24x7: ' + ((s.s247_errors || [])[0]?.message || 'unreachable during the last scan')
+      : null;
+    if (_s247Problem) { showDegraded(_s247Problem); }
 
     // Site24x7 reachability
     const s247b = document.getElementById('s247Badge');
@@ -791,6 +850,14 @@ async function loadStatus() {
   }
 }
 
+// Set by loadStatus; loadHealth runs in parallel and must not overwrite it.
+let _s247Problem = null;
+
+function showDegraded(reason) {
+  const hb = document.getElementById('healthBadge');
+  hb.className = 'badge badge-yellow'; hb.textContent = 'Degraded'; hb.title = reason;
+}
+
 async function loadHealth() {
   try {
     const h = await api('health');
@@ -798,7 +865,9 @@ async function loadHealth() {
     const badge = document.getElementById('healthBadge');
     const deps = h.dependencies || {};
     const failed = Object.entries(deps).filter(([,v]) => v !== true && v !== 'ok');
-    if (!failed.length) {
+    if (!failed.length && _s247Problem) {
+      showDegraded(_s247Problem);
+    } else if (!failed.length) {
       badge.className = 'badge badge-green'; badge.textContent = 'Healthy';
       badge.title = 'All ' + Object.keys(deps).length + ' dependencies OK';
     } else {
@@ -818,6 +887,9 @@ async function loadVersion() {
     const vb = document.getElementById('versionBadge');
     vb.textContent = 'v' + (r.local_version || '?');
     vb.style.display = 'inline-block';
+    // Reset first, so an installed update clears the "available" badge.
+    vb.style.background = ''; vb.style.color = ''; vb.style.cursor = '';
+    vb.title = ''; vb.onclick = null;
     if (r.update_available) {
       vb.textContent += '  ➜  v' + r.remote_version + ' available';
       vb.style.background = 'rgba(234,179,8,.15)';
@@ -826,7 +898,18 @@ async function loadVersion() {
       vb.title = (r.release_notes || 'Click Check Update to upgrade');
       vb.onclick = checkUpdate;
     }
-  } catch (e) { /* version check is optional */ }
+    return r;
+  } catch (e) { return null; /* version check is optional */ }
+}
+
+// After an update the app restarts; keep checking until the new version answers.
+function refreshVersionAfterUpdate(expected, attempt = 0) {
+  setTimeout(async () => {
+    const r = await loadVersion();
+    if ((!r || r.local_version !== expected) && attempt < 20) {
+      refreshVersionAfterUpdate(expected, attempt + 1);
+    }
+  }, 15000);
 }
 
 // ─── Controls ────────────────────────────────────────────────────────────
@@ -901,12 +984,11 @@ async function triggerScan() {
   const origText = scanBtn.innerHTML;
   scanBtn._userTriggered = true;
   try {
-    const r = await fetch(`${BASE}/api/scan${FUNC_KEY ? '?code=' + FUNC_KEY : ''}`, {
-      method: 'POST'
-    });
+    const r = await fetch(`${BASE}/api/scan`, { method: 'POST', headers: KEY_HEADERS });
+    if (r.status === 401) { showAuthHelp(); }
     const data = await r.json().catch(() => ({}));
-    if (data.error) {
-      showToast('Scan error: ' + data.error, 'error');
+    if (!r.ok || data.error) {
+      showToast('Scan error: ' + (data.error || ('HTTP ' + r.status)), 'error');
       setLoading('scanBtn', false);
       scanBtn._userTriggered = false;
       return;
@@ -949,23 +1031,28 @@ async function triggerScan() {
   }
 }
 
+// One update check/apply at a time: repeated clicks used to start parallel updates.
+let updateInFlight = false;
+
 async function checkUpdate() {
+  if (updateInFlight) return;
+  updateInFlight = true;
   setLoading('updateBtn', true);
   try {
     const r = await api('check-update');
     if (r.update_available) {
       const notes = r.release_notes ? '\\n\\nRelease notes:\\n' + r.release_notes : '';
       if (confirm('Update available: v' + r.local_version + ' \\u27a1 v' + r.remote_version + notes + '\\n\\nApply update now? The function app will restart.')) {
-        setLoading('updateBtn', true);
         showToast('Applying update — this may take a few minutes...');
         try {
           const apply = await api('check-update?apply=1', { method: 'POST' });
           if (apply.action === 'deployed') {
-            showToast(`Updated to v${apply.remote_version}! App will restart shortly.`);
-            setTimeout(loadVersion, 30000);
+            showToast(`Installing v${apply.remote_version}. The app restarts in a few minutes.`);
+            refreshVersionAfterUpdate(apply.remote_version);
           } else {
-            const err = apply.deploy_result?.error || apply.error || 'unknown error';
-            showToast('Update failed: ' + err, 'error');
+            // Refusals (too new, pinned, disabled, pre-release) explain themselves in message.
+            const err = apply.deploy_result?.error || apply.error || apply.message || ('not applied: ' + (apply.action || 'unknown'));
+            showToast('Update not applied: ' + err, 'error');
           }
         } catch (e) { showToast('Update apply failed', 'error'); }
       }
@@ -974,6 +1061,7 @@ async function checkUpdate() {
     }
   } catch (e) { showToast('Update check failed', 'error'); }
   setLoading('updateBtn', false);
+  updateInFlight = false;
 }
 
 async function removeDiagSettings() {
@@ -981,14 +1069,31 @@ async function removeDiagSettings() {
   setLoading('removeBtn', true);
   try {
     const r = await api('remove-diagnostic-settings', { method: 'POST' });
+    const incomplete = (r.errors || 0) > 0 || (r.unresolved || 0) > 0 || r.tracking_cleared === false;
     const msg = `Removed ${r.removed || 0} diagnostic settings` +
       (r.errors ? `, ${r.errors} failed` : '') +
+      (r.unresolved ? `, ${r.unresolved} tracked resources not found (check them in Azure)` : '') +
       (r.skipped ? `, ${r.skipped} had none` : '') +
-      (r.auto_scan_disabled ? '. Auto-scan disabled.' : '');
-    showToast(msg, r.errors ? 'error' : 'info');
+      (r.auto_scan_disabled ? '. Auto-scan disabled.' : '') +
+      (incomplete ? ' Not everything was removed; run it again.' : '');
+    showToast(msg, incomplete ? 'error' : 'info');
     setTimeout(loadStatus, 2000);
-  } catch (e) { showToast('Removal failed', 'error'); }
+  } catch (e) {
+    showToast(String(e.message).includes('409')
+      ? 'A resource scan is running. Try again when it finishes.' : 'Removal failed', 'error');
+  }
   setLoading('removeBtn', false);
+}
+
+async function startCollecting() {
+  if (!confirm('Start collecting?\\n\\nThe collector creates storage accounts and Site24x7 log types, and adds diagnostic settings to every resource not excluded.')) return;
+  setLoading('startCollectingBtn', true);
+  try {
+    await api('start-collecting', { method: 'POST' });
+    showToast('Collecting started; a resource scan is running');
+    setTimeout(loadStatus, 2000);
+  } catch (e) { showToast('Could not start collecting', 'error'); }
+  setLoading('startCollectingBtn', false);
 }
 
 // ─── Ignore List ─────────────────────────────────────────────────────────
@@ -1011,7 +1116,7 @@ function renderIgnoreList() {
       el.innerHTML = '<span style="font-size:12px;color:var(--muted)">None</span>';
     } else {
       el.innerHTML = items.map(v =>
-        `<span class="ignore-tag"><span title="${escAttr(v)}">${escAttr(v)}</span><button onclick="removeIgnoreItem('${key}','${escAttr(v)}')">&times;</button></span>`
+        `<span class="ignore-tag"><span title="${escAttr(v)}">${escAttr(v)}</span><button onclick="removeIgnoreItem(${jsArg(key)}, ${jsArg(v)})">&times;</button></span>`
       ).join('');
     }
     const sel = document.getElementById(ui.selEl);
@@ -1033,7 +1138,7 @@ function renderTagSection(mode, tagsElId, selElId) {
   } else {
     const color = mode === 'include' ? 'var(--green)' : 'var(--red)';
     el.innerHTML = tags.map(v =>
-      `<span class="ignore-tag" style="border-color:${color}40;color:${color};background:${color}18"><span title="${escAttr(v)}">${escAttr(v)}</span><button onclick="removeTag('${mode}','${escAttr(v)}')">&times;</button></span>`
+      `<span class="ignore-tag" style="border-color:${color}40;color:${color};background:${color}18"><span title="${escAttr(v)}">${escAttr(v)}</span><button onclick="removeTag(${jsArg(mode)}, ${jsArg(v)})">&times;</button></span>`
     ).join('');
   }
   const sel = document.getElementById(selElId);
@@ -1061,8 +1166,14 @@ async function loadIgnoreList() {
 
 async function saveIgnoreList() {
   try {
-    await api('ignore-list', { method: 'PUT', body: JSON.stringify(_ignoreList) });
-    showToast('Ignore list updated');
+    const r = await api('ignore-list', { method: 'PUT', body: JSON.stringify(_ignoreList) });
+    if ((r.diag_settings_not_removed || 0) > 0) {
+      showToast(`Ignore list updated; ${r.diag_settings_not_removed} diagnostic settings could not be removed and will be retried on the next scan`, 'error');
+    } else if (r.scan_queued) {
+      showToast('Ignore list updated; a scan was started to apply location, type and tag rules');
+    } else {
+      showToast('Ignore list updated');
+    }
     loadStatus();
   } catch (e) { showToast('Failed to save ignore list', 'error'); }
 }
@@ -1182,7 +1293,7 @@ function renderLogTypes() {
         ${t.category.toLowerCase() !== t.category_key ? `<div style="font-size:11px;color:var(--muted);font-family:monospace">${esc(t.category_key)}</div>` : ''}
         ${rtypes}
       </div>
-      <button class="toggle ${toggleCls}" onclick="toggleLogTypeCategory('${escAttr(t.category_key)}', ${isDisabled})"></button>
+      <button class="toggle ${toggleCls}" onclick="toggleLogTypeCategory(${jsArg(t.category_key)}, ${!!isDisabled})"></button>
     </div>`;
   }).join('');
 }
@@ -1246,7 +1357,7 @@ function renderConfiguredResources(resources) {
       const t = r.configured_at ? fmtTime(r.configured_at) : '—';
       const cats = (r.categories || []).join(', ') || '—';
       const catCount = (r.categories || []).length;
-      const shortType = (r.resource_type || '').replace(/^Microsoft\./i, '');
+      const shortType = (r.resource_type || '').replace(/^Microsoft\\./i, '');
       return `<tr style="border-top:1px solid var(--border)">` +
         `<td style="${truncCell}" title="${escAttr(r.name + '\\n' + r.id)}">${esc(r.name)}</td>` +
         `<td style="${truncCell};color:var(--muted)" title="${escAttr(r.resource_type)}">${esc(shortType)}</td>` +
@@ -1390,7 +1501,7 @@ function renderDebugRuns() {
   }
   el.innerHTML = runs.map(r => {
     const t = r.timestamp ? fmtTime(r.timestamp) : '?';
-    const hasErr = (r.dropped || r.errors || 0) > 0;
+    const hasErr = (r.dropped || r.retrying || r.errors || 0) > 0;
     const errBlobs = (r.error_blobs || []);
     const errDetail = errBlobs.length
       ? `<div style="font-size:10px;color:var(--red);margin-top:3px">${errBlobs.map(b =>
@@ -1399,7 +1510,7 @@ function renderDebugRuns() {
     return `<div class="debug-run ${hasErr ? 'run-error' : ''}">
       <div><strong>${esc(t)}</strong></div>
       <div style="color:var(--muted);font-size:11px;margin-top:2px">
-        Blobs: ${r.blobs_found||r.blobs_processed||0} | Records: ${r.processed||r.total_records||0} | Uploaded: ${r.uploaded||0} | Errors: ${r.dropped||r.errors||0}
+        Blobs: ${r.blobs_found||r.blobs_processed||0} | Records: ${r.processed||r.total_records||0} | Uploaded: ${r.uploaded||0} | Retrying: ${r.retrying||0} | Dropped: ${r.dropped||r.errors||0}
         ${r.duration_s ? ' | ' + r.duration_s.toFixed(1) + 's' : ''}
       </div>
       ${errDetail}
@@ -1424,19 +1535,17 @@ function renderDebugS247Status() {
   </div>`;
 }
 
-async function exportDebugBundle() {
-  setLoading('btnExportDebug', true);
+async function exportDebugBundle(format) {
+  const btn = format === 'log' ? 'btnExportLog' : 'btnExportDebug';
+  const download = format === 'log' ? 'log' : '1';
+  setLoading(btn, true);
   try {
-    const sep = '?';
-    const url = FUNC_KEY
-      ? `${BASE}/api/debug?download=1&test_s247=1&code=${FUNC_KEY}`
-      : `${BASE}/api/debug?download=1&test_s247=1`;
-    const resp = await fetch(url);
+    const resp = await fetch(`${BASE}/api/debug?download=${download}&test_s247=1`, { headers: KEY_HEADERS });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const blob = await resp.blob();
     const cd = resp.headers.get('content-disposition') || '';
     const fnMatch = cd.match(/filename="?([^"]+)"?/);
-    const filename = fnMatch ? fnMatch[1] : 's247-debug-bundle.json';
+    const filename = fnMatch ? fnMatch[1] : (format === 'log' ? 's247-collector.log' : 's247-debug-bundle.json');
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = filename;
@@ -1444,11 +1553,11 @@ async function exportDebugBundle() {
     a.click();
     a.remove();
     URL.revokeObjectURL(a.href);
-    showToast('Debug bundle downloaded');
+    showToast(format === 'log' ? 'Log file downloaded' : 'Debug bundle downloaded');
   } catch (e) {
     showToast('Export failed: ' + e.message, 'error');
   } finally {
-    setLoading('btnExportDebug', false);
+    setLoading(btn, false);
   }
 }
 
@@ -1456,7 +1565,7 @@ async function clearDebugEvents() {
   if (!confirm('Clear all debug events? This cannot be undone.')) return;
   setLoading('btnClearEvents', true);
   try {
-    await api('debug?clear=1');
+    await api('debug?clear=1', { method: 'POST' });
     _debugData = null;
     _debugLoaded = false;
     loadDebugInfo(false);
@@ -1481,6 +1590,8 @@ function loadAll() {
 
 loadAll();
 setInterval(loadAll, 60000);
+// Catch up at once when the tab becomes visible again (status checks pause while hidden).
+document.addEventListener('visibilitychange', () => { if (!document.hidden) loadStatus(); });
 </script>
 </body>
 </html>"""
@@ -1501,5 +1612,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     )
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["X-Frame-Options"] = "DENY"
-    resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    # The page is opened with ?code=<key>; never send that URL as a Referer.
+    resp.headers["Referrer-Policy"] = "no-referrer"
     return resp

@@ -5,13 +5,13 @@ import logging
 import azure.functions as func
 
 
-def main(req: func.HttpRequest) -> func.HttpResponse:
+def main(req: func.HttpRequest, scanQueue: func.Out[str]) -> func.HttpResponse:
     from shared.config_store import (
         disable_log_type,
         enable_log_type,
         get_disabled_log_types,
         get_configured_resources,
-        save_configured_resources,
+        unmark_resource_configured,
         delete_logtype_config,
     )
     from shared.azure_manager import AzureManager
@@ -22,8 +22,10 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     Body: { "action": "disable"|"enable", "category": "AuditEvent" }
 
     When disabling:
-    - Adds category to disabled list
-    - Removes diagnostic settings for resources that only have this category
+    - Adds category to disabled list (the processor stops forwarding it)
+    - Removes diagnostic settings for resources that only have this category;
+      resources with other categories keep their setting and tracking, so
+      re-enabling needs no rediscovery
     - Deletes stored sourceConfig for this category
 
     When enabling:
@@ -105,16 +107,23 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         result = {"action": action, "categories": targets, "count": len(targets)}
 
         if action == "disable":
+            # Disable first: once saved the processor stops forwarding, whatever happens next.
+            not_saved = [cat for cat in targets if not disable_log_type(cat)]
+            if not_saved:
+                return func.HttpResponse(
+                    json.dumps({"error": "Failed to save the disabled log types", "categories": not_saved}),
+                    mimetype="application/json",
+                    status_code=500,
+                )
             for cat in targets:
-                disable_log_type(cat)
                 delete_logtype_config(cat)
 
             # Remove diagnostic settings for resources using only disabled categories
             diag_removed = 0
+            removal_failed = 0
             try:
                 azure_mgr = AzureManager()
                 configured = get_configured_resources()
-                resources_to_update = []
                 target_normalized = {
                     cat.replace("-", "_").replace(" ", "").lower()
                     for cat in targets
@@ -122,39 +131,47 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
                 for resource_id, info in configured.items():
                     cats = info.get("categories", [])
-                    matching = [
+                    remaining = [
                         c for c in cats
-                        if c.replace("-", "_").replace(" ", "").lower() in target_normalized
+                        if c.replace("-", "_").replace(" ", "").lower() not in target_normalized
                     ]
-                    if matching:
-                        remaining = [c for c in cats if c not in matching]
-                        if not remaining:
-                            try:
-                                azure_mgr.delete_diagnostic_setting(resource_id)
-                                resources_to_update.append(resource_id)
-                                diag_removed += 1
-                            except Exception as e:
-                                logging.warning(
-                                    "Failed to remove diag setting for %s: %s",
-                                    resource_id, str(e),
-                                )
-                        else:
-                            info["categories"] = remaining
-
-                for rid in resources_to_update:
-                    configured.pop(rid, None)
-                save_configured_resources(configured)
+                    if not cats or remaining:
+                        continue
+                    try:
+                        removed = azure_mgr.delete_own_settings(resource_id, info)
+                    except Exception as e:
+                        logging.warning("Failed to remove diag setting for %s: %s", resource_id, str(e))
+                        removed = False
+                    # Keep the record of a setting that is still there, so it is not forgotten.
+                    if removed and unmark_resource_configured(resource_id):
+                        diag_removed += 1
+                    else:
+                        removal_failed += 1
             except Exception as e:
                 logging.error("Error cleaning up diagnostic settings: %s", str(e))
+                removal_failed += 1
 
             result["diag_settings_removed"] = diag_removed
+            result["diag_settings_not_removed"] = removal_failed
 
         else:  # enable
-            for cat in targets:
-                enable_log_type(cat)
+            not_saved = [cat for cat in targets if not enable_log_type(cat)]
+            if not_saved:
+                return func.HttpResponse(
+                    json.dumps({"error": "Failed to save the enabled log types", "categories": not_saved}),
+                    mimetype="application/json",
+                    status_code=500,
+                )
             result["note"] = "Categories re-enabled. Run a scan to re-create log types and diagnostic settings."
 
         result["disabled_logtypes"] = get_disabled_log_types()
+        # A running scan loaded the old list and could undo this change: queue another.
+        from shared.config_store import get_scan_state
+        if (get_scan_state() or {}).get("in_progress"):
+            from datetime import datetime, timezone
+            scanQueue.set(json.dumps({"requested_at": datetime.now(timezone.utc).isoformat(),
+                                      "source": "disabled-logtypes"}))
+            result["scan_queued"] = True
 
         return func.HttpResponse(
             json.dumps(result, indent=2),

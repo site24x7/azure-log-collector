@@ -26,10 +26,11 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             status_code=400,
         )
 
+    # A JSON boolean only: "false" (a non-empty string) would turn it on.
     enabled = body.get("enabled")
-    if enabled is None:
+    if not isinstance(enabled, bool):
         return func.HttpResponse(
-            json.dumps({"error": "Missing 'enabled' field (true/false)"}),
+            json.dumps({"error": "'enabled' must be true or false"}),
             mimetype="application/json",
             status_code=400,
         )
@@ -43,7 +44,12 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         azure_mgr = AzureManager()
 
         new_value = "true" if enabled else "false"
-        azure_mgr.update_app_setting("GENERAL_LOGTYPE_ENABLED", new_value)
+        if not azure_mgr.update_app_setting("GENERAL_LOGTYPE_ENABLED", new_value):
+            return func.HttpResponse(
+                json.dumps({"error": "Failed to update general log type"}),
+                mimetype="application/json",
+                status_code=500,
+            )
 
         # Also update in-process env so subsequent reads reflect the change
         os.environ["GENERAL_LOGTYPE_ENABLED"] = new_value

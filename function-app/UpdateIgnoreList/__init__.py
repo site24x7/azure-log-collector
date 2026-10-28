@@ -1,16 +1,18 @@
 import json
 import logging
+from datetime import datetime, timezone
 
 import azure.functions as func
 
+# Rules that can be checked from a resource ID alone; the rest (locations,
+# resource types, tags) need the resource's details, which only a scan reads.
+_ID_RULES = ("resource_ids", "subscriptions", "resource_groups")
+_DETAIL_RULES = ("locations", "resource_types", "tags")
 
-def main(req: func.HttpRequest) -> func.HttpResponse:
-    from shared.ignore_list import load_ignore_list, save_ignore_list, is_ignored
-    from shared.config_store import (
-        get_configured_resources,
-        save_configured_resources,
-        unmark_resource_configured,
-    )
+
+def main(req: func.HttpRequest, scanQueue: func.Out[str]) -> func.HttpResponse:
+    from shared.ignore_list import IgnoreListUnavailable, load_ignore_list, update_ignore_list, is_ignored
+    from shared.config_store import get_configured_resources, unmark_resource_configured
 
     logging.info("UpdateIgnoreList: Updating ignore list")
     caller_ip = req.headers.get("X-Forwarded-For", req.headers.get("REMOTE_ADDR", ""))
@@ -34,45 +36,66 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     try:
-        save_ignore_list(body)
-        updated = load_ignore_list()
+        try:
+            previous = load_ignore_list(strict=True)
+        except IgnoreListUnavailable:
+            previous = None  # unknown: treat every rule as changed, so a scan is queued
+        # update_ignore_list fills missing lists and the tags structure in place;
+        # what it saved is the new state (a re-read could fail and look empty).
+        if not update_ignore_list(body):
+            return func.HttpResponse(
+                json.dumps({"error": "Failed to save the ignore list"}),
+                mimetype="application/json",
+                status_code=500,
+            )
+        updated = body
 
-        # Clean up diagnostic settings for newly ignored resources
+        # Remove settings now only where the ID decides it. Applying every rule
+        # here with just the ID made any include-tag rule look unmatched and
+        # removed settings from resources that carry the tag.
+        id_rules = {key: updated.get(key) or [] for key in _ID_RULES}
         diag_removed = 0
+        removal_failed = 0
         try:
             from shared.azure_manager import AzureManager
             azure_mgr = AzureManager()
             configured = get_configured_resources()
-            resources_to_remove = []
-
             for resource_id in list(configured.keys()):
-                resource_info = {
-                    "id": resource_id,
-                    "location": "",
-                    "resource_group": "",
-                }
-                if is_ignored(resource_info, updated):
-                    try:
-                        azure_mgr.delete_diagnostic_setting(resource_id)
-                        resources_to_remove.append(resource_id)
-                        diag_removed += 1
-                    except Exception as e:
-                        logging.warning(
-                            "Failed to remove diag setting for %s: %s",
-                            resource_id, str(e),
-                        )
-
-            for rid in resources_to_remove:
-                configured.pop(rid, None)
-            if resources_to_remove:
-                save_configured_resources(configured)
+                if not is_ignored({"id": resource_id}, id_rules):
+                    continue
+                try:
+                    removed = azure_mgr.delete_own_settings(resource_id, configured.get(resource_id))
+                except Exception as e:
+                    logging.warning("Failed to remove diag setting for %s: %s", resource_id, str(e))
+                    removed = False
+                # Keep the record of a setting that is still there, so it is not forgotten.
+                if removed and unmark_resource_configured(resource_id):
+                    diag_removed += 1
+                else:
+                    removal_failed += 1
         except Exception as e:
             logging.warning("Error cleaning up diag settings for ignored resources: %s", str(e))
+            removal_failed += 1
+
+        # Location / type / tag changes are applied by a scan, which has the details.
+        scan_queued = False
+        # Also when a scan is running: it loaded the old list and could undo this change.
+        from shared.config_store import get_scan_state
+        scan_running = bool((get_scan_state() or {}).get("in_progress"))
+        if scan_running or previous is None or any(
+                _normalized(key, previous.get(key)) != _normalized(key, updated.get(key))
+                for key in _DETAIL_RULES):
+            scanQueue.set(json.dumps({
+                "requested_at": datetime.now(timezone.utc).isoformat(),
+                "source": "ignore-list",
+            }))
+            scan_queued = True
 
         try:
             from shared.debug_logger import log_audit
             log_audit("update_ignore_list", "UpdateIgnoreList",
-                      {"diag_removed": diag_removed}, caller_ip)
+                      {"diag_removed": diag_removed, "removal_failed": removal_failed,
+                       "scan_queued": scan_queued}, caller_ip)
         except Exception:
             pass
 
@@ -80,6 +103,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             json.dumps({
                 "ignore_list": updated,
                 "diag_settings_removed": diag_removed,
+                "diag_settings_not_removed": removal_failed,
+                "scan_queued": scan_queued,
             }, indent=2),
             mimetype="application/json",
             status_code=200,
@@ -92,6 +117,20 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             mimetype="application/json",
             status_code=500,
         )
+
+
+def _normalized(key, value):
+    """Compare rule lists regardless of order, with the same case rules as the
+    filter: locations and types match case-insensitively, tag rules exactly
+    (a tag key is case-sensitive). Legacy flat tags are exclude rules."""
+    if key == "tags":
+        if isinstance(value, list):
+            value = {"include": [], "exclude": value}
+        value = value if isinstance(value, dict) else {}
+        return {k: sorted(str(v) for v in (value.get(k) or [])) for k in ("include", "exclude")}
+    if isinstance(value, list):
+        return sorted(str(v).lower() for v in value)
+    return []
 
 
 # Maximum items per list to prevent denial-of-service via oversized payloads
@@ -114,9 +153,9 @@ def _validate_ignore_list(body) -> str:
         return f"Unknown keys: {', '.join(sorted(unknown))}"
 
     for key in ("resource_groups", "locations", "resource_ids", "subscriptions", "resource_types"):
-        val = body.get(key)
-        if val is None:
+        if key not in body:
             continue
+        val = body[key]
         if not isinstance(val, list):
             return f"'{key}' must be an array"
         if len(val) > _MAX_LIST_ITEMS:
@@ -127,8 +166,8 @@ def _validate_ignore_list(body) -> str:
             if len(item) > _MAX_STRING_LEN:
                 return f"'{key}' item exceeds maximum length of {_MAX_STRING_LEN}"
 
-    tags = body.get("tags")
-    if tags is not None:
+    if "tags" in body:
+        tags = body["tags"]
         if isinstance(tags, list):
             if len(tags) > _MAX_LIST_ITEMS:
                 return f"'tags' exceeds maximum of {_MAX_LIST_ITEMS} items"
@@ -138,9 +177,12 @@ def _validate_ignore_list(body) -> str:
                 if len(t) > _MAX_STRING_LEN:
                     return f"'tags' item exceeds maximum length of {_MAX_STRING_LEN}"
         elif isinstance(tags, dict):
+            unknown_tags = set(tags.keys()) - {"include", "exclude"}
+            if unknown_tags:
+                return f"Unknown tags keys: {', '.join(sorted(unknown_tags))}"
             for sub_key in ("include", "exclude"):
-                sub = tags.get(sub_key)
-                if sub is not None:
+                if sub_key in tags:
+                    sub = tags[sub_key]
                     if not isinstance(sub, list):
                         return f"'tags.{sub_key}' must be an array"
                     if len(sub) > _MAX_LIST_ITEMS:

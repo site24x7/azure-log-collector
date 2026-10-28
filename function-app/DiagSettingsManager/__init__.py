@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import azure.functions as func
 
@@ -30,6 +30,41 @@ def _update_phase(phase_num, progress=None, extra=None):
         update_scan_state(patch)
     except Exception:
         pass  # never let a progress update abort the scan
+
+
+def _finish_review_scan(all_resources, active_resources, ignored_count,
+                        catalog_error, phase_timings, elapsed):
+    """End a read-only scan: record what collecting would configure."""
+    from shared.config_store import save_scan_state
+    regions = {r.get("location", "").lower() for r in active_resources if r.get("location")}
+    types = {r.get("type", "").lower() for r in active_resources if r.get("type")}
+    s247_errors = []
+    if catalog_error:
+        s247_errors.append({"phase": "catalog", "message": catalog_error["message"],
+                            "http_status": catalog_error.get("http_status")})
+    scan_state = {
+        "last_scan_time": datetime.now(timezone.utc).isoformat(),
+        "total_resources": len(all_resources),
+        "active_resources": len(active_resources),
+        "ignored_resources": ignored_count,
+        "review_pending": True,
+        "planned_regions": len(regions),
+        "planned_resource_types": len(types),
+        "s247_reachable": not catalog_error,
+        "s247_errors": s247_errors,
+        "errors": 0,
+        "phase_timings": phase_timings,
+        "total_duration": round(elapsed, 1),
+        "in_progress": False,
+    }
+    save_scan_state(scan_state)
+    logging.info(
+        "DiagSettingsManager: Review scan — %d resources in %d regions would be configured; "
+        "waiting for an admin to start collecting", len(active_resources), len(regions),
+    )
+    return {"review_pending": True, "total_resources": len(all_resources),
+            "active_resources": len(active_resources), "ignored_resources": ignored_count,
+            "planned_regions": len(regions), "planned_resource_types": len(types), "errors": 0}
 
 
 def _save_early_scan_state(all_resources, active_resources, ignored_count):
@@ -77,8 +112,15 @@ def _refresh_supported_types(client):
         return cached
 
 
+# Once a day the fast path checks each tracked setting in Azure, so a setting
+# deleted or changed by hand is repaired instead of being trusted forever.
+FULL_RECONCILE_HOURS = 24
+# After the phase 6 deadline, how long running Azure changes may still finish.
+PHASE6_GRACE_SECONDS = 45
+
+
 def run_scan():
-    from shared.azure_manager import AzureManager
+    from shared.azure_manager import AzureManager, LEGACY_SETTING_NAME, collector_setting_name
     from shared.region_manager import RegionManager
     from shared.ignore_list import load_ignore_list, is_ignored
     from shared.site24x7_client import Site24x7Client
@@ -93,7 +135,11 @@ def run_scan():
         save_configured_resources,
         save_scan_state,
         save_category_resource_types,
+        save_category_names,
         clear_cache,
+        is_collection_active,
+        get_resource_inventory,
+        save_resource_inventory,
     )
 
     """Core scan logic: discover resources, create log types in Site24x7,
@@ -138,27 +184,40 @@ def run_scan():
         return {"error": "No SUBSCRIPTION_IDS configured"}
 
     azure_mgr = AzureManager()
+    setting_name = collector_setting_name()
     region_mgr = RegionManager(subscription_ids[0])
     s247_client = Site24x7Client()
 
     # ── Phase 1: Get supported log types ──
     _update_phase(1)
     phase_start = _time.monotonic()
+    s247_client.last_error = None
     supported_types = _refresh_supported_types(s247_client)
+    catalog_error = s247_client.last_error  # e.g. a rejected Device Key
     logging.info("DiagSettingsManager: Phase 1 (supported types) done in %.1fs [total=%.1fs]",
                  _time.monotonic() - phase_start, _elapsed())
     phase_timings["phase1_supported_types"] = round(_time.monotonic() - phase_start, 1)
     _log_event("info", "DiagSettingsManager",
                f"Phase 1 done: {len(supported_types)} types in {_time.monotonic()-phase_start:.1f}s")
 
-    # Load ignore list
-    ignore_list = load_ignore_list()
+    # Load ignore list. A read failure stops the scan: an empty list would
+    # configure resources the user excluded.
+    ignore_list = load_ignore_list(strict=True)
     configured_resources = get_configured_resources()
 
     # ── Phase 2: Discover resources ──
     _update_phase(2)
     phase_start = _time.monotonic()
     all_resources = azure_mgr.get_all_resources(subscription_ids)
+    # A partial discovery must never remove settings or storage of resources it
+    # merely failed to see (a throttled subscription, a failed support check).
+    discovery_complete = azure_mgr.discovery_complete
+    if not discovery_complete:
+        logging.warning("DiagSettingsManager: discovery incomplete (%s) — nothing will be removed this scan",
+                        "; ".join(azure_mgr.discovery_errors[:5]))
+        _log_event("warning", "DiagSettingsManager",
+                   "Resource discovery was incomplete; settings and storage are not removed this scan",
+                   {"errors": azure_mgr.discovery_errors[:20]})
     logging.info("DiagSettingsManager: Phase 2 (discovery) — %d resources in %.1fs [total=%.1fs]",
                  len(all_resources), _time.monotonic() - phase_start, _elapsed())
     phase_timings["phase2_discovery"] = round(_time.monotonic() - phase_start, 1)
@@ -194,6 +253,17 @@ def run_scan():
 
     # Publish discovery counts while preserving the previous completed scan and lock
     _save_early_scan_state(all_resources, active_resources, ignored_count)
+    # Filter choices for the Site24x7 page and the dashboard. A partial discovery
+    # keeps the previous choices rather than hiding values it failed to see.
+    if discovery_complete or get_resource_inventory() is None:
+        save_resource_inventory(all_resources, subscription_ids)
+
+    # Review mode (new deployments): report what would be configured and stop
+    # before anything is created — no storage accounts, Site24x7 log types or
+    # diagnostic settings until an admin starts collecting.
+    if not is_collection_active():
+        return _finish_review_scan(all_resources, active_resources, ignored_count,
+                                   catalog_error, phase_timings, _elapsed())
 
     # Build a set of active resource IDs for cleanup
     active_resource_ids = {r.get("id", "") for r in active_resources}
@@ -205,7 +275,8 @@ def run_scan():
     active_regions = region_mgr.get_active_regions(active_resources)
     provisioned_regions = region_mgr.get_provisioned_regions(resource_group)
     reconcile_result = region_mgr.reconcile_regions(
-        resource_group, active_regions, provisioned_regions, diag_storage_suffix
+        resource_group, active_regions, provisioned_regions, diag_storage_suffix,
+        allow_remove=discovery_complete,
     )
     provisioned_regions = region_mgr.get_provisioned_regions(resource_group)
     logging.info(
@@ -237,6 +308,27 @@ def run_scan():
     _category_cache_by_type = {}  # resource_type -> [categories] or None
     types_needing_discovery = {}  # resource_type -> sample_resource_id
 
+    from shared.config_store import get_scan_state
+    last_reconcile = (get_scan_state() or {}).get("last_full_reconcile", "")
+    try:
+        reconcile_due = (datetime.now(timezone.utc) - datetime.fromisoformat(last_reconcile)
+                         > timedelta(hours=FULL_RECONCILE_HOURS))
+    except (TypeError, ValueError):
+        reconcile_due = True
+    reconcile_complete = True
+
+    def _matches_azure(resource_id, prev_config, sa_name):
+        """The tracked setting still exists in Azure as recorded."""
+        nonlocal reconcile_complete
+        try:
+            actual = azure_mgr.get_diagnostic_setting(resource_id, setting_name, raise_errors=True)
+        except Exception:
+            reconcile_complete = False
+            return True   # unknown: keep trusting the record this time
+        return bool(actual) and \
+            (actual.get("storage_account_id") or "").lower().endswith("/" + sa_name.lower()) and \
+            set(actual.get("categories") or []) == set(prev_config.get("categories") or [])
+
     for resource in active_resources:
         resource_id = resource.get("id", "")
         location = resource.get("location", "")
@@ -245,7 +337,12 @@ def run_scan():
         prev_config = configured_resources.get(resource_id, {})
         if prev_config and prev_config.get("categories"):
             sa_name = provisioned_regions.get(location, "")
-            if sa_name:
+            # A changed regional account (e.g. a leftover one was chosen before)
+            # must not fast-path: rediscover and re-point the setting.
+            # A legacy-named setting must not fast-path either: it is renamed below.
+            if sa_name and prev_config.get("storage_account", sa_name) == sa_name and \
+                    prev_config.get("setting_name", LEGACY_SETTING_NAME) == setting_name and \
+                    (not reconcile_due or _matches_azure(resource_id, prev_config, sa_name)):
                 resource_category_map[resource_id] = {
                     "categories": prev_config["categories"],
                     "effective_categories": prev_config["categories"],
@@ -318,10 +415,12 @@ def run_scan():
     # Persist category → resource_types mapping from ALL discovered resources
     # (used by dashboard to show which Azure resource types produce each category)
     _cat_rt_map = {}
+    _cat_names = {}
     for rtype, cats in _category_cache_by_type.items():
         for cat in cats:
             cat_norm = cat.replace("-", "").replace("_", "").lower()
             _cat_rt_map.setdefault(cat_norm, set()).add(rtype)
+            _cat_names.setdefault(cat_norm, cat)
     # Also include categories from already-configured resources
     for res_id, info in configured_resources.items():
         parts = res_id.split("/providers/")
@@ -331,6 +430,7 @@ def run_scan():
             for cat in info.get("categories", []):
                 cat_norm = cat.replace("-", "").replace("_", "").lower()
                 _cat_rt_map.setdefault(cat_norm, set()).add(rtype)
+                _cat_names.setdefault(cat_norm, cat)
     # Deduplicate resource types by case (keep longest variant per lowercase key)
     for cat_norm in _cat_rt_map:
         by_lower = {}
@@ -341,6 +441,8 @@ def run_scan():
         _cat_rt_map[cat_norm] = set(by_lower.values())
     # Convert sets to sorted lists and save
     save_category_resource_types({k: sorted(v) for k, v in _cat_rt_map.items()})
+    # The Site24x7 catalog spells categories in lower case; keep Azure's names for display.
+    save_category_names(_cat_names)
 
     # ── Phase 4c: Map categories to resources ──
     for resource in active_resources:
@@ -443,6 +545,13 @@ def run_scan():
     # instead of wasting time on per-category calls that will all fail.
     s247_reachable = True
     s247_errors = []  # structured error list for dashboard
+    if catalog_error:
+        # Without the catalog nothing can be configured; say why instead of
+        # reporting "connected" with zero log types.
+        s247_reachable = False
+        s247_errors.append({"phase": "catalog", "message": catalog_error["message"],
+                            "http_status": catalog_error.get("http_status")})
+        _log_event("error", "DiagSettingsManager", f"Phase 1: {catalog_error['message']}")
 
     if categories_to_create:
         preflight = s247_client.preflight_check()
@@ -671,19 +780,27 @@ def run_scan():
     # Resources already fast-pathed above (already_configured) should be skipped
     fast_pathed_ids = {rid for rid, info in resource_category_map.items()
                        if rid in configured_resources
-                       and set(info.get("effective_categories", [])) == set(configured_resources[rid].get("categories", []))}
+                       and set(info.get("effective_categories", [])) == set(configured_resources[rid].get("categories", []))
+                       and configured_resources[rid].get("storage_account", info.get("sa_name")) == info.get("sa_name")
+                       and configured_resources[rid].get("setting_name", LEGACY_SETTING_NAME) == setting_name}
 
     # Use ThreadPoolExecutor for parallel diagnostic settings creation
-    from shared.azure_manager import _extract_subscription_id
+    def _restore_legacy(resource_id, storage_account_id, categories):
+        """The rename failed after the old setting was removed: put it back so logs keep flowing."""
+        if not azure_mgr.create_diagnostic_setting(resource_id=resource_id, storage_account_id=storage_account_id,
+                                                   categories=categories, setting_name=LEGACY_SETTING_NAME):
+            logging.error("DiagSettingsManager: could not restore the old setting on %s", resource_id)
 
     def _configure_one_resource(resource_id, info):
         """Configure diagnostic setting for a single resource.
         Returns (action, error, mark_data) where mark_data is
         (resource_id, categories, sa_name) if resource should be marked configured."""
         try:
-            res_sub_id = _extract_subscription_id(resource_id) or subscription_ids[0]
+            # The regional storage accounts are created in the collector's own
+            # subscription (RegionManager(subscription_ids[0])), whatever
+            # subscription the resource is in.
             storage_account_id = (
-                f"/subscriptions/{res_sub_id}/resourceGroups/{resource_group}"
+                f"/subscriptions/{subscription_ids[0]}/resourceGroups/{resource_group}"
                 f"/providers/Microsoft.Storage/storageAccounts/{info['sa_name']}"
             )
 
@@ -694,27 +811,42 @@ def run_scan():
 
             if not effective:
                 if resource_id in configured_resources:
-                    azure_mgr.delete_diagnostic_setting(resource_id)
+                    if not azure_mgr.delete_own_settings(resource_id, prev_config):
+                        return "error", "could not remove the diagnostic setting", None
                     return "removed", None, ("unmark", resource_id)
                 return "skipped", None, None
 
+            # Azure refuses two settings sending the same category to the same
+            # storage, so our own old shared-name setting goes before ours is written.
             if resource_id in configured_resources:
-                if new_categories == prev_categories:
+                same_storage = prev_config.get("storage_account", info["sa_name"]) == info["sa_name"]
+                same_name = prev_config.get("setting_name", LEGACY_SETTING_NAME) == setting_name
+                if new_categories == prev_categories and same_storage and same_name:
                     return "already_configured", None, None
+                legacy = azure_mgr.remove_legacy_setting_if_own(resource_id, info["sa_name"])
+                if legacy is False:
+                    return "error", "could not remove the old s247-diag-logs setting", None
                 success = azure_mgr.create_diagnostic_setting(
                     resource_id=resource_id,
                     storage_account_id=storage_account_id,
                     categories=effective,
                 )
+                if not success and legacy:
+                    _restore_legacy(resource_id, storage_account_id, list(prev_categories) or effective)
                 if success:
                     return "updated", None, ("mark", resource_id, effective, info["sa_name"])
                 return "error", "create_diagnostic_setting returned False", None
             else:
+                legacy = azure_mgr.remove_legacy_setting_if_own(resource_id, info["sa_name"])
+                if legacy is False:
+                    return "error", "could not remove the old s247-diag-logs setting", None
                 success = azure_mgr.create_diagnostic_setting(
                     resource_id=resource_id,
                     storage_account_id=storage_account_id,
                     categories=effective,
                 )
+                if not success and legacy:
+                    _restore_legacy(resource_id, storage_account_id, effective)
                 if success:
                     return "configured", None, ("mark", resource_id, effective, info["sa_name"])
                 return "error", "create_diagnostic_setting returned False", None
@@ -750,6 +882,7 @@ def run_scan():
                 batch_configured[res_id] = {
                     "categories": cats,
                     "storage_account": sa_name,
+                    "setting_name": setting_name,
                     "configured_at": now_iso,
                 }
             elif mark[0] == "unmark":
@@ -802,9 +935,25 @@ def run_scan():
             "DiagSettingsManager: Time budget hit — %d/%d resources done, %d still running",
             done_count, len(resources_to_configure), len(remaining_futures),
         )
-        # Cancel unstarted futures (can't cancel running ones)
+        # Cancel unstarted futures; let the running ones finish (briefly) and
+        # record them, so no Azure change lands after the scan saved its state.
         for f in remaining_futures:
             f.cancel()
+        running = [f for f in remaining_futures if not f.cancelled()]
+        finished, _ = wait(running, timeout=PHASE6_GRACE_SECONDS)
+        for future in finished:
+            try:
+                action, error, mark_data = future.result(timeout=1)
+            except Exception as e:
+                action, error, mark_data = "error", f"Exception: {e}", None
+            if action == "error":
+                stats["errors"] += 1
+            elif action in stats:
+                stats[action] += 1
+            if mark_data:
+                pending_marks.append(mark_data)
+            done_count += 1
+    executor.shutdown(wait=False, cancel_futures=True)
 
     # Final flush of any remaining marks
     _flush_marks()
@@ -826,7 +975,9 @@ def run_scan():
 
     # ── Cleanup: remove settings for ignored/deleted resources ──
     elapsed_total = _time.monotonic() - _scan_start_mono
-    if elapsed_total > MAX_SCAN_SECONDS:
+    if not discovery_complete:
+        logging.warning("DiagSettingsManager: Skipping cleanup — resource discovery was incomplete.")
+    elif elapsed_total > MAX_SCAN_SECONDS:
         logging.warning(
             "DiagSettingsManager: Skipping cleanup — already %.0fs elapsed (max %ds). "
             "Will clean up on next scan.",
@@ -838,7 +989,9 @@ def run_scan():
         for res_id in list(configured_resources.keys()):
             if res_id not in active_resource_ids:
                 try:
-                    azure_mgr.delete_diagnostic_setting(res_id)
+                    if not azure_mgr.delete_own_settings(res_id, configured_resources.get(res_id)):
+                        # Keep the record: the setting still exports, retry next scan.
+                        continue
                     logging.info(
                         "DiagSettingsManager: Cleaned up diagnostic setting for "
                         "ignored/deleted resource %s", res_id,
@@ -848,6 +1001,7 @@ def run_scan():
                         "DiagSettingsManager: Failed to clean up diagnostic setting for %s: %s",
                         res_id, str(e),
                     )
+                    continue  # keep the record and retry on the next scan
                 stale_resource_ids.append(res_id)
                 cleanup_count += 1
 
@@ -886,13 +1040,16 @@ def run_scan():
         "entra_target_storage_account_id": entra_target_sa.get("id", ""),
         "entra_target_storage_account_name": entra_target_sa.get("name", ""),
         "entra_target_subscription_name": entra_target_sub_name,
+        "review_pending": False,
+        "discovery_errors": len(azure_mgr.discovery_errors),
+        "last_full_reconcile": (scan_time if reconcile_due and reconcile_complete
+                                else last_reconcile),
         "in_progress": False,
     }
+    # The scan state blob is the record of the last scan. Never write an app
+    # setting here: every app-setting change restarts the Function App, and
+    # runOnStartup then starts another scan (a restart loop every few minutes).
     save_scan_state(scan_state)
-    try:
-        azure_mgr.update_app_setting("LAST_SCAN_TIME", scan_time)
-    except Exception as e:
-        logging.warning("DiagSettingsManager: Failed to update LAST_SCAN_TIME app setting: %s", str(e))
 
     summary = {
         "scan_time": scan_time,
@@ -949,12 +1106,41 @@ def run_scan():
     return summary
 
 
+def _completed_scan_age_minutes():
+    """Minutes since the last completed scan, or None if there is none."""
+    try:
+        from shared.config_store import get_scan_state
+        state = get_scan_state() or {}
+        if state.get("in_progress") or not state.get("last_scan_time"):
+            return None
+        last = datetime.fromisoformat(state["last_scan_time"].replace("Z", "+00:00"))
+        return (datetime.now(timezone.utc) - last).total_seconds() / 60
+    except Exception:
+        return None
+
+
 def main(timer: func.TimerRequest) -> None:
     if timer.past_due:
         logging.warning("DiagSettingsManager: Timer is past due")
     auto_scan = os.environ.get("AUTO_SCAN_ENABLED", "true").lower() == "true"
     if not auto_scan:
         logging.info("DiagSettingsManager: Auto-scan is DISABLED — skipping scheduled scan")
+        # Still report to Site24x7 on schedule, so the collector does not look
+        # stale there and a rotated function key keeps syncing.
+        from shared.registration import register_with_site24x7
+        register_with_site24x7()
+        return
+
+    # runOnStartup fires on every host start (deploy, restart, scale-out,
+    # settings change). Keep the first scan after a fresh deploy, but skip a
+    # start-up run when a scan finished recently.
+    min_gap = float(os.environ.get("MIN_SCAN_INTERVAL_MINUTES", "30") or 30)
+    age = _completed_scan_age_minutes()
+    if age is not None and age < min_gap:
+        logging.info(
+            "DiagSettingsManager: Last scan finished %.0f min ago (< %.0f) — skipping",
+            age, min_gap,
+        )
         return
 
     # Concurrency guard: skip if another scan is already in progress.
@@ -981,4 +1167,10 @@ def main(timer: func.TimerRequest) -> None:
             guard_err,
         )
 
-    run_scan()
+    try:
+        run_scan()
+    finally:
+        # Keep Site24x7's copy of this collector (status, version, function
+        # key) current after every scan, including the first one after deploy.
+        from shared.registration import register_with_site24x7
+        register_with_site24x7()

@@ -163,6 +163,9 @@ class TestGetDiagnosticCategories:
         assert manager.get_diagnostic_categories("bad-id") == []
 
 
+from azure.core.exceptions import ResourceNotFoundError  # noqa: E402
+
+
 class TestDiagnosticSettingsCrud:
     def test_get_setting_found(self, manager):
         mock_log1 = MagicMock()
@@ -197,6 +200,7 @@ class TestDiagnosticSettingsCrud:
 
     def test_create_setting(self, manager):
         with patch("shared.azure_manager.MonitorManagementClient") as mock_cls:
+            mock_cls.return_value.diagnostic_settings.get.side_effect = ResourceNotFoundError("no setting")
             result = manager.create_diagnostic_setting(
                 "/subscriptions/s/resourceGroups/rg/providers/M/T/R",
                 "sa-id"
@@ -209,6 +213,7 @@ class TestDiagnosticSettingsCrud:
 
     def test_create_setting_with_categories(self, manager):
         with patch("shared.azure_manager.MonitorManagementClient") as mock_cls:
+            mock_cls.return_value.diagnostic_settings.get.side_effect = ResourceNotFoundError("no setting")
             result = manager.create_diagnostic_setting(
                 "/subscriptions/s/resourceGroups/rg/providers/M/T/R",
                 "sa-id",
@@ -223,6 +228,7 @@ class TestDiagnosticSettingsCrud:
 
     def test_create_setting_failure(self, manager):
         with patch("shared.azure_manager.MonitorManagementClient") as mock_cls:
+            mock_cls.return_value.diagnostic_settings.get.side_effect = ResourceNotFoundError("no setting")
             mock_cls.return_value.diagnostic_settings.create_or_update.side_effect = Exception("Forbidden")
             result = manager.create_diagnostic_setting(
                 "/subscriptions/s/resourceGroups/rg/providers/M/T/R",
@@ -232,6 +238,7 @@ class TestDiagnosticSettingsCrud:
 
     def test_delete_setting(self, manager):
         with patch("shared.azure_manager.MonitorManagementClient") as mock_cls:
+            mock_cls.return_value.diagnostic_settings.get.return_value = _setting(OWN_SA)
             result = manager.delete_diagnostic_setting(
                 "/subscriptions/s/resourceGroups/rg/providers/M/T/R"
             )
@@ -239,11 +246,45 @@ class TestDiagnosticSettingsCrud:
 
     def test_delete_setting_failure(self, manager):
         with patch("shared.azure_manager.MonitorManagementClient") as mock_cls:
+            mock_cls.return_value.diagnostic_settings.get.return_value = _setting(OWN_SA)
             mock_cls.return_value.diagnostic_settings.delete.side_effect = Exception("Forbidden")
             result = manager.delete_diagnostic_setting(
                 "/subscriptions/s/resourceGroups/rg/providers/M/T/R"
             )
             assert result is False
+
+
+    def test_setting_with_our_name_sending_elsewhere_is_never_overwritten(self, manager):
+        with patch("shared.azure_manager.MonitorManagementClient") as mock_cls:
+            mock_cls.return_value.diagnostic_settings.get.return_value = _setting(FOREIGN_SA)
+            assert manager.create_diagnostic_setting(RES, OWN_SA) is False
+            mock_cls.return_value.diagnostic_settings.create_or_update.assert_not_called()
+
+    def test_setting_with_our_name_sending_elsewhere_is_never_deleted(self, manager):
+        with patch("shared.azure_manager.MonitorManagementClient") as mock_cls:
+            mock_cls.return_value.diagnostic_settings.get.return_value = _setting(FOREIGN_SA)
+            assert manager.delete_diagnostic_setting(RES) is True   # nothing of ours there
+            mock_cls.return_value.diagnostic_settings.delete.assert_not_called()
+
+    def test_failed_lookup_changes_nothing(self, manager):
+        with patch("shared.azure_manager.MonitorManagementClient") as mock_cls:
+            mock_cls.return_value.diagnostic_settings.get.side_effect = Exception("throttled 429")
+            assert manager.create_diagnostic_setting(RES, OWN_SA) is False
+            assert manager.delete_diagnostic_setting(RES) is False
+            mock_cls.return_value.diagnostic_settings.create_or_update.assert_not_called()
+            mock_cls.return_value.diagnostic_settings.delete.assert_not_called()
+
+
+RES = "/subscriptions/s/resourceGroups/rg/providers/M/T/R"
+OWN_SA = "/subscriptions/s/resourceGroups/s247-diag-logs-rg/providers/Microsoft.Storage/storageAccounts/s247diagx"
+FOREIGN_SA = "/subscriptions/s/resourceGroups/customer-rg/providers/Microsoft.Storage/storageAccounts/theirs"
+
+
+def _setting(storage_account_id):
+    setting = MagicMock(storage_account_id=storage_account_id, logs=[])
+    setting.id = "x"
+    setting.name = "s247-diag-logs"
+    return setting
 
 
 class TestListResourceGroups:

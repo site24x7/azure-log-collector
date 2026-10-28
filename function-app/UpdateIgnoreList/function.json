@@ -5,7 +5,9 @@
       "type": "httpTrigger",
       "name": "req",
       "direction": "in",
-      "methods": ["put"],
+      "methods": [
+        "put"
+      ],
       "route": "ignore-list",
       "authLevel": "function"
     },
@@ -13,6 +15,13 @@
       "type": "http",
       "name": "$return",
       "direction": "out"
+    },
+    {
+      "type": "queue",
+      "name": "scanQueue",
+      "direction": "out",
+      "queueName": "scan-requests",
+      "connection": "AzureWebJobsStorage"
     }
   ]
 }

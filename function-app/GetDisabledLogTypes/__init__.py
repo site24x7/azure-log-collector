@@ -7,7 +7,7 @@ import azure.functions as func
 def main(req: func.HttpRequest) -> func.HttpResponse:
     from shared.config_store import (
         get_disabled_log_types, get_supported_log_types,
-        get_category_resource_types,
+        get_category_resource_types, get_category_names,
     )
 
     logging.info("GetDisabledLogTypes: Fetching disabled log types")
@@ -19,6 +19,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         # Category → resource types mapping (built from ALL discovered resources
         # during scan, not just configured ones)
         cat_resource_types = get_category_resource_types()
+        # Azure's spelling of each category, learned during scans (the catalog is lower case)
+        category_names = get_category_names()
 
         # Build category-centric view:
         #   Each card = one Azure log category (not S247 logtype)
@@ -50,9 +52,9 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 all_resource_types.update(rt)
 
                 # Recover original Azure category name (un-normalized)
-                original_name = key
+                original_name = category_names.get(key, key)
                 for cat in info.get("log_categories", []):
-                    if cat.replace("-", "").replace("_", "").lower() == key:
+                    if original_name == key and cat != cat.lower() and cat.replace("-", "").replace("_", "").lower() == key:
                         original_name = cat
                         break
 

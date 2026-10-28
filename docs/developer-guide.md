@@ -27,7 +27,7 @@
 
 | Tool | Version | Notes |
 |------|---------|-------|
-| Python | **3.9+** | ⚠️ `python` on macOS is Python 2.7 — always use **`python3`** |
+| Python | **3.13** | Match the deployed runtime; use **`python3`** |
 | Azure Functions Core Tools | v4 | `brew install azure-functions-core-tools@4` |
 | Azure CLI | latest | `brew install azure-cli` |
 | Git | any | |
@@ -36,7 +36,7 @@
 
 ```bash
 git clone <repo-url>
-cd diagnostic-logs-collection/function-app
+cd azure-log-collector/function-app
 
 # Create a virtual environment (always use python3)
 python3 -m venv .venv
@@ -51,20 +51,20 @@ pip install -r requirements-dev.txt
 
 | Package | Constraint | Reason |
 |---------|-----------|--------|
-| `azure-mgmt-monitor` | `>=8.0.0b1` | v7 removed the `diagnostic_settings` APIs entirely |
+| `azure-mgmt-monitor` | `==8.0.0b2` | v7 removed the `diagnostic_settings` APIs entirely |
 | `azure-storage-blob` | `>=12.20.0,<12.28.0` | v12.28.0 introduced a broken async import that crashes the function app |
 
 Full `requirements.txt`:
 
 ```
-azure-functions
-azure-identity
-azure-mgmt-resource
-azure-mgmt-monitor>=8.0.0b1
-azure-mgmt-storage
-azure-mgmt-web
+azure-functions>=1.13.0,<2.0.0
+azure-identity>=1.10.0,<2.0.0
+azure-mgmt-resource>=23.0.0,<25.0.0
+azure-mgmt-monitor==8.0.0b2
+azure-mgmt-storage>=21.0.0,<25.0.0
+azure-mgmt-web>=7.0.0,<8.0.0
 azure-storage-blob>=12.20.0,<12.28.0
-requests
+requests>=2.31.0,<3.0.0
 ```
 
 ### Configure local.settings.json
@@ -84,19 +84,7 @@ Create `function-app/local.settings.json` (this file is gitignored):
     "DIAG_STORAGE_SUFFIX": "diag123",
     "GENERAL_LOGTYPE_ENABLED": "false",
     "PROCESSING_ENABLED": "true",
-    "TIMER_SCHEDULE": "0 */30 * * * *"
-  }
-}
-```
-
-For **local development against the mock server**, override:
-
-```json
-{
-  "Values": {
-    "SITE24X7_BASE_URL": "http://localhost:8999",
-    "SITE24X7_UPLOAD_DOMAIN": "http://localhost:8999",
-    "SITE24X7_API_KEY": "mock-device-key"
+    "TIMER_SCHEDULE": "0 0 */6 * * *"
   }
 }
 ```
@@ -108,27 +96,7 @@ cd function-app
 python3 -m pytest tests/ -v
 ```
 
-This runs all 217 unit tests. See [Testing Guide](#7-testing-guide) for details.
-
-### Run Locally with Mock Server
-
-**Terminal 1 — Start the mock Site24x7 server:**
-
-```bash
-python3 testing/mock_s247_server.py
-# Listening on http://localhost:8999
-```
-
-**Terminal 2 — Start the function app:**
-
-```bash
-cd function-app
-func start
-```
-
-The function app will discover functions and expose HTTP endpoints at `http://localhost:7071/api/...`.
-
----
+This runs the full test suite. See [Testing Guide](#7-testing-guide) for details.
 
 ## 2. Architecture Overview
 
@@ -155,7 +123,6 @@ function-app/
 |----------|---------|---------|
 | **DiagSettingsManager** | Timer (`%TIMER_SCHEDULE%`) | Scan Azure resources, create/reconcile diagnostic settings |
 | **BlobLogProcessor** | Timer (every 2 min) | Process diagnostic log blobs, upload to Site24x7 |
-| **EventHubProcessor** | Event Hub | Process logs streamed via Event Hub |
 | **GetDebugInfo** | HTTP GET `/api/debug` | Return diagnostic/debug bundle |
 | **GetStatus** | HTTP GET | Return function app status |
 | **GetConfiguredResources** | HTTP GET | Return list of configured resources |
@@ -163,15 +130,15 @@ function-app/
 | **GetGeneralLogType** | HTTP GET | Return general log type config |
 | **GetIgnoreList** | HTTP GET | Return ignore list rules |
 | **UpdateDisabledLogTypes** | HTTP POST | Update disabled log types |
-| **UpdateGeneralLogType** | HTTP POST | Update general log type config |
-| **UpdateIgnoreList** | HTTP POST | Update ignore list rules |
-| **UpdateSettings** | HTTP POST | Update function app settings |
+| **UpdateGeneralLogType** | HTTP PUT | Update general log type config |
+| **UpdateIgnoreList** | HTTP PUT | Update ignore list rules |
+| **UpdateSettings** | HTTP GET/PUT | Update function app settings |
 | **TriggerScan** | HTTP POST | Manually trigger a DiagSettings scan |
 | **RemoveDiagSettings** | HTTP POST | Remove all diagnostic settings |
-| **StopProcessing** | HTTP POST | Disable log processing |
+| **StopProcessing** | HTTP PUT | Disable log processing |
 | **HealthCheck** | HTTP GET | Health probe endpoint |
-| **CheckUpdate** | HTTP GET | Check for available updates |
-| **AutoUpdater** | Timer | Periodically check and apply updates |
+| **CheckUpdate** | HTTP GET/POST | Check for available updates |
+| **AutoUpdater** | Timer | Daily update check; installs only when `AUTO_UPDATE_ENABLED=true` |
 | **Dashboard** | HTTP GET | Serve the management dashboard UI |
 
 ### Module Dependency Graph
@@ -181,12 +148,11 @@ graph TD
     subgraph "Function Endpoints"
         DSM[DiagSettingsManager<br/><i>Timer</i>]
         BLP[BlobLogProcessor<br/><i>Timer</i>]
-        EHP[EventHubProcessor<br/><i>Event Hub</i>]
         GDI[GetDebugInfo<br/><i>HTTP GET</i>]
         DASH[Dashboard<br/><i>HTTP GET</i>]
         AU[AutoUpdater<br/><i>Timer</i>]
         HTTP_GET["GetStatus, GetConfiguredResources,<br/>GetDisabledLogTypes, GetGeneralLogType,<br/>GetIgnoreList, HealthCheck, CheckUpdate<br/><i>HTTP GET</i>"]
-        HTTP_POST["UpdateDisabledLogTypes, UpdateGeneralLogType,<br/>UpdateIgnoreList, UpdateSettings,<br/>TriggerScan, RemoveDiagSettings, StopProcessing<br/><i>HTTP POST</i>"]
+        HTTP_POST["UpdateDisabledLogTypes, UpdateGeneralLogType,<br/>UpdateIgnoreList, UpdateSettings,<br/>TriggerScan, RemoveDiagSettings, StopProcessing<br/><i>HTTP POST / PUT; settings also GET</i>"]
     end
 
     subgraph "Shared Modules"
@@ -217,10 +183,6 @@ graph TD
     BLP --> S247
     BLP --> DL
 
-    EHP --> CS
-    EHP --> S247
-    EHP --> LP
-    EHP --> DL
 
     GDI --> DL
     GDI --> CS
@@ -248,7 +210,6 @@ graph TD
 
     style DSM fill:#4a90d9,color:#fff
     style BLP fill:#4a90d9,color:#fff
-    style EHP fill:#4a90d9,color:#fff
     style GDI fill:#7cb342,color:#fff
     style DASH fill:#7cb342,color:#fff
     style AU fill:#ff9800,color:#fff
@@ -308,9 +269,13 @@ Manages Azure resource discovery, diagnostic categories, and diagnostic settings
 | `supports_diagnostic_logs` | `(resource_id: str, resource_type: str)` | `bool` | Check if resource type supports diagnostic logs (cached) |
 | `get_all_resources` | `(subscription_ids: List[str])` | `List[Dict]` | List resources supporting diagnostic logs across subscriptions |
 | `get_diagnostic_categories` | `(resource_id: str)` | `List[str]` | Get supported log categories for a resource |
-| `get_diagnostic_setting` | `(resource_id: str, setting_name: str = "s247-diag-logs")` | `Optional[Dict]` | Check/retrieve diagnostic setting details |
-| `create_diagnostic_setting` | `(resource_id: str, storage_account_id: str, categories: Optional[List[str]] = None, setting_name: str = "s247-diag-logs")` | `bool` | Create or update diagnostic setting |
-| `delete_diagnostic_setting` | `(resource_id: str, setting_name: str = "s247-diag-logs")` | `bool` | Delete diagnostic setting |
+| `get_diagnostic_setting` | `(resource_id: str, setting_name: Optional[str] = None)` | `Optional[Dict]` | Check/retrieve diagnostic setting details |
+| `create_diagnostic_setting` | `(resource_id: str, storage_account_id: str, categories: Optional[List[str]] = None, setting_name: Optional[str] = None)` | `bool` | Create or update diagnostic setting |
+| `delete_diagnostic_setting` | `(resource_id: str, setting_name: Optional[str] = None)` | `bool` | Delete diagnostic setting |
+| `remove_legacy_setting_if_own` | `(resource_id: str, own_storage_name: str)` | `bool` | Delete the old shared-name `s247-diag-logs` setting only if it sends to this collector's storage |
+| `delete_own_settings` | `(resource_id: str, record: Optional[Dict] = None)` | `bool` | Delete this collector's setting (and its own legacy-named one) |
+
+Setting names are per collector: `s247-diag-logs-<DIAG_STORAGE_SUFFIX>` (`collector_setting_name()`), or `s247-diag-logs` without a suffix. Two collectors watching one resource each keep their own setting.
 | `list_resource_groups` | `(subscription_id: str)` | `List[str]` | List all resource groups in subscription |
 | `list_locations` | `(subscription_id: str)` | `List[str]` | List all locations with resources |
 | `update_app_setting` | `(key: str, value: str)` | `bool` | Update Function App setting via `WebSiteManagementClient` |
@@ -331,7 +296,7 @@ Blob-backed configuration store with in-memory caching. Stores supported log typ
 
 **Imports:** `azure.storage.blob.BlobServiceClient`
 
-**In-Memory Cache:** Supported types, disabled types, logtype configs, configured resources. Cache is cleared at the start of each function invocation via `clear_cache()`.
+**In-Memory Cache:** Supported types, disabled types, logtype configs, configured resources. Cache expires after 30 seconds; scans and processing also call `clear_cache()`.
 
 #### Public Functions
 
@@ -363,7 +328,7 @@ Blob-backed configuration store with in-memory caching. Stores supported log typ
 |----------|-----------|---------|
 | `_get_service_client` | `()` | `Optional[BlobServiceClient]` |
 | `_ensure_container` | `(service_client: BlobServiceClient)` | `None` |
-| `_read_blob` | `(blob_path: str)` | `Optional[str]` |
+| `_read_blob` | `(blob_path: str, strict: bool = False)` | `Optional[str]` |
 | `_write_blob` | `(blob_path: str, data: str)` | `bool` |
 | `_delete_blob` | `(blob_path: str)` | `bool` |
 
@@ -378,7 +343,7 @@ Site24x7 API client with circuit breaker and rate limiter resilience patterns. H
 #### Class: `CircuitBreaker`
 
 ```python
-CircuitBreaker(failure_threshold: int = 5, recovery_timeout: int = 900)
+CircuitBreaker(failure_threshold: int = 8, recovery_timeout: int = 300)
 # Persistent (blob-backed) — state survives across function invocations
 # Blob: s247-config/config/circuit-breaker-state.json
 ```
@@ -389,7 +354,7 @@ CircuitBreaker(failure_threshold: int = 5, recovery_timeout: int = 900)
 | `record_failure` | `()` | `None` | Increment counter, open if threshold exceeded |
 | `can_execute` | `()` | `bool` | Check if operation allowed (handles half-open state) |
 
-**States:** `closed` (normal) → `open` (after 5 failures) → `half_open` (after 300s recovery timeout)
+**States:** `closed` (normal) → `open` (after 8 failures, counted across runs) → `half_open` (after the 300 s recovery timeout)
 
 #### Class: `RateLimiter`
 
@@ -409,8 +374,8 @@ Token bucket pattern: tokens refill at `rate / per` per second. Default is 100 r
 |--------|-----------|---------|-------------|
 | `__init__` | `()` | `None` | Initialize with API key, base URL, circuit breaker, rate limiter |
 | `get_supported_log_types` | `()` | `Optional[Dict]` | Fetch supported types from `/applog/azure/logtype_supported` |
-| `create_log_type` | `(category: str)` | `Optional[Dict]` | Create/check single log type, returns sourceConfig dict |
-| `create_log_types` | `(categories: List[str])` | `Optional[List[Dict]]` | Batch create, returns list of `{category, sourceConfig}` |
+| `create_log_type` | `(category: str, fallback_names: Optional[List[str]] = None)` | `Optional[Dict]` | Create/check single log type, returns sourceConfig dict |
+| `create_log_types` | `(categories: List[str], supported_types: Optional[Dict] = None)` | `Optional[List[Dict]]` | Returns `{category, sourceConfig}` entries; first entry carries `_errors`, or an error sentinel is returned |
 | `post_logs` | `(source_config_b64: str, log_events: List[Dict])` | `bool` | Parse and POST logs using circuit breaker + rate limiter |
 | `get_general_log_type_config` | `()` | `Optional[str]` | Get base64 general catch-all config from env |
 
@@ -425,7 +390,7 @@ Token bucket pattern: tokens refill at `rate / per` per second. Default is 100 r
 | `_apply_hashing` | `(formatted_line: Dict, hashing_config: Dict)` | `int` | Apply SHA256 hashing to matched groups |
 | `_apply_derived_fields` | `(formatted_line: Dict, derived_fields: Dict)` | `int` | Extract derived fields using regex |
 | `_json_log_parser` | `(log_events: List[Dict], config: Dict, masking_config, hashing_config, derived_fields)` | `Tuple[List[Dict], int]` | Full log parsing pipeline: `(parsed_lines, total_size)` |
-| `_send_logs_to_s247` | `(config: Dict, gzipped_data: bytes, log_size: int)` | `None` | POST gzipped logs to Site24x7 upload endpoint |
+| `_send_logs_to_s247` | `(config: Dict, gzipped_data: bytes, log_size: int, timeout: float = 120)` | `None` | POST gzipped logs to Site24x7 upload endpoint |
 
 #### Internal Methods
 
@@ -433,7 +398,6 @@ Token bucket pattern: tokens refill at `rate / per` per second. Default is 100 r
 |--------|-----------|---------|
 | `_make_s247_request` | `(path: str, params: Optional[Dict] = None, method: str = "GET")` | `Optional[Dict]` |
 | `_get_upload_domain` | `()` | `str` |
-| `_proxy_api_request` | `(path: str, params: Dict, method: str)` | `Optional[Dict]` |
 
 ---
 
@@ -464,7 +428,7 @@ RegionManager(subscription_id: str)
 
 | Function | Signature | Returns |
 |----------|-----------|---------|
-| `_has_recent_blobs` | `(resource_group, sa_name, storage_client, safe_days=7)` | `bool` |
+| `_has_recent_blobs` | `(self, resource_group, sa_name, storage_client, safe_days=7)` | `bool` (instance method) |
 | `_get_safe_delete_days` | `()` | `int` |
 | `_sanitize_region` | `(region: str)` | `str` |
 | `_storage_account_name` | `(region: str, suffix: str)` | `str` |
@@ -498,7 +462,6 @@ Tag-based resource filtering with include/exclude logic, backed by blob storage.
 
 | Function | Signature | Returns |
 |----------|-----------|---------|
-| `_get_blob_client` | `()` | `BlobClient` |
 | `_migrate_tags` | `(ignore_list: Dict)` | `Dict` |
 | `_tag_matches` | `(resource_tags: Dict, tag_rule: str)` | `bool` |
 | `_extract_rg_from_id` | `(resource_id: str)` | `str` |
@@ -576,7 +539,7 @@ Persistent debug event logging and processing stats with ring buffer storage.
 
 ### shared/updater.py
 
-Auto-update mechanism — checks remote version and deploys via Azure ARM zipdeploy.
+Auto-update mechanism — checks remote version and installs it with Azure ARM OneDeploy (Flex Consumption).
 
 **Imports:** `requests`, `azure.identity.DefaultAzureCredential`, `azure.mgmt.web.WebSiteManagementClient`
 
@@ -588,7 +551,7 @@ Auto-update mechanism — checks remote version and deploys via Azure ARM zipdep
 | `parse_version` | `(version_str: str)` | `Tuple[int, int, int, int, int, int]` | Parse semver to 6-tuple `(major, minor, patch, stability, label_rank, pre_num)`; orders `dev < alpha < beta < rc < final` correctly across labels |
 | `fetch_remote_version` | `(update_url: str)` | `Optional[Dict]` | Fetch from version.json, GitHub Releases, or shorthand |
 | `is_update_available` | `(local_version: str, remote_version: str)` | `bool` | Compare versions |
-| `deploy_update` | `(package_url: str)` | `Dict` | Download and deploy via Azure ARM zipdeploy API |
+| `deploy_update` | `(package_url: str, expected_sha256=None, expected_version=None)` | `Dict` | Download, verify, stage in `s247-packages` and install via ARM OneDeploy |
 | `check_and_apply_update` | `(auto_apply: bool = False)` | `Dict` | Full update workflow (check, optionally deploy) |
 
 **Supported Update URL Formats:**
@@ -617,9 +580,9 @@ run_scan()
 ├── 3. Initialize managers:
 │      AzureManager(), RegionManager(sub_id), Site24x7Client()
 │
-├── 4. config_store.get_supported_log_types()
-│      └── If empty: site24x7_client.get_supported_log_types()
-│                    config_store.save_supported_log_types()
+├── 4. _refresh_supported_types(site24x7_client)
+│      └── Fetch catalog each scan; retain cached types on failure
+│          config_store.save_supported_log_types()
 │
 ├── 5. ignore_list.load_ignore_list()
 │      config_store.get_configured_resources()
@@ -648,7 +611,7 @@ run_scan()
 ├── 11. Cleanup: Remove settings for ignored/deleted resources
 │
 ├── 12. config_store.save_scan_state(scan_state)
-│       azure_manager.update_app_setting("LAST_SCAN_TIME", ...)
+│       save_scan_state(...)   (blob only: an app-setting write would restart the app)
 │
 └── 13. debug_logger.log_event() → persist scan summary
 ```
@@ -684,12 +647,12 @@ _process_all_regions()
 │          ├── Extract category from container name
 │          ├── Normalize category → config key
 │          ├── config_store.get_logtype_config() or use general config
-│          ├── If no config: _cleanup_stale_blobs() (STALE_BLOB_MAX_AGE_DAYS)
+│          ├── If no config: blobs stay until the lifecycle rule (BLOB_RETENTION_DAYS) deletes them
 │          └── For each JSON blob:
 │              ├── Skip if already processed (checkpoint check)
 │              ├── Parse JSON → records
 │              ├── site24x7_client.post_logs(source_config_b64, records)
-│              └── If successful: delete blob
+│              └── If handled: checkpoint progress; keep blob
 │
 ├── 8. _save_checkpoints(main_conn_str, checkpoints)
 │
@@ -981,8 +944,7 @@ python3 -m pytest tests/test_my_new_endpoint.py -v
 
 | Suite | Location | Runner | Tests | What It Covers |
 |-------|----------|--------|-------|----------------|
-| Unit tests | `function-app/tests/` | pytest | ~217 | All shared modules + function endpoints |
-| E2E tests | `testing/test_e2e.py` | standalone | ~22 checks | Full function app against mock server |
+| Unit tests | `function-app/tests/` | pytest | all | All shared modules + function endpoints |
 
 ### Running Unit Tests
 
@@ -999,7 +961,7 @@ python3 -m pytest tests/test_site24x7_client.py -v
 python3 -m pytest tests/test_config_store.py::TestSupportedLogTypes -v
 
 # Run a specific test
-python3 -m pytest tests/test_get_debug_info.py::TestGetDebugInfo::test_download_header -v
+python3 -m pytest tests/test_get_debug_info.py::TestGetDebugInfo::test_download_returns_attachment -v
 
 # Run with short traceback
 python3 -m pytest tests/ -v --tb=short
@@ -1060,10 +1022,10 @@ def test_with_env(self, monkeypatch):
     monkeypatch.delenv("AzureWebJobsStorage", raising=False)
 
 # Mocking HTTP requests
-@patch("shared.site24x7_client.requests.get")
-def test_api_call(self, mock_get):
-    mock_get.return_value.json.return_value = {"status": "ok"}
-    mock_get.return_value.status_code = 200
+@patch("shared.site24x7_client._KEYED_OPENER.open")
+def test_api_call(self, mock_open):
+    mock_open.return_value.read.return_value = b'{"status": "SUCCESS"}'
+    mock_open.return_value.status = 200
 
 # Mocking Azure Functions HTTP request
 req = func.HttpRequest(
@@ -1090,57 +1052,6 @@ def test_cache_used_on_second_call(self, mock_client):
 - Class-based grouping: `TestCircuitBreaker`, `TestRateLimiter`, `TestGetDebugInfo`
 - Descriptive, intention-revealing test names
 
-### Running E2E Tests
-
-E2E tests exercise the full function app against the mock Site24x7 server.
-
-**Step 1: Start the mock server**
-
-```bash
-python3 testing/mock_s247_server.py
-# Serves on http://localhost:8999
-```
-
-The mock server exposes:
-
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/applog/azure/logtype_supported` | GET | Returns mock supported log types |
-| `/applog/logtype` | POST | Mock log type creation |
-| `/upload` | POST | Mock log upload (accepts gzipped data) |
-| `/mock/status` | GET | Check mock server status and counters |
-| `/mock/uploads` | GET | Inspect received upload payloads |
-| `/mock/reset` | POST | Reset mock server state |
-
-**Step 2: Set environment variables**
-
-```bash
-export SITE24X7_BASE_URL=http://localhost:8999
-export SITE24X7_UPLOAD_DOMAIN=http://localhost:8999
-export SITE24X7_API_KEY=mock-device-key
-```
-
-**Step 3: Run E2E tests**
-
-```bash
-cd testing
-python3 test_e2e.py
-# Runs 22 checks against the mock server
-```
-
-### E2E Test Environment Variables Summary
-
-| Variable | Value | Purpose |
-|----------|-------|---------|
-| `SITE24X7_BASE_URL` | `http://localhost:8999` | Redirect API calls to mock |
-| `SITE24X7_UPLOAD_DOMAIN` | `http://localhost:8999` | Redirect log uploads to mock |
-| `SITE24X7_API_KEY` | `mock-device-key` | Mock device key (any non-empty value works) |
-| `SITE24X7_PROXY_URL` | (optional) | Route through Zoho Flow proxy for debugging |
-| `PROCESSING_ENABLED` | `false` | Disable processing for discovery-only testing |
-| `GENERAL_LOGTYPE_ENABLED` | `true` | Enable general fallback for testing |
-
----
-
 ## 8. Error Handling & Resilience
 
 ### Circuit Breaker (`site24x7_client.py`)
@@ -1148,12 +1059,12 @@ python3 test_e2e.py
 **Persistent** (blob-backed) circuit breaker that prevents cascading failures when Site24x7 is down. State survives across function invocations — unlike an in-memory breaker, this doesn't reset every 2-minute cycle.
 
 ```
-     ┌─────────┐    5 failures     ┌──────┐
+     ┌─────────┐    8 failures     ┌──────┐
      │ CLOSED  │──────────────────▶│ OPEN │──── state saved to blob
      │ (normal)│                   │(fail)│
      └────▲────┘                   └──┬───┘
           │                           │
-     success                    900s cooldown (15 min)
+     success                    300s cooldown (5 min)
           │                           │
      ┌────┴─────┐                     │
      │HALF_OPEN │◀────────────────────┘
@@ -1162,12 +1073,36 @@ python3 test_e2e.py
 ```
 
 - **Closed:** Normal operation. All requests pass through.
-- **Open:** Circuit tripped after 5 consecutive failures. State persisted to `s247-config/config/circuit-breaker-state.json`. All requests immediately return `False` for **15 minutes** — no API calls made. A "Circuit OPEN" error event is logged to the Debug tab.
-- **Half-Open:** After 900 seconds (15 min), allows one test request. If it succeeds → closed (logged as "S247 recovered"). If it fails → open again for another 15 min.
+- **Open:** Circuit tripped after 8 consecutive failures. State persisted to `s247-config/config/circuit-breaker-state.json`. All requests immediately return `False` for **5 minutes** — no API calls made. A "Circuit OPEN" error event is logged to the Debug tab.
+- **Half-Open:** After 300 seconds (5 min), allows one test request. If it succeeds → closed (logged as "S247 recovered"). If it fails → open again for another 5 min.
 
-**Why 15 minutes?** The function runs every 2 min. An in-memory breaker resets each run, so S247 gets hammered with 5 failures per run (150/hour). The persistent breaker skips ~7 runs during cooldown.
+**Why persisted?** The function runs every 2 min; failures are saved between runs so a breaker that never reaches the threshold in one run still trips across runs.
 
 Used by `post_logs()` — when the circuit is open, log uploads are silently skipped and blobs remain in storage (safe for up to 7 days).
+
+**What counts as a failure.** Only failures a retry can fix trip the breaker:
+
+| Upload outcome | Breaker | Records |
+|---|---|---|
+| HTTP 200 | success | sent |
+| Connection error, timeout, HTTP 408 / 429 / 5xx, any other 2xx | failure | kept, retried next run |
+| HTTP 401 / 403 (Device Key refused) | failure | kept, retried; status `upload_refused` |
+| HTTP 400 / 404 / 415 / 422 (payload refused) | success (Site24x7 answered) | dropped and recorded; the next batch goes on |
+| HTTP 413 (too large) | success | batch split in halves; a single record still refused is dropped |
+| Broken log-type configuration (decode / regex) | not touched | kept, retried; only that blob waits |
+| Less than 5 s left in the run | not touched | kept, retried next run |
+
+Each request's timeout is capped to the time left before the run's deadline.
+
+**Checkpoints resume exactly past what was handled** (sent, or deliberately dropped). Delivery is still at least once: a run that stops between an upload and saving its checkpoint, or a range whose records span blocks, can send some records again. Each blob's checkpoint records:
+
+| Blob kind | Position fields |
+|---|---|
+| Append blob | `next_byte` (end of the last fully handled envelope) + `skip_records` (records handled in the next one) + `append_created` |
+| Block blob | `next_block` + `skip_records` (records handled in that block). Used only when every block parses on its own into exactly the records of the whole range; otherwise the range is retried whole (records may arrive twice, none is lost) |
+| Single-shot blob (no block list) | done: `next_block: -1` + `last_modified`; part-way: `partial_modified` + `sent_records` |
+
+Concurrent saves merge by whole-entry progress (`_progress`): the entry that got further wins with its resume fields.
 
 ### Rate Limiter (`site24x7_client.py`)
 
@@ -1333,7 +1268,7 @@ When running locally with `func start`:
 3. **Watch logs:** The terminal running `func start` shows real-time Python logging output
 4. **Trigger a scan manually:**
    ```bash
-   curl -X POST http://localhost:7071/api/trigger-scan
+   curl -X POST http://localhost:7071/api/scan
    ```
 
 ---
@@ -1361,7 +1296,7 @@ zip -r ../s247-function-app.zip . \
 az functionapp deployment source config-zip \
   --resource-group <rg-name> \
   --name <func-app-name> \
-  --src ../s247-function-app.zip
+  --src ../s247-function-app.zip --build-remote true
 ```
 
 ### What's in the Zip
@@ -1377,7 +1312,7 @@ s247-function-app.zip
 ├── DiagSettingsManager/
 │   ├── function.json
 │   └── __init__.py
-├── ... (all 20 function folders)
+├── ... (all 22 function folders)
 ├── shared/
 │   ├── __init__.py
 │   ├── azure_manager.py
@@ -1397,13 +1332,7 @@ s247-function-app.zip
 
 ### Build Settings
 
-The Azure Functions build system installs dependencies from `requirements.txt` during deployment. Key settings configured in the function app:
-
-| Setting | Value | Purpose |
-|---------|-------|---------|
-| `FUNCTIONS_WORKER_RUNTIME` | `python` | Python runtime |
-| `SCM_DO_BUILD_DURING_DEPLOYMENT` | `true` | Install pip packages during deploy |
-| `ENABLE_ORYX_BUILD` | `true` | Use Oryx build system |
+The app runs on the Flex Consumption plan with Python 3.13 (`functionAppConfig.runtime` in the template). Release packages are prebuilt: the release workflow installs `requirements.lock` (hash-checked, manylinux2014, CPython 3.13) into `.python_packages`, and the template and the AutoUpdater install them with OneDeploy and `remoteBuild=false`. `setup/setup.sh` deploys local source with a remote build instead (`config-zip --build-remote true`). Flex Consumption rejects the old Consumption build settings (`FUNCTIONS_WORKER_RUNTIME`, `SCM_DO_BUILD_DURING_DEPLOYMENT`, `ENABLE_ORYX_BUILD`, `WEBSITE_RUN_FROM_PACKAGE`), so none is set; a test keeps them out of the template.
 
 `host.json` configuration:
 - **Function timeout:** 10 minutes (`"functionTimeout": "00:10:00"`)
@@ -1412,11 +1341,11 @@ The Azure Functions build system installs dependencies from `requirements.txt` d
 
 ### How Auto-Update Works
 
-The `AutoUpdater` function (timer-triggered, 3 AM UTC daily) and `CheckUpdate` endpoint (HTTP) both use `shared/updater.py`. The flow has several hard safety gates so AutoUpdater cannot brick the Function App with a bad release.
+The `AutoUpdater` function (timer-triggered, 3 AM UTC daily) and `CheckUpdate` endpoint (HTTP) both use `shared/updater.py`. The timer installs only when `AUTO_UPDATE_ENABLED=true` (off by default; otherwise it reports `update_available`); `POST /api/check-update?apply=1` (Site24x7's Update Collector) bypasses only `AUTO_UPDATE_ENABLED`; all other gates still apply. These checks reduce installation risk but cannot prove runtime health.
 
 **Pipeline:**
 
-1. **Kill-switch / pin check** — If `SKIP_AUTO_UPDATE=true`, exit immediately. If `PINNED_VERSION` is set, only proceed when remote matches the pin.
+1. **Kill-switch / pin check** — If `SKIP_AUTO_UPDATE=true`, exit immediately. A pin freezes the collector at that version and never downgrades (`pinned_older` if the pin is older than installed). A newer pin installs only if it matches the fetched release; older releases are not fetched.
 2. **Fetch:** `fetch_remote_version(UPDATE_CHECK_URL)` supports:
    - A direct `version.json` URL
    - GitHub Releases API (`https://api.github.com/repos/owner/repo/releases/latest`)
@@ -1432,19 +1361,21 @@ The `AutoUpdater` function (timer-triggered, 3 AM UTC daily) and `CheckUpdate` e
    - `ast.parse()` — every app `.py` file must be syntactically valid. **Vendored third-party packages under `.python_packages/` are skipped** — they come from PyPI and occasionally contain BOMs or other encoding quirks that `ast.parse` rejects even though Python's own loader accepts them. App code is decoded with `utf-8-sig` so a stray leading BOM is stripped before parsing.
    - `json.loads()` — every `.json` file must parse
    - Required files present: `host.json`, `VERSION`, `AutoUpdater/__init__.py`, `AutoUpdater/function.json`, `shared/updater.py`, `requirements.txt`
-7. **Deploy:** Only if validation passes, POST to Azure ARM `/zipdeploy` using the Function App's Managed Identity.
-8. **Post-deploy health check:** After a successful deploy, ping `https://{site}.azurewebsites.net/api/health` up to 3 times (with 20s warm-up + 30s between attempts) and write an `auto_update_health_check` audit event. Informational only — there is no automatic rollback; recovery is "revert + new release" or `PINNED_VERSION`.
+7. **Import check:** `check_package_imports()` unpacks the zip and, in a separate `python -I -S` process, imports every function module and every `shared/*.py` module with only the package's `.python_packages`. Any failure refuses the deploy. The release workflow runs the same check on the built zip.
+8. **Deploy:** Only if validation passes, stage the verified zip in `s247-packages` and PUT the ARM `extensions/onedeploy` resource (`packageUri` = a 6-hour read-only link to that copy, `remoteBuild=false`) using the Function App's Managed Identity.
+9. **Update confirmation:** The new version records `confirmed_at` on its first processing run. There is no post-deploy probe from the old process and no automatic rollback. Recovery is a new release with the known-good code, or installing the previous release's package again (README, Rollback).
 
 Every AutoUpdater run writes an `auto_update_run` audit event (via `debug_logger.log_event`) so operators can reconstruct history even if the new build breaks its own logging.
 
 ### Safety / Rollout Controls
 
-All four are app-settings overrides; no redeploy is needed to change them.
+All five are app-settings overrides; no redeploy is needed to change them.
 
 | Env var | Default | Effect |
 |---|---|---|
+| `AUTO_UPDATE_ENABLED` | `false` | When `true`, the daily AutoUpdater installs updates; otherwise it only checks and an admin installs. |
 | `SKIP_AUTO_UPDATE` | `false` | When `true`, AutoUpdater returns `action=disabled` without contacting GitHub. Emergency switch. |
-| `PINNED_VERSION` | *(unset)* | When set to e.g. `1.2.3`, only that exact version may be deployed. Lets you roll back or freeze prod without touching code. |
+| `PINNED_VERSION` | *(unset)* | A pin freezes the collector at that version and never downgrades (`pinned_older` if the pin is older than installed). A newer pin installs only if it matches the fetched release; older releases are not fetched. |
 | `UPDATE_CHANNEL` | `stable` | `stable` refuses pre-releases (by version-string suffix or GitHub's `prerelease` flag). `prerelease` accepts alpha/beta/rc. Use the latter in test environments. |
 | `MIN_RELEASE_AGE_MINUTES` | `60` | Defer releases younger than N minutes. Set to `0` on test environments for instant pickup. |
 
@@ -1460,10 +1391,10 @@ All four are app-settings overrides; no redeploy is needed to change them.
 ### Release workflow for mixed stable + pre-release
 
 1. Tag a pre-release: `v1.3.0-alpha.1`; on the GitHub release form check **"Set as a pre-release"** → test env picks it up; customers skip it.
-2. Promote to stable: tag `v1.3.0` with the pre-release box **unchecked** → customers pick it up once it's ≥60 minutes old.
-3. If broken: delete the release on GitHub before the age gate opens, or set `PINNED_VERSION=<previous>` on affected apps.
+2. Promote to stable: tag `v1.3.0` with the pre-release box **unchecked** → an admin installs it with Update Collector after the age gate, unless `AUTO_UPDATE_ENABLED=true` enables timer installs.
+3. If broken: published releases are never replaced or deleted. Set `SKIP_AUTO_UPDATE=true` on collectors that have not updated yet (the 60-minute age gate gives time), release the known-good code as a new, higher version, and reinstall the previous package on collectors that no longer start (README, Rollback).
 
-The current version is stored in the `VERSION` file at the project root.
+The current version is stored in `function-app/VERSION`.
 
 ### Site24x7 Data Centers
 
@@ -1531,8 +1462,7 @@ refactor: extract log parsing into shared/log_parser.py
 
 ### Pull Request Checklist
 
-- [ ] All 217+ unit tests pass (`python3 -m pytest tests/ -v`)
-- [ ] E2E tests pass against mock server (if applicable)
+- [ ] All tests pass (`python3 -m pytest tests/ -v`)
 - [ ] No secrets or credentials in code
 - [ ] New functions are direct child folders with `function.json` + `__init__.py`
 - [ ] New shared functions have unit tests
@@ -1555,10 +1485,10 @@ refactor: extract log parsing into shared/log_parser.py
 | Max records per upload batch | 5,000 (`MAX_RECORDS_PER_BATCH`) |
 | Time budget reserve | 60s before timeout, stops taking new blobs |
 | Backlog warning threshold | 500 pending blobs (`BACKLOG_WARN_THRESHOLD`) |
-| Stale blob auto-delete | 7 days (`STALE_BLOB_MAX_AGE_DAYS`) |
-| Circuit breaker | Opens after 5 failures, recovers after 5 min |
+| Blob retention (lifecycle rule, sent or not) | 7 days (`BLOB_RETENTION_DAYS`) |
+| Circuit breaker | Opens after 8 failures, recovers after 5 min |
 | Rate limiter | 100 tokens/sec (token bucket) |
-| S247 API timeout | 30s; upload timeout 60s |
+| S247 API timeout | 120s; upload timeout at most 120s, bounded by the remaining run deadline |
 
 ### Throughput Estimates
 
@@ -1573,17 +1503,17 @@ refactor: extract log parsing into shared/log_parser.py
 When inflow exceeds processing capacity:
 
 1. **Time budget guard** — Processing stops 60s before timeout; remaining blobs deferred to next 2-min cycle
-2. **Checkpoint persistence** — Progress saved per storage account; next run resumes where it left off
+2. **Checkpoint persistence** — Progress saved per blob (byte/block position and skip_records); next run resumes where it left off
 3. **Backlog alert** — When pending blobs > 500, a warning event is logged to the Debug API
 4. **Batch splitting** — Blobs with >5,000 records are split into multiple upload batches
-5. **Stale cleanup** — Blobs older than 7 days with no config are auto-deleted (data loss — by design, warns in logs)
-6. **Circuit breaker** — If S247 is down, stops retrying after 5 failures (prevents wasted time), recovers after 5 min
+5. **Stale cleanup** — Storage lifecycle expires blobs after BLOB_RETENTION_DAYS (default 7), whether sent or not; the processor does not delete blobs
+6. **Circuit breaker** — If S247 is down, stops retrying after 8 failures (prevents wasted time), recovers after 5 min. Refused payloads do not trip it (see Circuit Breaker)
 
 ### What Is NOT Handled (Future Work)
 
 - **Parallel processing** — All blobs processed sequentially; async/concurrent processing would multiply throughput
 - **Auto-scaling** — No dynamic adjustment of timer interval or batch size based on backlog
-- **Dead letter queue** — Failed records are dropped, not queued for retry
+- **Dead letter queue** — Retryable records remain in source blobs; permanently rejected/unparseable records are dropped
 - **Backpressure to Azure** — Diagnostic settings keep writing even if pipeline is overloaded
 
 ---
@@ -1596,10 +1526,6 @@ When inflow exceeds processing capacity:
 # Run unit tests
 cd function-app && python3 -m pytest tests/ -v
 
-# Run E2E tests
-python3 testing/mock_s247_server.py &  # Terminal 1
-cd testing && python3 test_e2e.py       # Terminal 2
-
 # Start function app locally
 cd function-app && func start
 
@@ -1607,7 +1533,7 @@ cd function-app && func start
 cd function-app && zip -r ../s247-function-app.zip . -x ".venv/*" "tests/*" "__pycache__/*" "*.pyc" ".pytest_cache/*" "local.settings.json" "requirements-dev.txt"
 
 # Deploy
-az functionapp deployment source config-zip --resource-group <rg> --name <name> --src ../s247-function-app.zip
+az functionapp deployment source config-zip --resource-group <rg> --name <name> --src ../s247-function-app.zip --build-remote true
 
 # Check debug info (deployed)
 curl "https://<func>.azurewebsites.net/api/debug?code=<key>"
@@ -1621,7 +1547,7 @@ curl http://localhost:7071/api/debug
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `AzureWebJobsStorage` | Yes | Azure Storage connection string (for config + checkpoints) |
-| `FUNCTIONS_WORKER_RUNTIME` | Yes | Must be `python` |
+| `FUNCTIONS_WORKER_RUNTIME` | Local only | `python` in `local.settings.json` for Core Tools; in Azure the Flex Consumption runtime setting replaces it |
 | `SUBSCRIPTION_IDS` | Yes | Comma-separated Azure subscription IDs to scan |
 | `SITE24X7_API_KEY` | Yes | Site24x7 device key for API auth |
 | `SITE24X7_BASE_URL` | Yes | Site24x7 base URL (e.g., `https://www.site24x7.com`) |
@@ -1633,10 +1559,72 @@ curl http://localhost:7071/api/debug
 | `S247_GENERAL_LOGTYPE` | No | Base64-encoded general logtype sourceConfig |
 | `UPDATE_CHECK_URL` | No | URL or `owner/repo` shorthand for auto-update checks |
 | `UPDATE_CHANNEL` | No | `stable` (default) or `prerelease` — controls whether alpha/beta builds are accepted |
-| `PINNED_VERSION` | No | If set, AutoUpdater only deploys this exact version (rollback / freeze) |
+| `PINNED_VERSION` | No | A pin freezes the collector at that version and never downgrades (`pinned_older` if the pin is older than installed). A newer pin installs only if it matches the fetched release; older releases are not fetched. |
+| `AUTO_UPDATE_ENABLED` | No | `true` lets the daily AutoUpdater install updates (default `false`: check only) |
 | `SKIP_AUTO_UPDATE` | No | `true` disables AutoUpdater entirely — emergency switch |
 | `MIN_RELEASE_AGE_MINUTES` | No | Grace period before a new release is eligible (default: `60`) |
 | `SITE24X7_UPLOAD_DOMAIN` | No | Override upload endpoint (for testing with mock server) |
-| `SITE24X7_PROXY_URL` | No | Route API calls through proxy (testing only) |
-| `SAFE_DELETE_MAX_AGE_DAYS` | No | Days to keep unprocessed blobs before cleanup (default: 7) |
-| `STALE_BLOB_MAX_AGE_DAYS` | No | Days after which unconfigured blobs are cleaned up |
+| `SAFE_DELETE_MAX_AGE_DAYS` | No | Protects regional account deletion when blobs newer than this remain (default: 7 days) |
+| `BLOB_RETENTION_DAYS` | No | Days after which the storage lifecycle rule deletes log blobs, sent or not (default 7) |
+
+## Operational freshness and connectivity
+
+Discovery and log processing are different schedules: discovery runs every six
+hours by default; processing is scheduled every two minutes. Registration updates
+Site24x7 after scans and on a worker's first BlobLogProcessor run. Failed
+registration is retried and key changes are checked every 15 minutes.
+It is not repeated every processing cycle and there is no periodic full-registration
+heartbeat. Live authenticated status reads provide current health without rewriting
+the database registration row. Pause/resume returns the saved state directly and
+does not wait for a callback registration.
+
+The Site24x7 detail page handles the two directions independently:
+
+- If its authenticated Function App status read fails, returns a non-success HTTP
+  response or an invalid body, it shows a collector API problem. It cannot infer
+  the collector's current outbound health from that failure.
+- If the API answers, its `operational_status` shows the last scan's Site24x7 API
+  reachability and bounded phase/HTTP errors, plus the last observed upload
+  attempt (`ok`, `failed`, `refused`, `rejected`) and its observation time.
+  A reachable Function App does not prove that it can upload to Site24x7.
+- With no fresh report or live snapshot for twenty-six hours, the page marks the
+  historical status unavailable; a failed live check is shown immediately. Removing a stale registration still requires
+  the separate twenty-six-hour policy. Viewer/list data remain registration
+  snapshots; the existing live-read API is admin-only.
+
+Refresh on the detail page re-reads the live collector status. While the collector
+page is visible it also refreshes once a minute, so current status checks
+continue without a manual reload. Live reads never
+rewrite LAST_SYNC_TIME or claim that registration succeeded. Detailed errors are
+allowlisted as phase/HTTP status only; response bodies, URLs and keys are omitted.
+
+`last_processing_time` is the latest recorded processing-run completion, including
+runs that uploaded zero records. It is not the last successful upload. Early
+returns/failed runs can have no summary. `upload_status_time` identifies an actual
+upload attempt: empty runs do not clear an earlier error. The last observation is
+looked up in a bounded fifty-run history, so its absence means unknown. HTTP200
+is receiver acknowledgement and does not prove that records are indexed.
+
+The relay is development infrastructure. If it stops answering, both catalog
+calls and registrations through that relay can fail; Site24x7 must use its live
+read/freshness rules rather than wait for an error report over the broken path.
+
+A failure of Site24x7's own collector-data REST endpoint is not evidence that
+the Function App is unreachable. The client requires a recognised proxy result
+(accepted + http_status) before classifying the collector API. A browser HTTP
+error, missing result or Site24x7 error object shows Site24x7 API request failed,
+with collector status unknown; it does not advise checking Azure. Settings and
+filters use this same distinction. A stale report is historical evidence, not
+a second diagnosis of an Azure outage.
+
+### Pause/resume response time
+
+`PUT /api/processing` saves `config/processing-control.json` rather than changing
+an Azure app setting. It does not restart the Function App, enumerate keys or
+wait for a registration callback. Status reads and each processing invocation
+read this shared value without a worker-local cache. Only an absent control blob
+uses the legacy `PROCESSING_ENABLED` app setting; storage/corrupt-state errors
+must not permit processing. A failed save returns an error rather than success.
+The next scheduled run observes the flag; a run already in progress may finish.
+Other app-setting changes can still restart the collector. Network/storage and
+audit persistence can still affect latency; no live response-time SLA is claimed.

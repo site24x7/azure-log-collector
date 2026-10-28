@@ -19,26 +19,78 @@ Azure Resources ──► Storage Accounts (per region) ──► Function App �
 
 ---
 
+### Storage-name availability and repeat deployments
+
+Azure storage names are globally unique. An account can be unavailable even
+when it is absent from your subscription. Repeating the same deployment or
+changing its deployment name does not change the default subscription-derived
+suffix.
+
+For existing deployments, leave `deploymentSuffix` empty to preserve legacy
+names, or keep the exact suffix previously chosen. For a **fresh installation**,
+set `deploymentSuffix` in the Azure template parameters to a new 12–13 character
+lowercase alphanumeric value. The resolved suffix is included in deployment
+Outputs; save it and reuse it for updates. Shell setup uses `DEPLOYMENT_SUFFIX`
+in `config.env` for the same purpose. Do not change a live collector's suffix,
+location, or deployment method as an upgrade. Each suffix gets its own resource
+group, `s247-diag-logs-<suffix>-rg`; installs without a suffix keep
+`s247-diag-logs-rg`. To redeploy an existing collector in place, set the
+`resourceGroupName` parameter to the group it already uses.
+
+Check an explicit ARM suffix before deployment (Azure CLI login required):
+
+```bash
+python3 setup/check-storage-names.py --suffix <chosen-suffix> --region centralindia \
+  --subscription <subscription-id>
+```
+
+The check is read-only: it checks host, seed and optional tenant storage names,
+allows reuse of tagged collector accounts in the same resource group/location,
+and fails if availability or ownership cannot be verified. Availability can
+change after the check; Azure's deployment validation remains authoritative.
+Shell setup performs these checks before provisioning infrastructure.
+
+Suffixes of six characters or fewer retain legacy names. Longer suffixes keep
+the entire suffix in compact host/seed/tenant names; other regional names hash
+the full suffix and region into at most 24 characters. This requires the
+matching updated collector code—do not combine a new long suffix with an older
+collector package that still truncates regional names.
+
+The template creates a **Flex Consumption** Function App (Python 3.13) and installs
+the release package with OneDeploy. The package already contains its Python
+dependencies, so nothing is built in Azure. The template installs the release's
+own `released-package.zip` asset (the file name Flex Consumption documents for
+OneDeploy; OneDeploy follows GitHub's download redirect). A successful ARM
+validation is not proof of code startup; verify `/api/health` and actual
+ingestion after deployment.
+
+**Which key opens the dashboard.** The deployment's `dashboardUrl` output is the
+address without a key (keys are never written to deployment outputs). Open it with
+the Function App's **host** key named `default` (App keys > Host keys > default).
+The Dashboard function's own key (Functions > Dashboard > Function keys), also
+named `default`, opens only the page: every data request it makes returns 401.
+Avoid `_master`, which also grants key management.
+
 ## Quick Start
 
 ### Option A — Deploy to Azure (portal)
 
-One-click ARM deployment. The public template is published as a release asset; no GitHub sign-in is required.
+One-click ARM deployment. The public template is available at a pinned Git tag; no GitHub sign-in is required.
 
 | Version | Button / URL |
 |---|---|
-| **Pinned — v1.0.0 (current stable)** | [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fgithub.com%2Fsite24x7%2Fazure-log-collector%2Freleases%2Fdownload%2Fv1.0.0%2Fazuredeploy.json) |
-| **Latest stable** (auto-follows newest stable release) | [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fgithub.com%2Fsite24x7%2Fazure-log-collector%2Freleases%2Flatest%2Fdownload%2Fazuredeploy.json) |
+| **Pinned — v1.0.1-beta15 (pre-release)** | [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fsite24x7%2Fazure-log-collector%2Frefs%2Ftags%2Fv1.0.1-beta15%2Fsetup%2Fazuredeploy.json) |
+| **Stable — v1.0.0** (pinned tag) | [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fsite24x7%2Fazure-log-collector%2Frefs%2Ftags%2Fv1.0.0%2Fsetup%2Fazuredeploy.json) |
 
 Raw URLs (if you prefer to paste directly into `Template spec deployment`):
 
-- **Pinned v1.0.0:**
-  `https://github.com/site24x7/azure-log-collector/releases/download/v1.0.0/azuredeploy.json`
-- **Latest stable:**
-  `https://github.com/site24x7/azure-log-collector/releases/latest/download/azuredeploy.json`
+- **Pinned v1.0.1-beta15 (pre-release):**
+  `https://raw.githubusercontent.com/site24x7/azure-log-collector/refs/tags/v1.0.1-beta15/setup/azuredeploy.json`
+- **Stable v1.0.0 (pinned tag):**
+  `https://raw.githubusercontent.com/site24x7/azure-log-collector/refs/tags/v1.0.0/setup/azuredeploy.json`
 
 Pre-release track (alpha/beta/rc) is only available via explicit version tag in the raw URL, e.g.
-`https://github.com/site24x7/azure-log-collector/releases/download/v1.0.1-beta1/azuredeploy.json`.
+`https://raw.githubusercontent.com/site24x7/azure-log-collector/refs/tags/v1.0.1-beta15/setup/azuredeploy.json`.
 
 ### Option B — Shell deploy
 
@@ -76,8 +128,13 @@ bash setup.sh
 
 This takes 5–10 minutes and provisions:
 - Resource group, storage account, Function App
-- Managed Identity with Reader + Monitoring Contributor roles
+- Managed Identity with Reader + Monitoring Contributor (monitored subscriptions) and
+  Contributor (the collector's own resource group)
 - Initial resource scan and diagnostic settings configuration
+
+Deployments from the ARM template start in **review mode**: the collector only discovers
+resources until an admin reviews the exclusions and log categories in Site24x7 and clicks
+**Start Collecting**. Set the template parameter `confirmAfterDiscovery=false` to skip that.
 
 At the end, you'll see the **Dashboard URL** — open it in your browser.
 
@@ -112,13 +169,17 @@ cd azure-log-collector/setup
 bash teardown.sh
 ```
 
-Removes resource locks, cleans up diagnostic settings, then deletes the resource group.
+Works only on the deployment's subscription and a resource group tagged
+`managed-by=s247-diag-logs`: removes its locks and the identity's subscription role
+assignments, then deletes the resource group. Add `--clean-diag-settings` to also remove this
+collector's diagnostic setting from resources where it sends to this deployment's storage
+(or use **Remove Diagnostic Settings** in Site24x7 / the dashboard first).
 
 ## Cost Estimate
 
 | Resource | Cost |
 |----------|------|
-| Function App (Consumption) | ~$0.20/million executions |
+| Function App (Flex Consumption, 2,048 MB instances) | Billed per GB-second while functions run, plus executions; see [Azure Functions pricing](https://azure.microsoft.com/pricing/details/functions/). Grows with log volume. |
 | Storage Account (per region) | ~$0.02/GB/month |
 | **Total (typical)** | **~$5–10/month** |
 
@@ -135,17 +196,13 @@ No Event Hubs needed — storage-based polling eliminates the ~$11/region/month 
 │   ├── teardown.sh           ← One-click cleanup
 │   └── azuredeploy.json      ← ARM template
 ├── function-app/
-│   ├── VERSION               ← Semantic version (triggers CI/CD releases)
+│   ├── VERSION               ← Semantic version (a change on main starts a release)
 │   ├── shared/               ← Core Python modules
 │   ├── BlobLogProcessor/     ← Timer: polls storage, forwards logs to S247
 │   ├── DiagSettingsManager/  ← Timer: 6h resource scan + config
 │   ├── Dashboard/            ← Web dashboard (single-page HTML)
-│   ├── tests/                ← 217 unit tests (pytest)
-│   └── ...                   ← 17 more endpoints (21 functions total)
-├── testing/
-│   ├── mock_s247_server.py   ← Mock S247 for local E2E testing
-│   ├── test_e2e.py           ← End-to-end test suite
-│   └── sample_blobs/         ← Sample Azure diagnostic log blobs
+│   ├── tests/                ← unit tests (pytest)
+│   └── ...                   ← 19 more functions (22 functions total)
 ├── docs/
 │   ├── architecture-document.md
 │   ├── developer-guide.md
@@ -153,28 +210,31 @@ No Event Hubs needed — storage-based polling eliminates the ~$11/region/month 
 │   ├── entra-id-logs.md           ← Tenant (Entra ID) log collection setup
 │   └── security-overview.md       ← Customer-facing security brief
 └── .github/workflows/
-    └── release-function-app.yml  ← CI/CD: auto-release on VERSION bump
+    └── release-function-app.yml  ← Release workflow: VERSION change on main, or manual dispatch
 ```
 
 ## Auto-Updates
 
-The Function App can self-update from GitHub Releases.
+The Function App updates from GitHub Releases. **Automatic installs are off by default:** the
+nightly check (3 AM UTC) only records whether a newer release exists, and an admin installs it
+with **Update Collector** in Site24x7 (Overview > Collector Details > Version). To let the collector install
+updates on its own, set `AUTO_UPDATE_ENABLED=true`.
 
 ### Basic setup
 
-1. Set `UPDATE_CHECK_URL` app setting to `site24x7/azure-log-collector`
-2. Bump `function-app/VERSION` and push to `main`
-3. GitHub Actions creates a release with the deployable zip
-4. The Function App detects the new version and deploys it on its next nightly run (3 AM UTC)
+1. The template sets `UPDATE_CHECK_URL` to `site24x7/azure-log-collector` and `AUTO_UPDATE_ENABLED` to `false`
+2. A release is published by the release workflow (on a `VERSION` change in `main`, or by manual dispatch; see `docs/release-validation.md` for stable releases)
+3. Site24x7 shows that an update is available; an admin installs it, or the nightly run does when `AUTO_UPDATE_ENABLED=true`
 
 ### Safety controls (app settings)
 
 | Setting | Default | Purpose |
 |---|---|---|
+| `AUTO_UPDATE_ENABLED` | `false` | `true` lets the nightly run install updates on its own. Off: it only checks, and admins install from Site24x7. |
 | `UPDATE_CHANNEL` | `stable` | `stable` refuses any alpha/beta/rc; `prerelease` accepts them. Use `prerelease` in test environments. |
-| `PINNED_VERSION` | *(unset)* | If set (e.g. `1.2.3`), AutoUpdater only deploys this exact version. Use for freezing prod or rolling back. |
-| `SKIP_AUTO_UPDATE` | `false` | `true` disables AutoUpdater entirely — emergency switch, no redeploy needed. |
-| `MIN_RELEASE_AGE_MINUTES` | `60` | Refuses releases younger than N minutes. Gives you a grace window to delete a bad release before it propagates. |
+| `PINNED_VERSION` | *(unset)* | A pin freezes the collector at that version and never downgrades (`pinned_older` if the pin is older than installed). A newer pin installs only if it matches the fetched release; older releases are not fetched. |
+| `SKIP_AUTO_UPDATE` | `false` | `true` applies no update at all, automatic or manual — emergency switch, no redeploy needed. |
+| `MIN_RELEASE_AGE_MINUTES` | `60` | Refuses releases younger than N minutes, a grace window to stop a bad release before it is installed. |
 
 ### Separating alpha/beta from customer builds
 
@@ -185,15 +245,28 @@ Check GitHub's "Set as a pre-release" box when creating alpha/beta tags. With de
 
 ### Rollback
 
-1. Delete or un-publish the bad release on GitHub (or mark it a pre-release).
-2. Tag a new release with the previous known-good content, OR set `PINNED_VERSION=<known-good>` on prod.
-3. Next AutoUpdater run reconciles to the pinned/latest-stable version.
+1. Set `SKIP_AUTO_UPDATE=true` on collectors that have not updated yet (a release is installed
+   only after it is 60 minutes old).
+2. Release the known-good content as a new, higher version. Published releases are never
+   replaced or deleted.
+3. A collector that cannot start after a bad update cannot update itself. Install the
+   previous version's package again (Flex Consumption keeps no earlier packages):
 
-Every AutoUpdater run writes audit events (`auto_update_run`, `auto_update_health_check`) visible via the debug-logs endpoint.
+   ```bash
+   az functionapp deploy -g <resource-group> -n <function-app> --type zip \
+     --src-url https://github.com/site24x7/azure-log-collector/releases/download/v<previous-version>/released-package.zip
+   ```
+
+   Azure CLI 2.79 may then print a JSON parsing error although the install
+   succeeded; check `/api/health` or the app's deployment status.
+
+Every AutoUpdater run writes an audit event (`auto_update_run`) visible via `/api/debug`; the new version records `confirmed_at` in `update_state` (`/api/status`) on its first run.
 
 ## Security
 
-The collector runs entirely inside your Azure tenant, uses Managed Identity (no stored credentials), has least-privilege RBAC, and is open-source.
+The collector runs inside your Azure tenant: its managed identity for ARM, storage account keys for
+its own storage, and your Site24x7 Device Key. Site24x7 holds a dedicated `site24x7` function key,
+valid only on the endpoints it calls, so admins can run the collector's actions from Site24x7.
 
 See **[docs/security-overview.md](docs/security-overview.md)** for a customer-facing security brief covering: trust boundary, RBAC, data path & residency, self-update controls, logging & auditability, uninstall, and answers to common security questions.
 
@@ -202,7 +275,7 @@ See **[docs/security-overview.md](docs/security-overview.md)** for a customer-fa
 ```bash
 cd function-app
 pip install -r requirements-dev.txt
-python3 -m pytest tests/ -v     # 260 tests, ~4s
+python3 -m pytest tests/ -q
 ```
 
 See [docs/developer-guide.md](docs/developer-guide.md) for detailed development setup.
@@ -210,3 +283,11 @@ See [docs/developer-guide.md](docs/developer-guide.md) for detailed development 
 ## License
 
 Internal — Site24x7 / Zoho Corporation
+
+Stable publication requires manual approval with live-validation evidence.
+See [Stable release validation](docs/release-validation.md) for fresh-install,
+repeat-deployment, upgrade, rollback, ingestion and client-workflow requirements.
+
+The Site24x7 detail page reads current collector status directly. It distinguishes
+failures checking the collector from failures sending logs, without periodic
+registration writes. See [operational freshness](docs/troubleshooting-guide.md#operational-freshness-and-connectivity).

@@ -1,7 +1,9 @@
-"""AutoUpdater — Timer trigger that checks for and applies updates daily at 3 AM UTC."""
+"""AutoUpdater — Timer trigger that checks for updates daily at 3 AM UTC.
+
+It installs an update only when AUTO_UPDATE_ENABLED is true (off by default);
+otherwise it records what is available for an admin to install."""
 
 import logging
-import os
 
 import azure.functions as func
 
@@ -9,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 def main(timer: func.TimerRequest) -> None:
-    from shared.updater import check_and_apply_update, _post_deploy_health_check
+    from shared.updater import automatic_updates_enabled, check_and_apply_update
 
     # Audit logging is best-effort — import inline so AutoUpdater still works
     # if debug_logger has issues.
@@ -22,8 +24,9 @@ def main(timer: func.TimerRequest) -> None:
     if timer.past_due:
         logger.info("AutoUpdater timer is past due — running now")
 
-    logger.info("AutoUpdater: checking for updates ...")
-    result = check_and_apply_update(auto_apply=True)
+    automatic = automatic_updates_enabled()
+    logger.info("AutoUpdater: checking for updates (automatic install %s) ...", "on" if automatic else "off")
+    result = check_and_apply_update(auto_apply=automatic)
     logger.info(f"AutoUpdater result: {result}")
 
     action = result.get("action", "unknown")
@@ -32,49 +35,29 @@ def main(timer: func.TimerRequest) -> None:
     # new build breaks and Function-level logging looks weird afterwards.
     try:
         log_event(
-            "auto_update_run",
-            action=action,
-            local_version=result.get("local_version"),
-            remote_version=result.get("remote_version"),
-            message=result.get("message", ""),
+            "info", "AutoUpdater", f"Auto-update run: {action}",
+            {"action": action, "automatic_install": automatic, "local_version": result.get("local_version"),
+             "remote_version": result.get("remote_version"), "message": result.get("message", "")},
         )
     except Exception as e:
         logger.warning("Could not audit-log AutoUpdater run: %s", e)
 
     if action == "deployed":
+        # Submitted, not finished: Azure installs the package and restarts the
+        # app, and the new version records confirmed_at on its first run
+        # (update_state in /api/status). This process may be stopped by then.
         logger.info(
-            f"Successfully updated from {result['local_version']} "
-            f"to {result['remote_version']}"
+            f"Update from {result['local_version']} to {result['remote_version']} submitted; "
+            "the new version confirms itself on its first run"
         )
-        # Post-deploy health check — informational only, no rollback.
-        # Runs in the OLD process (we're the instance that just kicked off
-        # the deploy). Gives ops a durable record of whether the new build
-        # actually starts.
-        func_app_name = os.environ.get("WEBSITE_SITE_NAME", "")
-        if func_app_name:
-            try:
-                health = _post_deploy_health_check(func_app_name)
-                try:
-                    log_event(
-                        "auto_update_health_check",
-                        healthy=health.get("healthy"),
-                        checks=health.get("checks"),
-                        deployed_version=result.get("remote_version"),
-                    )
-                except Exception:
-                    pass
-                if not health.get("healthy"):
-                    logger.error(
-                        "Post-deploy health check FAILED for version %s: %s",
-                        result.get("remote_version"), health,
-                    )
-                else:
-                    logger.info("Post-deploy health check OK: %s", health)
-            except Exception as e:
-                logger.warning("Post-deploy health check crashed: %s", e)
     elif action == "deploy_failed":
         logger.error(
             f"Update deployment failed: {result.get('deploy_result', {}).get('error', 'unknown')}"
+        )
+    elif action == "update_available":
+        logger.info(
+            f"Update {result.get('remote_version')} is available; automatic install is off "
+            "(AUTO_UPDATE_ENABLED), so an admin installs it from Site24x7"
         )
     elif action == "up_to_date":
         logger.info(f"Already on latest version ({result['local_version']})")

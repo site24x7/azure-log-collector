@@ -165,12 +165,20 @@ class TestDisabledLogTypes:
 
     @patch("shared.config_store._rmw_blob")
     def test_disable_already_disabled(self, mock_rmw):
-        mock_rmw.return_value = None  # simulates abort (already present)
+        # The stored list already has it: mutate aborts, nothing is written.
+        mock_rmw.side_effect = lambda path, mutate, **kw: mutate(["AuditLogs"])
         # Still returns True — idempotent
         assert config_store.disable_log_type("auditlogs") is True
-        # Verify mutate returns None for already-disabled
-        mutate = mock_rmw.call_args.args[1]
-        assert mutate(["AuditLogs"]) is None
+
+    @patch("shared.config_store._rmw_blob")
+    def test_disable_reports_a_failed_write(self, mock_rmw):
+        mock_rmw.return_value = None  # mutate wanted a write, the write failed
+        assert config_store.disable_log_type("auditlogs") is False
+
+    @patch("shared.config_store._rmw_blob")
+    def test_enable_reports_a_failed_write(self, mock_rmw):
+        mock_rmw.return_value = None
+        assert config_store.enable_log_type("AuditLogs") is False
 
     @patch("shared.config_store._rmw_blob")
     def test_enable_log_type(self, mock_rmw):
@@ -218,11 +226,14 @@ class TestConfiguredResources:
 
     @patch("shared.config_store._rmw_blob")
     def test_unmark_resource_not_tracked(self, mock_rmw):
-        mock_rmw.return_value = None  # abort
+        mock_rmw.side_effect = lambda path, mutate, **kw: mutate({})  # not tracked: abort
         config_store._cache["configured_resources"] = {}
         assert config_store.unmark_resource_configured("/nonexistent") is True
-        mutate = mock_rmw.call_args.args[1]
-        assert mutate({}) is None
+
+    @patch("shared.config_store._rmw_blob")
+    def test_unmark_reports_a_failed_write(self, mock_rmw):
+        mock_rmw.return_value = None
+        assert config_store.unmark_resource_configured("/subscriptions/s/x") is False
 
 
 # ─── Cache ───────────────────────────────────────────────────────────────────
@@ -293,7 +304,7 @@ class TestScanLock:
     @patch("shared.config_store._rmw_blob")
     def test_acquire_when_idle(self, mock_rmw):
         # Simulate RMW applying the mutate
-        def fake_rmw(path, mutate, default=None, max_retries=5):
+        def fake_rmw(path, mutate, default=None, max_retries=5, strict=False):
             result = mutate(default if default is not None else {})
             return result
 
@@ -306,7 +317,7 @@ class TestScanLock:
 
         now = datetime.now(timezone.utc).isoformat()
 
-        def fake_rmw(path, mutate, default=None, max_retries=5):
+        def fake_rmw(path, mutate, default=None, max_retries=5, strict=False):
             # Active recent scan
             return mutate({"in_progress": True, "scan_started_at": now})
 
@@ -319,12 +330,37 @@ class TestScanLock:
 
         stale = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
 
-        def fake_rmw(path, mutate, default=None, max_retries=5):
+        def fake_rmw(path, mutate, default=None, max_retries=5, strict=False):
             return mutate({"in_progress": True, "scan_started_at": stale})
 
         mock_rmw.side_effect = fake_rmw
         # Stale > 15 min — should take lock
         assert config_store.try_acquire_scan_lock(ttl_seconds=900) is True
+
+    @patch("shared.config_store._rmw_blob")
+    def test_failed_write_is_not_an_acquired_lock(self, mock_rmw):
+        def fake_rmw(path, mutate, default=None, max_retries=5, strict=False):
+            mutate({})      # wanted to write in_progress...
+            return None     # ...but the write failed
+        mock_rmw.side_effect = fake_rmw
+        assert config_store.try_acquire_scan_lock() is False
+
+    @patch("shared.config_store._rmw_blob")
+    def test_retry_that_finds_another_scan_does_not_acquire(self, mock_rmw):
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+
+        def fake_rmw(path, mutate, default=None, max_retries=5, strict=False):
+            mutate({})                                              # attempt 1: free, ETag conflict
+            return mutate({"in_progress": True, "scan_started_at": now})  # attempt 2: taken
+        mock_rmw.side_effect = fake_rmw
+        assert config_store.try_acquire_scan_lock() is False
+
+    @patch("shared.config_store._read_blob_with_etag", side_effect=RuntimeError("throttled"))
+    def test_unreadable_state_is_never_mutated(self, _read):
+        mutate = MagicMock()
+        assert config_store._rmw_blob("x.json", mutate, default={}, strict=True) is None
+        mutate.assert_not_called()
 
 
 def test_catalog_force_refresh_sees_updates_from_another_worker():
@@ -444,3 +480,29 @@ def test_strict_snapshot_initializes_missing_container_and_rechecks_blob(outcome
     assert blob.download_blob.call_count == (1 if outcome == 'init_error' else 2)
     blob.upload_blob.assert_not_called()
     blob.delete_blob.assert_not_called()
+
+
+class TestProcessingControl:
+    def test_legacy_default_only_when_blob_absent(self, monkeypatch):
+        monkeypatch.setenv("AzureWebJobsStorage", "configured")
+        monkeypatch.setenv("PROCESSING_ENABLED", "false")
+        from shared import config_store as store
+        with patch.object(store, "_read_blob", return_value=None):
+            assert store.get_processing_enabled() is False
+
+    def test_saved_flag_overrides_legacy_environment(self, monkeypatch):
+        monkeypatch.setenv("AzureWebJobsStorage", "configured")
+        monkeypatch.setenv("PROCESSING_ENABLED", "false")
+        from shared import config_store as store
+        with patch.object(store, "_read_blob", side_effect=['{"enabled":true}', '{"enabled":false}']):
+            assert store.get_processing_enabled() is True
+            assert store.get_processing_enabled() is False
+
+    def test_corrupt_or_unreadable_control_never_resumes(self, monkeypatch):
+        monkeypatch.setenv("AzureWebJobsStorage", "configured")
+        from shared import config_store as store
+        for value in ['{"enabled":"true"}', 'null', 'bad']:
+            with patch.object(store, "_read_blob", return_value=value), pytest.raises((ValueError, TypeError)):
+                store.get_processing_enabled()
+        with patch.object(store, "_read_blob", side_effect=RuntimeError("unavailable")), pytest.raises(RuntimeError):
+            store.get_processing_enabled()
