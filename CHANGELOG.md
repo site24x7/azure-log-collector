@@ -24,6 +24,13 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 - Site24x7's function key also covers the dashboard and the functions its page
   calls (debug, health, general log type), so Site24x7 admins can open the
   dashboard from Site24x7.
+- A scan that stops records why (`last_scan_error`: a fixed reason code and the
+  step it stopped at) until a scan completes, and the registration sends it to
+  Site24x7.
+- Scans record why included resources got no diagnostic setting
+  (`skip_reasons`: no Site24x7 log type, all log types turned off, no
+  diagnostic logs for the type, no regional storage yet), with the resource
+  types most affected, and send it to Site24x7.
 
 ## [1.1.0-beta1] — 2026-10-29
 

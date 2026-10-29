@@ -84,7 +84,54 @@ FULL_RECONCILE_HOURS = 24
 PHASE6_GRACE_SECONDS = 45
 
 
+# Why a scan stopped, as a fixed code Site24x7 can explain (never free text).
+SCAN_FAILURE_CODES = ("not_configured", "filters_unavailable", "azure_access", "network", "unexpected")
+
+
+def _scan_failure_code(error) -> str:
+    from shared.ignore_list import IgnoreListUnavailable
+    if isinstance(error, IgnoreListUnavailable):
+        return "filters_unavailable"
+    names = {cls.__name__ for cls in type(error).__mro__}
+    if names & {"ClientAuthenticationError", "CredentialUnavailableError"} or getattr(error, "status_code", None) in (401, 403):
+        return "azure_access"
+    if names & {"ConnectionError", "ServiceRequestError", "Timeout", "TimeoutError", "ConnectTimeout", "ReadTimeout"}:
+        return "network"
+    return "unexpected"
+
+
+def _record_scan_failure(code: str) -> None:
+    """Keep why the last scan stopped, and at which step, until a scan completes
+    (its saved state replaces this). Never raises."""
+    try:
+        from shared.config_store import get_scan_state, update_scan_state
+        state = get_scan_state() or {}
+        phase = state.get("current_phase") if state.get("in_progress") else None
+        update_scan_state({
+            "in_progress": False,
+            "last_scan_error": {
+                "code": code if code in SCAN_FAILURE_CODES else "unexpected",
+                "phase": phase if isinstance(phase, int) and 1 <= phase <= 6 else None,
+                "at": datetime.now(timezone.utc).isoformat(),
+            },
+        })
+    except Exception:
+        pass
+
+
 def run_scan():
+    """One full scan. A scan that stops records why (last_scan_error) before the error goes on."""
+    try:
+        result = _run_scan()
+    except Exception as e:
+        _record_scan_failure(_scan_failure_code(e))
+        raise
+    if isinstance(result, dict) and result.get("error"):
+        _record_scan_failure("not_configured")
+    return result
+
+
+def _run_scan():
     from shared.azure_manager import AzureManager, LEGACY_SETTING_NAME, collector_setting_name
     from shared.region_manager import RegionManager
     from shared.ignore_list import load_ignore_list, is_ignored
@@ -256,6 +303,14 @@ def run_scan():
         "removed": 0, "specific": 0, "general": 0, "skipped": 0,
         "logtypes_created": 0, "errors": 0,
     }
+    # Why included resources get no diagnostic setting, with the resource types most affected.
+    skip_reasons = {}
+
+    def _skip(reason: str, resource_type: str) -> None:
+        entry = skip_reasons.setdefault(reason, {"count": 0, "types": {}})
+        entry["count"] += 1
+        entry["types"][resource_type] = entry["types"].get(resource_type, 0) + 1
+
 
     # Collect categories that need log types created (batch for efficiency)
     categories_to_create = set()
@@ -413,6 +468,7 @@ def run_scan():
             categories = _category_cache_by_type.get(resource_type, [])
             if not categories:
                 stats["skipped"] += 1
+                _skip("no_log_categories", resource_type)
                 continue
 
             sa_name = provisioned_regions.get(location, "")
@@ -422,6 +478,7 @@ def run_scan():
                     location, resource_id,
                 )
                 stats["skipped"] += 1
+                _skip("no_storage", resource_type)
                 continue
 
             desired_categories = [
@@ -437,6 +494,10 @@ def run_scan():
                 elif general_config_available:
                     effective_categories.append(category)
                     stats["general"] += 1
+
+            if not effective_categories:
+                # Every category turned off on Log Types, or none has a Site24x7 log type.
+                _skip("all_disabled" if not desired_categories else "no_log_type", resource_type)
 
             resource_category_map[resource_id] = {
                 "categories": desired_categories,
@@ -985,6 +1046,11 @@ def run_scan():
         "already_configured": stats["already_configured"],
         "removed": stats["removed"],
         "skipped": stats["skipped"],
+        "skip_reasons": {
+            reason: {"count": entry["count"],
+                     "types": [t for t, _ in sorted(entry["types"].items(), key=lambda kv: -kv[1])[:5]]}
+            for reason, entry in skip_reasons.items()
+        },
         "logtypes_created": stats["logtypes_created"],
         "configs_refreshed": configs_refreshed,
         "errors": stats["errors"],

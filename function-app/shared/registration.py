@@ -185,6 +185,10 @@ def build_status_summary(include_names: bool = True) -> Dict:
         "planned_regions": int(scan.get("planned_regions", 0) or 0),
         "planned_resource_types": int(scan.get("planned_resource_types", 0) or 0),
     }
+    error = _safe_scan_error(scan.get("last_scan_error"))
+    if error:
+        summary["last_scan_error"] = error
+    summary["skip_reasons"] = _safe_skip_reasons(scan.get("skip_reasons"))
     # The configured subscriptions, then the others the last scan found the identity can see.
     from shared.subscriptions import configured_subscription_ids
     from shared.config_store import get_resource_inventory
@@ -243,6 +247,38 @@ _NAME_MAX = 64
 # Site24x7 stores the status in a 4000-character column and rejects longer ones.
 _STATUS_BUDGET = 3800
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+# Fixed codes only: Site24x7 has its own text for each.
+_SCAN_ERROR_CODES = ("not_configured", "filters_unavailable", "azure_access", "network", "unexpected")
+_SKIP_REASONS = ("no_log_categories", "no_storage", "no_log_type", "all_disabled")
+_RESOURCE_TYPE = re.compile(r"^[A-Za-z0-9.]{1,100}/[A-Za-z0-9./]{1,150}$")
+
+
+def _safe_scan_error(error) -> Optional[Dict]:
+    """Why the last scan stopped (cleared by a completed scan), or None."""
+    if not isinstance(error, dict) or error.get("code") not in _SCAN_ERROR_CODES:
+        return None
+    phase = error.get("phase")
+    at = error.get("at")
+    return {"code": error["code"],
+            "phase": phase if isinstance(phase, int) and 1 <= phase <= 6 else None,
+            "at": at if isinstance(at, str) and len(at) <= 40 else ""}
+
+
+def _safe_skip_reasons(reasons) -> Dict:
+    """Included resources the last scan could not set up, by reason: counts and up to 5 types."""
+    result = {}
+    for reason in _SKIP_REASONS:
+        entry = reasons.get(reason) if isinstance(reasons, dict) else None
+        if not isinstance(entry, dict):
+            continue
+        count = entry.get("count")
+        if not isinstance(count, int) or count <= 0:
+            continue
+        types = [t for t in (entry.get("types") or []) if isinstance(t, str) and _RESOURCE_TYPE.match(t)][:5]
+        result[reason] = {"count": count, "types": types}
+    return result
 
 
 def _subscription_names(subscription_ids) -> Dict[str, str]:
