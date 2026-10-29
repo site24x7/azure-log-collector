@@ -46,7 +46,7 @@ The Site24x7 addresses come from the `SITE24X7_BASE_URL` app setting. The upload
 | Regional storage account keys | Read at run time through ARM `listKeys` (Contributor on the collector's resource group), held in memory only | Reading the buffered log blobs |
 | Site24x7 Device Key | App setting `SITE24X7_API_KEY` (encrypted at rest by Azure) | Authenticating to Site24x7. It is not stored with the saved log type configurations, and the collector never writes it to its logs. (On the Site24x7 side, a request with an unknown Device Key is logged by Site24x7's own log-collection service; that is outside this collector.) |
 | Function App host keys | Azure-managed | Authorize every HTTP endpoint (section 7). Used by you, for example to open the dashboard. **Never sent to Site24x7.** |
-| `site24x7` function key | Azure-managed; created by the collector on the 14 functions Site24x7 calls | **Sent to Site24x7** at registration (section 6). It does not open the dashboard, debug data or health endpoint. |
+| `site24x7` function key | Azure-managed; created by the collector on the 17 functions Site24x7 calls or opens for its admins (including the dashboard) | **Sent to Site24x7** at registration (section 6). It does not open the dashboard, debug data or health endpoint. |
 
 **Rotation**
 - **Device Key:** update `SITE24X7_API_KEY`. Uploads always use the current setting.
@@ -79,8 +79,8 @@ Monitoring Contributor covers diagnostic settings on every resource in the subsc
 ## 4. Filters chosen at deployment
 
 A deployment collects at once; there is no separate approval step. The portal form's second page decides what is collected before anything is created:
-- **Subscriptions:** every active subscription where the deploying user can grant access (Owner, or Contributor and User Access Administrator) is included, minus any they exclude. The subscription that hosts the collector is always included. The managed identity gets Reader and Monitoring Contributor in each included subscription, and nowhere else.
-- **Exclusions:** resource groups, regions and resource types.
+- **Subscriptions:** the subscription that hosts the collector is always included, and the other active subscriptions where the deploying user can grant access (Owner, or Contributor and User Access Administrator) when selected (all by default). The managed identity gets Reader and Monitoring Contributor in each included subscription, and nowhere else. The collector also monitors any other subscription where someone later gives its identity access.
+- **Regions and resource types:** include lists; all by default, which also covers ones added later. Global resources are always included.
 - **Tags:** resources with any of the excluded tags are not collected; if include tags are set, only resources with at least one of them are.
 
 The template passes these to the collector once (`INITIAL_RESOURCE_FILTERS`). On first use the collector validates them and saves them as its filters, without overwriting filters that already exist. If they are invalid or cannot be saved, the scan stops instead of collecting everything. Later changes are made in Site24x7 (or the dashboard) and are never replaced by the deployment's values.
@@ -113,7 +113,7 @@ Once collecting, every scan (every 6 hours, and on demand) does the following:
 The collector registers with Site24x7 after every scan, on restart, when its key changes (see Operational freshness and connectivity). It sends:
 - its Function App name, address, resource ID, subscription, resource group and region;
 - its version and a status summary;
-- the **`site24x7` function key**. This is a dedicated key, not a host key, and the collector creates it on just these 13 functions: status, scan, processing, ignore-list (get and put), disabled-logtypes (get and post), entra-logtypes, general-logtype (put), settings, configured-resources, check-update and remove-diagnostic-settings.
+- the **`site24x7` function key**. This is a dedicated key, not a host key, and the collector creates it on just these 17 functions: status, scan, processing, ignore-list (get and put), disabled-logtypes (get and post), entra-logtypes, general-logtype (get and put), settings, configured-resources, check-update, remove-diagnostic-settings, and the dashboard with the debug and health functions its page uses. Site24x7 admins open the dashboard from Site24x7 (Troubleshooting → Open Collector Dashboard): Site24x7 builds the dashboard address with this key when the admin clicks, opens it in a new tab without a referrer, and audits it. The dashboard removes the key from the address bar and history at once (below), so it stays only in that tab. Revoke it with `SITE24X7_KEY_EXCLUDE=*`, or rotate it by deleting the `site24x7` key on those functions (the collector creates a new one at its next registration).
 
 Site24x7 stores the key encrypted. With it, Site24x7 admins can run those actions from the Site24x7 page. Each action is:
 - available to Site24x7 Super Admins and Admins only;
@@ -143,7 +143,7 @@ All 17 HTTP functions use `authLevel: function`. Each needs a valid function or 
 - The page is opened with the key in the address (`?code=`). It immediately removes the key from the address bar and history, keeps it in session storage for that tab, and sends it to the API in the `x-functions-key` header, never in a URL.
 - It sets `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, a Content Security Policy and no-cache headers.
 - It HTML-escapes every value it displays, and handler arguments are passed as escaped JavaScript string literals.
-- Site24x7 does not open it: its `site24x7` key is not valid for the dashboard. Open it with a host key from the Azure portal.
+- Site24x7 admins open it from Site24x7 with the `site24x7` key (section 6). Anyone else opens it with a host key from the Azure portal.
 
 **Rate limits:** there is no application-level rate limit on the collector's endpoints. Site24x7 limits its own calls (20 actions per user per 5 minutes).
 
@@ -246,7 +246,7 @@ AutoUpdater records each run as an event; the new version confirms the update on
 | Can it change my resources? | It manages diagnostic settings on resources in the monitored subscriptions (only its own, as described in section 3). It creates and deletes storage accounts in its own resource group, and writes its own app settings. It does nothing until an admin starts collecting (section 4). |
 | Can it change permissions? | No. It has no role-assignment rights. |
 | What if the GitHub repository were compromised? | An attacker would need to publish a release that passes the update gates (section 9) and wait for the age gate. You can turn updates off (`SKIP_AUTO_UPDATE=true`) or point `UPDATE_CHECK_URL` at your own fork. |
-| What if Site24x7 were compromised? | With the Device Key, an attacker could send logs into your Site24x7 account. With the stored `site24x7` key (section 6), they could call those 14 endpoints, for example change settings or remove diagnostic settings, but not the dashboard or debug data. Revoke it with `SITE24X7_KEY_EXCLUDE=*`. They cannot reach your other Azure resources: the collector's identity is limited as described in section 3. |
+| What if Site24x7 were compromised? | With the Device Key, an attacker could send logs into your Site24x7 account. With the stored `site24x7` key (section 6), they could call those 17 endpoints, for example change settings, remove diagnostic settings, or open the dashboard and its (redacted) debug data. Revoke it with `SITE24X7_KEY_EXCLUDE=*`. They cannot reach your other Azure resources: the collector's identity is limited as described in section 3. |
 | Can I check what is deployed? | Each release zip is built by GitHub Actions from a tagged commit, with its SHA-256 in `version.json`. Compare the running package with the tag. |
 
 ## Operational freshness and connectivity

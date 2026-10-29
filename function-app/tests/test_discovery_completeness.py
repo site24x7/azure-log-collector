@@ -43,3 +43,43 @@ def test_incomplete_discovery_does_not_remove_storage_accounts():
     assert summary["removed"] == []
     region_mgr.reconcile_regions("rg", {"eastus"}, {"westeurope": "s247diagwesteu"}, "sfx")
     region_mgr.deprovision_storage_account.assert_called_once()
+
+
+def test_subscription_list_error_marks_scan_incomplete_before_region_cleanup():
+    from contextlib import ExitStack
+
+    import pytest
+    import DiagSettingsManager
+
+    mgr = _manager()
+    mgr.get_all_resources = MagicMock(return_value=[])
+    regions = MagicMock()
+    regions.get_active_regions.return_value = set()
+    regions.get_provisioned_regions.return_value = {}
+    # Stop after verifying the region cleanup gate; no later scan phases run.
+    class ReachedReconciliation(Exception):
+        pass
+
+    regions.reconcile_regions.side_effect = ReachedReconciliation
+    with ExitStack() as stack:
+        for target, value in [
+            ("shared.subscriptions.monitored_subscriptions", (["s1"], {}, "subscription list: RuntimeError")),
+            ("shared.azure_manager.AzureManager", mgr),
+            ("shared.region_manager.RegionManager", regions),
+            ("shared.ignore_list.load_ignore_list", {}),
+            ("shared.config_store.get_configured_resources", {}),
+            ("shared.config_store.get_resource_inventory", {"subscriptions": ["s1"]}),
+            ("DiagSettingsManager._refresh_supported_types", {}),
+        ]:
+            stack.enter_context(patch(target, return_value=value))
+        for target in ("shared.site24x7_client.Site24x7Client", "shared.debug_logger.log_event",
+                       "shared.config_store.clear_cache", "DiagSettingsManager._update_phase",
+                       "DiagSettingsManager._save_early_scan_state"):
+            stack.enter_context(patch(target))
+        inventory = stack.enter_context(patch("shared.config_store.save_resource_inventory"))
+        with pytest.raises(ReachedReconciliation):
+            DiagSettingsManager.run_scan()
+    assert mgr.discovery_errors == ["subscription list: RuntimeError"]
+    assert mgr.discovery_complete is False
+    assert regions.reconcile_regions.call_args.kwargs["allow_remove"] is False
+    inventory.assert_not_called()  # keep the last complete choices

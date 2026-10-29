@@ -10,9 +10,9 @@ import UpdateIgnoreList
 from shared.ignore_list import IgnoreListUnavailable, load_ignore_list
 
 RES_A = "/subscriptions/s1/resourceGroups/rg-a/providers/Microsoft.Web/sites/a"
-RES_B = "/subscriptions/s1/resourceGroups/rg-b/providers/Microsoft.Web/sites/b"
-EMPTY = {"resource_groups": [], "locations": [], "resource_ids": [], "subscriptions": [],
-         "tags": {"include": [], "exclude": []}, "resource_types": []}
+RES_B = "/subscriptions/s2/resourceGroups/rg-b/providers/Microsoft.Web/sites/b"
+EMPTY = {"include_locations": [], "resource_ids": [], "include_subscriptions": [],
+         "tags": {"include": [], "exclude": []}, "include_resource_types": []}
 
 
 def _req(body):
@@ -20,7 +20,7 @@ def _req(body):
                             body=json.dumps(body).encode(), headers={})
 
 
-def _run(body, previous=EMPTY, saved=True, deleted=True, unmarked=True):
+def _run(body, previous=EMPTY, saved=True, deleted=True, unmarked=True, scan_running=False):
     queue = MagicMock()
     mgr = MagicMock()
     mgr.return_value.delete_own_settings.return_value = deleted
@@ -30,6 +30,7 @@ def _run(body, previous=EMPTY, saved=True, deleted=True, unmarked=True):
          patch("shared.config_store.get_configured_resources", return_value={RES_A: {}, RES_B: {}}), \
          patch("shared.config_store.unmark_resource_configured", return_value=unmarked) as unmark, \
          patch("shared.azure_manager.AzureManager", mgr), \
+         patch("shared.config_store.get_scan_state", return_value={"in_progress": scan_running}), \
          patch("shared.debug_logger.log_audit"):
         resp = UpdateIgnoreList.main(_req(body), queue)
     return resp, mgr.return_value.delete_own_settings, unmark, queue
@@ -44,8 +45,8 @@ def test_include_tag_rule_removes_nothing_now_and_queues_a_scan():
     assert json.loads(resp.get_body())["scan_queued"] is True
 
 
-def test_resource_group_rule_removes_only_that_group_at_once():
-    resp, delete, unmark, queue = _run({"resource_groups": ["RG-A"]})
+def test_resource_id_rule_removes_only_that_resource_at_once():
+    resp, delete, unmark, queue = _run({"resource_ids": [RES_A.upper()]})
     assert [c.args[0] for c in delete.call_args_list] == [RES_A]
     unmark.assert_called_once_with(RES_A)
     queue.set.assert_not_called()
@@ -60,13 +61,13 @@ def test_setting_that_could_not_be_removed_keeps_its_record():
 
 
 def test_failed_save_is_reported():
-    resp, delete, _, _ = _run({"resource_groups": ["rg-a"]}, saved=False)
+    resp, delete, _, _ = _run({"resource_ids": [RES_A]}, saved=False)
     assert resp.status_code == 500
     delete.assert_not_called()
 
 
 @pytest.mark.parametrize("body", [
-    {"locations": None},
+    {"include_locations": None},
     {"resource_ids": None},
     {"tags": {"exclude": None}},
     {"tags": {"include": [], "other": []}},
@@ -100,13 +101,13 @@ def test_a_new_tag_rule_queues_a_scan():
 
 
 def test_reordering_rules_queues_no_scan():
-    previous = dict(EMPTY, locations=["westeurope", "eastus"])
-    _, _, _, queue = _run({"locations": ["EastUS", "westeurope"]}, previous=previous)
+    previous = dict(EMPTY, include_locations=["westeurope", "eastus"])
+    _, _, _, queue = _run({"include_locations": ["EastUS", "westeurope"]}, previous=previous)
     queue.set.assert_not_called()
 
 
 def test_unreadable_previous_list_queues_a_scan():
-    _, _, _, queue = _run({"resource_groups": ["rg-a"]}, previous=IgnoreListUnavailable("x"))
+    _, _, _, queue = _run({"resource_ids": [RES_A]}, previous=IgnoreListUnavailable("x"))
     queue.set.assert_called_once()
 
 
@@ -120,3 +121,42 @@ def test_busy_scan_request_is_retried_not_dropped():
         with pytest.raises(RuntimeError):
             ScanWorker.main(msg)
     scan.assert_not_called()
+
+
+def test_narrowing_subscriptions_removes_only_unselected_subscription(monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTION_IDS", "hosting,s1,s2")
+    resp, delete, unmark, queue = _run({"include_subscriptions": ["s2"]},
+                                     previous=dict(EMPTY, include_subscriptions=["s1", "s2"]))
+    assert resp.status_code == 200
+    assert [call.args[0] for call in delete.call_args_list] == [RES_A]
+    assert [call.args[0] for call in unmark.call_args_list] == [RES_A]
+    queue.set.assert_called_once()
+    assert json.loads(resp.get_body())["diag_settings_removed"] == 1
+
+
+@pytest.mark.parametrize("selected", [["s2"], []])
+def test_subscription_change_queues_scan_without_removing_hosting_resources(selected, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTION_IDS", "s1,s2")
+    resp, delete, _, queue = _run({"include_subscriptions": selected},
+                                 previous=dict(EMPTY, include_subscriptions=["s1", "s2"]))
+    assert resp.status_code == 200
+    delete.assert_not_called()
+    queue.set.assert_called_once()
+
+
+@pytest.mark.parametrize("rule", [
+    {"include_locations": ["eastus"]},
+    {"include_resource_types": ["Microsoft.Web/sites"]},
+])
+def test_detail_include_changes_queue_scan_without_id_only_removal(rule):
+    resp, delete, _, queue = _run(rule)
+    assert resp.status_code == 200
+    delete.assert_not_called()
+    queue.set.assert_called_once()
+
+
+def test_unchanged_filters_queue_another_scan_when_one_is_running():
+    resp, delete, _, queue = _run({}, scan_running=True)
+    assert resp.status_code == 200
+    delete.assert_not_called()
+    queue.set.assert_called_once()

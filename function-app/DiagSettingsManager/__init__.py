@@ -124,12 +124,9 @@ def run_scan():
     clear_cache()
     phase_timings = {}  # phase_name -> seconds
 
-    # Load config
-    subscription_ids = [
-        s.strip()
-        for s in os.environ.get("SUBSCRIPTION_IDS", "").split(",")
-        if s.strip()
-    ]
+    # Load config: the configured subscriptions, then the others the identity can see.
+    from shared.subscriptions import monitored_subscriptions
+    subscription_ids, subscription_names, subscription_list_error = monitored_subscriptions()
     general_enabled = os.environ.get("GENERAL_LOGTYPE_ENABLED", "false").lower() == "true"
     general_config_available = general_enabled and bool(
         os.environ.get("S247_GENERAL_LOGTYPE", "")
@@ -173,6 +170,9 @@ def run_scan():
     _update_phase(2)
     phase_start = _time.monotonic()
     all_resources = azure_mgr.get_all_resources(subscription_ids)
+    if subscription_list_error:
+        # Subscriptions it could not see are not gone: remove nothing for them.
+        azure_mgr.discovery_errors.append(subscription_list_error)
     # A partial discovery must never remove settings or storage of resources it
     # merely failed to see (a throttled subscription, a failed support check).
     discovery_complete = azure_mgr.discovery_complete
@@ -220,7 +220,7 @@ def run_scan():
     # Filter choices for the Site24x7 page and the dashboard. A partial discovery
     # keeps the previous choices rather than hiding values it failed to see.
     if discovery_complete or get_resource_inventory() is None:
-        save_resource_inventory(all_resources, subscription_ids)
+        save_resource_inventory(all_resources, subscription_ids, subscription_names)
 
     # Build a set of active resource IDs for cleanup
     active_resource_ids = {r.get("id", "") for r in active_resources}

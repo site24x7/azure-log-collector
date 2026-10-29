@@ -23,7 +23,8 @@ def test_inventory_keeps_distinct_sorted_values_only():
     with patch.object(config_store, "_write_blob", side_effect=lambda p, d: written.update({p: json.loads(d)}) or True):
         assert config_store.save_resource_inventory(RESOURCES, ["s1"]) is True
     inv = written[config_store.RESOURCE_INVENTORY_BLOB]
-    assert inv["resource_groups"] == ["rg-a", "rg-b"]
+    assert "resource_groups" not in inv
+    assert inv["subscription_names"] == {}
     assert inv["locations"] == ["eastus", "westeurope"]
     assert inv["resource_types"] == ["Microsoft.KeyVault/vaults", "Microsoft.Web/sites"]
     assert inv["tags"] == ["env=prod", "team=core"]
@@ -33,11 +34,11 @@ def test_inventory_keeps_distinct_sorted_values_only():
 
 def test_inventory_values_are_capped(monkeypatch):
     monkeypatch.setattr(config_store, "INVENTORY_MAX_VALUES", 2)
-    many = [{"resource_group": f"rg-{i}"} for i in range(5)]
+    many = [{"location": f"region-{i}"} for i in range(5)]
     written = {}
     with patch.object(config_store, "_write_blob", side_effect=lambda p, d: written.update({p: json.loads(d)}) or True):
         config_store.save_resource_inventory(many, [])
-    assert written[config_store.RESOURCE_INVENTORY_BLOB]["resource_groups"] == ["rg-0", "rg-1"]
+    assert written[config_store.RESOURCE_INVENTORY_BLOB]["locations"] == ["region-0", "region-1"]
 
 
 def _ignore_list(inventory):
@@ -53,16 +54,19 @@ def _ignore_list(inventory):
 def test_ignore_list_answers_from_the_inventory(monkeypatch):
     monkeypatch.setenv("SUBSCRIPTION_IDS", "s1")
     status, body = _ignore_list({"updated_at": "2026-10-22T07:29:06Z", "resource_groups": ["rg-a"], "locations": ["eastus"],
-                                 "resource_types": ["Microsoft.Web/sites"], "tags": ["env=prod"], "subscriptions": ["s1"]})
+                                 "resource_types": ["Microsoft.Web/sites"], "tags": ["env=prod"], "subscriptions": ["s1"], "subscription_names": {"s1": "Production"}})
     assert status == 200
-    assert body["available"]["resource_groups"] == ["rg-a"] and body["available"]["tags"] == ["env=prod"]
+    assert "resource_groups" not in body["available"]
+    assert body["available"]["tags"] == ["env=prod"]
+    assert body["available"]["subscription_names"] == {"s1": "Production"}
     assert body["available"]["resource_ids"] == [] and body["available_updated_at"] == "2026-10-22T07:29:06Z"
 
 
 def test_ignore_list_before_the_first_scan_has_empty_choices(monkeypatch):
     monkeypatch.setenv("SUBSCRIPTION_IDS", "s1,s2")
     status, body = _ignore_list(None)
-    assert status == 200 and body["available"]["resource_groups"] == []
+    assert status == 200 and "resource_groups" not in body["available"]
+    assert body["available"]["subscription_names"] == {}
     assert body["available"]["subscriptions"] == ["s1", "s2"] and body["available_updated_at"] is None
 
 
@@ -95,3 +99,14 @@ def test_log_types_view_uses_azure_category_names():
         body = json.loads(GetDisabledLogTypes.main(req).get_body())
     names = {t["category_key"]: t["category"] for t in body["supported_types"]}
     assert names == {"developerportalauditlogs": "DeveloperPortalAuditLogs", "gatewaylogs": "gatewaylogs"}
+
+
+def test_inventory_preserves_subscription_order_and_names_for_listed_subscriptions():
+    written = {}
+    with patch.object(config_store, "_write_blob", side_effect=lambda p, d: written.update({p: json.loads(d)}) or True):
+        assert config_store.save_resource_inventory([], ["hosting", "z", "a", "z", ""],
+                                                    {"hosting": "Hosting", "a": "Alpha", "other": "Other"})
+    inventory = written[config_store.RESOURCE_INVENTORY_BLOB]
+    assert inventory["subscriptions"] == ["hosting", "z", "a"]
+    assert inventory["subscription_names"] == {"hosting": "Hosting", "a": "Alpha"}
+    assert "resource_groups" not in inventory

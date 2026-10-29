@@ -22,6 +22,9 @@ def _clean_env(monkeypatch):
         "RESOURCE_GROUP",
         "WEBSITE_SITE_NAME",
         "SUBSCRIPTION_IDS",
+        "INITIAL_RESOURCE_FILTERS",
+        "IDENTITY_ENDPOINT",
+        "MSI_ENDPOINT",
         "FUNCTION_APP_NAME",
     ):
         monkeypatch.delenv(var, raising=False)

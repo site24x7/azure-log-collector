@@ -7,7 +7,25 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
-## [1.1.0-beta1] — unreleased
+## [1.1.0-beta2] — unreleased
+
+- Filters are include lists: subscriptions, regions and resource types
+  (`include_subscriptions`, `include_locations`, `include_resource_types`;
+  empty = all, including ones added later). Global resources pass the region
+  filter. Resource-group filters are removed. Saved filters with the earlier
+  exclusion lists stop scans until new filters are saved.
+- Deployment form: the subscription chosen on Basics is always included; Other
+  subscriptions, Regions and Resource types are Select-all lists (everything
+  selected by default). "Collect categories without a log type" is no longer on
+  the form (it stays a collector setting, off by default, on the dashboard).
+- The collector monitors every enabled subscription its managed identity can
+  see, as well as the configured ones: granting it access to a new subscription
+  adds it at the next scan. Subscription names are shown in the filters.
+- Site24x7's function key also covers the dashboard and the functions its page
+  calls (debug, health, general log type), so Site24x7 admins can open the
+  dashboard from Site24x7.
+
+## [1.1.0-beta1] — 2026-10-29
 
 - Filters on the deployment form. The portal form's second page includes every
   active subscription where the deploying user can grant access (others can be

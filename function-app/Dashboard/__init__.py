@@ -234,28 +234,23 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
 <!-- Tab: Filters -->
 <div id="tab-filters" class="tab-panel">
   <div class="card" style="margin-bottom:16px">
-    <h2>Ignore List <i class="info-tip">i<span class="tip-text">Resources matching any rule below are excluded from diagnostic log collection. Adding a resource here will also remove its existing diagnostic setting on the next scan.</span></i> <span id="ignoreLoading" style="display:none"><span class="spinner"></span></span></h2>
-    <p style="font-size:12px;color:var(--muted);margin-bottom:12px">Resources matching any of these rules are excluded from diagnostic log collection.</p>
+    <h2>Resource Filters <i class="info-tip">i<span class="tip-text">Logs are collected from resources in the listed subscriptions, regions and resource types. A resource left out has its diagnostic setting removed on the next scan.</span></i> <span id="ignoreLoading" style="display:none"><span class="spinner"></span></span></h2>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:12px">Logs are collected only from what is listed. An empty list means all, including subscriptions, regions and types added later. The subscription that hosts the collector is always included.</p>
     <div class="grid" style="margin-bottom:0">
       <div>
         <label class="ignore-label">Subscriptions</label>
         <div id="ignoredSubs" class="ignore-tags"></div>
-        <select id="selSub" class="ignore-select" onchange="addFromSelect('subscriptions','selSub')"><option value="">+ Add subscription…</option></select>
+        <select id="selSub" class="ignore-select" onchange="addFromSelect('include_subscriptions','selSub')"><option value="">+ Add subscription…</option></select>
       </div>
       <div>
-        <label class="ignore-label">Resource Groups</label>
-        <div id="ignoredRGs" class="ignore-tags"></div>
-        <select id="selRG" class="ignore-select" onchange="addFromSelect('resource_groups','selRG')"><option value="">+ Add resource group…</option></select>
-      </div>
-      <div>
-        <label class="ignore-label">Locations</label>
+        <label class="ignore-label">Regions</label>
         <div id="ignoredLocs" class="ignore-tags"></div>
-        <select id="selLoc" class="ignore-select" onchange="addFromSelect('locations','selLoc')"><option value="">+ Add location…</option></select>
+        <select id="selLoc" class="ignore-select" onchange="addFromSelect('include_locations','selLoc')"><option value="">+ Add region…</option></select>
       </div>
       <div>
         <label class="ignore-label">Resource Types</label>
         <div id="ignoredTypes" class="ignore-tags"></div>
-        <select id="selType" class="ignore-select" onchange="addFromSelect('resource_types','selType')"><option value="">+ Add resource type…</option></select>
+        <select id="selType" class="ignore-select" onchange="addFromSelect('include_resource_types','selType')"><option value="">+ Add resource type…</option></select>
       </div>
     </div>
 
@@ -1082,33 +1077,39 @@ async function removeDiagSettings() {
 
 // ─── Ignore List ─────────────────────────────────────────────────────────
 
-let _ignoreList = { resource_groups: [], locations: [], resource_ids: [], subscriptions: [], tags: {include: [], exclude: []}, resource_types: [] };
+let _ignoreList = { include_subscriptions: [], include_locations: [], include_resource_types: [], resource_ids: [], tags: {include: [], exclude: []} };
 let _available = {};
 
+// Include lists (empty = all) and where their choices come from in the collector's answer.
 const IGNORE_UI = {
-  subscriptions:   { tagsEl: 'ignoredSubs',  selEl: 'selSub' },
-  resource_groups: { tagsEl: 'ignoredRGs',   selEl: 'selRG' },
-  locations:       { tagsEl: 'ignoredLocs',  selEl: 'selLoc' },
-  resource_types:  { tagsEl: 'ignoredTypes', selEl: 'selType' },
+  include_subscriptions:  { tagsEl: 'ignoredSubs',  selEl: 'selSub',  source: 'subscriptions' },
+  include_locations:      { tagsEl: 'ignoredLocs',  selEl: 'selLoc',  source: 'locations' },
+  include_resource_types: { tagsEl: 'ignoredTypes', selEl: 'selType', source: 'resource_types' },
 };
+
+// A subscription by its name when the collector knows it, else its ID.
+function filterLabel(key, v) {
+  const names = (key === 'include_subscriptions' && _available.subscription_names) || {};
+  return names[v] || v;
+}
 
 function renderIgnoreList() {
   for (const [key, ui] of Object.entries(IGNORE_UI)) {
     const el = document.getElementById(ui.tagsEl);
     const items = _ignoreList[key] || [];
     if (!items.length) {
-      el.innerHTML = '<span style="font-size:12px;color:var(--muted)">None</span>';
+      el.innerHTML = '<span style="font-size:12px;color:var(--muted)">All</span>';
     } else {
       el.innerHTML = items.map(v =>
-        `<span class="ignore-tag"><span title="${escAttr(v)}">${escAttr(v)}</span><button onclick="removeIgnoreItem(${jsArg(key)}, ${jsArg(v)})">&times;</button></span>`
+        `<span class="ignore-tag"><span title="${escAttr(v)}">${escAttr(filterLabel(key, v))}</span><button onclick="removeIgnoreItem(${jsArg(key)}, ${jsArg(v)})">&times;</button></span>`
       ).join('');
     }
     const sel = document.getElementById(ui.selEl);
-    const avail = (_available[key] || []).filter(v => !(items || []).includes(v));
+    const avail = (_available[ui.source] || []).filter(v => !(items || []).includes(v));
     const firstOpt = sel.querySelector('option');
     sel.innerHTML = '';
     sel.appendChild(firstOpt || Object.assign(document.createElement('option'), {value:'', textContent:'+ Add…'}));
-    avail.forEach(v => { const opt = document.createElement('option'); opt.value = v; opt.textContent = v; sel.appendChild(opt); });
+    avail.forEach(v => { const opt = document.createElement('option'); opt.value = v; opt.textContent = filterLabel(key, v); sel.appendChild(opt); });
   }
   renderTagSection('include', 'includeTagsList', 'selIncludeTag');
   renderTagSection('exclude', 'excludeTagsList', 'selExcludeTag');

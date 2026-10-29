@@ -94,7 +94,8 @@ def test_site24x7_gets_its_own_function_key_not_a_host_key():
     assert key and key != "customer-key"
     assert all(fake.keys[f][registration.SITE24X7_KEY_NAME] == key for f in registration.SITE24X7_FUNCTIONS)
     assert not any("/host/" in url for _, url in fake.calls)
-    assert "Dashboard" not in registration.SITE24X7_FUNCTIONS and "GetDebugInfo" not in registration.SITE24X7_FUNCTIONS
+    # Site24x7 opens the dashboard for its admins: the key covers it and the functions its page calls.
+    assert {"Dashboard", "GetDebugInfo", "HealthCheck", "GetGeneralLogType"} <= set(registration.SITE24X7_FUNCTIONS)
     assert all(url.startswith(f"https://management.azure.com{SITE_ID}/functions/") for _, url in fake.calls)
 
 
@@ -368,3 +369,14 @@ def test_operational_status_new_success_clears_previous_upload_failure():
          patch("shared.debug_logger.get_processing_stats", return_value=runs):
         result = registration.build_status_summary(include_names=False)
     assert result["upload_status"] == "ok" and result["upload_http_status"] == 200
+
+
+def test_summary_adds_inventory_subscriptions_after_configured_ids(no_state, monkeypatch):
+    first = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    second = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    extra = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    monkeypatch.setenv("SUBSCRIPTION_IDS", f"{first},{second}")
+    with patch("shared.config_store.get_resource_inventory", return_value={
+            "subscriptions": [extra.upper(), second, "invalid", extra]}):
+        summary = registration.build_status_summary()
+    assert summary["subscription_ids"] == [first, second, extra]

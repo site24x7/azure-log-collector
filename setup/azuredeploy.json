@@ -45,25 +45,18 @@
       },
       "minLength": 1
     },
-    "excludeResourceGroups": {
+    "includeLocations": {
       "type": "array",
       "defaultValue": [],
       "metadata": {
-        "description": "Optional. Full resource-group IDs to exclude only those groups, or names to exclude matching groups across all monitored subscriptions."
+        "description": "Optional. Azure regions (for example westeurope) to collect from. Empty: every region, including regions added later. Global resources are always included."
       }
     },
-    "excludeLocations": {
+    "includeResourceTypes": {
       "type": "array",
       "defaultValue": [],
       "metadata": {
-        "description": "Optional. Azure regions (for example westeurope) whose resources are not collected."
-      }
-    },
-    "excludeResourceTypes": {
-      "type": "array",
-      "defaultValue": [],
-      "metadata": {
-        "description": "Optional. Resource types (for example Microsoft.KeyVault/vaults) that are not collected."
+        "description": "Optional. Resource types (for example Microsoft.KeyVault/vaults) to collect from. Empty: every type, including types added later."
       }
     },
     "includeTags": {
@@ -136,7 +129,7 @@
     "seedStorageName": "[if(greater(length(variables('uniqueSuffix')), 6), concat('s247dr', variables('uniqueSuffix')), take(concat('s247diag', replace(replace(deployment().location, ' ', ''), '-', ''), variables('uniqueSuffix')), 24))]",
     "hostingPlanName": "[concat('s247-diag-func-', variables('uniqueSuffix'), '-plan')]",
     "appInsightsName": "[concat('s247-diag-func-', variables('uniqueSuffix'), '-ai')]",
-    "functionZipUrl": "https://github.com/site24x7/azure-log-collector/releases/download/v1.1.0-beta1/released-package.zip",
+    "functionZipUrl": "https://github.com/site24x7/azure-log-collector/releases/download/v1.1.0-beta2/released-package.zip",
     "readerRoleId": "acdd72a7-3385-48ef-bd42-f606fba81ae7",
     "monitoringContributorRoleId": "749f88d5-cbae-40b8-bcfc-e573ddc772fa",
     "deploymentContainerName": "[concat('app-package-', take(variables('functionAppName'), 50))]",
@@ -285,7 +278,7 @@
             "value": "[parameters('generalLogTypeEnabled')]"
           },
           "resourceFilters": {
-            "value": "[createObject('resource_groups', parameters('excludeResourceGroups'), 'locations', parameters('excludeLocations'), 'resource_types', parameters('excludeResourceTypes'), 'tags', createObject('include', concat(map(if(contains(parameters('includeTagFilter'), 'rules'), parameters('includeTagFilter').rules, flatten(map(items(parameters('includeTagFilter')), lambda('editor', items(lambdaVariables('editor').value))))), lambda('tag', if(empty(lambdaVariables('tag').value), lambdaVariables('tag').key, concat(lambdaVariables('tag').key, '=', lambdaVariables('tag').value)))), map(filter(parameters('includeTagRows'), lambda('row', not(empty(string(coalesce(lambdaVariables('row').key, '')))))), lambda('row', if(empty(string(coalesce(lambdaVariables('row').value, ''))), string(lambdaVariables('row').key), concat(string(lambdaVariables('row').key), '=', string(lambdaVariables('row').value))))), parameters('includeTags')), 'exclude', concat(map(if(contains(parameters('excludeTagFilter'), 'rules'), parameters('excludeTagFilter').rules, flatten(map(items(parameters('excludeTagFilter')), lambda('editor', items(lambdaVariables('editor').value))))), lambda('tag', if(empty(lambdaVariables('tag').value), lambdaVariables('tag').key, concat(lambdaVariables('tag').key, '=', lambdaVariables('tag').value)))), map(filter(parameters('excludeTagRows'), lambda('row', not(empty(string(coalesce(lambdaVariables('row').key, '')))))), lambda('row', if(empty(string(coalesce(lambdaVariables('row').value, ''))), string(lambdaVariables('row').key), concat(string(lambdaVariables('row').key), '=', string(lambdaVariables('row').value))))), parameters('excludeTags'))))]"
+            "value": "[createObject('include_locations', parameters('includeLocations'), 'include_resource_types', parameters('includeResourceTypes'), 'tags', createObject('include', concat(map(if(contains(parameters('includeTagFilter'), 'rules'), parameters('includeTagFilter').rules, flatten(map(items(parameters('includeTagFilter')), lambda('editor', items(lambdaVariables('editor').value))))), lambda('tag', if(empty(lambdaVariables('tag').value), lambdaVariables('tag').key, concat(lambdaVariables('tag').key, '=', lambdaVariables('tag').value)))), map(filter(parameters('includeTagRows'), lambda('row', not(empty(string(coalesce(lambdaVariables('row').key, '')))))), lambda('row', if(empty(string(coalesce(lambdaVariables('row').value, ''))), string(lambdaVariables('row').key), concat(string(lambdaVariables('row').key), '=', string(lambdaVariables('row').value))))), parameters('includeTags')), 'exclude', concat(map(if(contains(parameters('excludeTagFilter'), 'rules'), parameters('excludeTagFilter').rules, flatten(map(items(parameters('excludeTagFilter')), lambda('editor', items(lambdaVariables('editor').value))))), lambda('tag', if(empty(lambdaVariables('tag').value), lambdaVariables('tag').key, concat(lambdaVariables('tag').key, '=', lambdaVariables('tag').value)))), map(filter(parameters('excludeTagRows'), lambda('row', not(empty(string(coalesce(lambdaVariables('row').key, '')))))), lambda('row', if(empty(string(coalesce(lambdaVariables('row').value, ''))), string(lambdaVariables('row').key), concat(string(lambdaVariables('row').key), '=', string(lambdaVariables('row').value))))), parameters('excludeTags'))))]"
           },
           "site24x7Domain": {
             "value": "[parameters('site24x7Domain')]"

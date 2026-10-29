@@ -27,7 +27,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             "ignore_list": ignore_list,
             "available": {
                 "subscriptions": inventory.get("subscriptions") or subscription_ids,
-                "resource_groups": inventory.get("resource_groups", []),
+                "subscription_names": inventory.get("subscription_names") or {},
                 "locations": inventory.get("locations", []),
                 "resource_ids": [],
                 "tags": inventory.get("tags", []),

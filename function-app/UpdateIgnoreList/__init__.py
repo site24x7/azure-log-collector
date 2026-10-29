@@ -6,8 +6,8 @@ import azure.functions as func
 
 # Rules that can be checked from a resource ID alone; the rest (locations,
 # resource types, tags) need the resource's details, which only a scan reads.
-_ID_RULES = ("resource_ids", "subscriptions", "resource_groups")
-_DETAIL_RULES = ("locations", "resource_types", "tags")
+_ID_RULES = ("resource_ids", "include_subscriptions")
+_DETAIL_RULES = ("include_locations", "include_resource_types", "tags")
 
 
 def main(req: func.HttpRequest, scanQueue: func.Out[str]) -> func.HttpResponse:
@@ -77,14 +77,15 @@ def main(req: func.HttpRequest, scanQueue: func.Out[str]) -> func.HttpResponse:
             logging.warning("Error cleaning up diag settings for ignored resources: %s", str(e))
             removal_failed += 1
 
-        # Location / type / tag changes are applied by a scan, which has the details.
+        # Location / type / tag changes are applied by a scan, which has the details; so is
+        # a wider subscription list (its newly included resources need settings).
         scan_queued = False
         # Also when a scan is running: it loaded the old list and could undo this change.
         from shared.config_store import get_scan_state
         scan_running = bool((get_scan_state() or {}).get("in_progress"))
         if scan_running or previous is None or any(
                 _normalized(key, previous.get(key)) != _normalized(key, updated.get(key))
-                for key in _DETAIL_RULES):
+                for key in _DETAIL_RULES + ("include_subscriptions",)):
             scanQueue.set(json.dumps({
                 "requested_at": datetime.now(timezone.utc).isoformat(),
                 "source": "ignore-list",

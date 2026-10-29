@@ -238,9 +238,9 @@ def test_deployment_form_defaults_and_texts():
     params = template['parameters']
     # The portal escapes angle brackets in descriptions, so they would show as &lt; &gt;.
     assert not any('<' in p['metadata']['description'] or '>' in p['metadata']['description'] for p in params.values())
-    # No review step: the deployment's optional filters are saved once as the collector's exclusions.
+    # No review step: the deployment's optional filters are saved once as the collector's resource filters.
     assert 'confirmAfterDiscovery' not in params
-    for name in ('excludeResourceGroups', 'excludeLocations', 'excludeResourceTypes', 'includeTags', 'excludeTags'):
+    for name in ('includeLocations', 'includeResourceTypes', 'includeTags', 'excludeTags'):
         assert params[name]['type'] == 'array' and params[name]['defaultValue'] == []
         assert params[name]['metadata']['description'].startswith('Optional.')
     assert params['generalLogTypeEnabled']['defaultValue'] == 'false'
@@ -259,7 +259,8 @@ def test_portal_form_matches_the_template():
     outputs = ui['outputs']
     # Not on the form: the tag lists / tag filter objects for
     # command-line deployments (the form's Name | Value tables fill includeTagRows/excludeTagRows).
-    form_params = set(template['parameters']) - {'includeTags', 'excludeTags', 'includeTagFilter', 'excludeTagFilter'}
+    # generalLogTypeEnabled: a collector setting (dashboard), not a deployment choice.
+    form_params = set(template['parameters']) - {'includeTags', 'excludeTags', 'includeTagFilter', 'excludeTagFilter', 'generalLogTypeEnabled'}
     assert set(outputs) - {'location'} == form_params
     assert outputs['location'] == '[location()]'
     fields = {f['name']: f for f in ui['basics']}
@@ -273,8 +274,9 @@ def test_portal_form_matches_the_template():
     # Computed outputs: the subscriptions that pass the access check, and the tag tables' rows.
     assert set(fields) | (set(filters) & form_params) == form_params - {'monitoredSubscriptionIds', 'includeTagRows', 'excludeTagRows'}
     assert 'collectFrom' not in filters
-    assert filters['excludeSubscriptions']['label'] == 'Subscriptions to exclude'
-    assert filters['excludeSubscriptions']['defaultValue'] == []
+    assert filters['otherSubscriptions']['label'] == 'Other subscriptions'
+    assert 'excludeSubscriptions' not in filters
+    assert 'excludeResourceGroups' not in filters
     assert fields['resourceGroupName']['label'] == 'Resource group name (optional)'
     assert fields['deploymentSuffix']['label'] == 'Deployment suffix (optional)'
     assert fields['site24x7DeviceKey']['type'] == 'Microsoft.Common.PasswordBox'
@@ -283,9 +285,7 @@ def test_portal_form_matches_the_template():
     assert ui['config']['basics']['location']['allowedValues'] == check['properties']['template']['parameters']['location']['allowedValues']
     domains = [o['value'] for o in fields['site24x7Domain']['constraints']['allowedValues']]
     assert domains == template['parameters']['site24x7Domain']['allowedValues']
-    for name in ('generalLogTypeEnabled',):
-        values = {o['value'] for o in fields[name]['constraints']['allowedValues']}
-        assert values == set(template['parameters'][name]['allowedValues'])
+    assert 'generalLogTypeEnabled' not in fields
 
 
 def test_application_insights_uses_the_collectors_own_workspace():
@@ -300,14 +300,14 @@ def test_application_insights_uses_the_collectors_own_workspace():
     assert ai['dependsOn'] == [ai['properties']['WorkspaceResourceId']]
 
 
-def test_portal_exclusions_and_tag_rule_contract():
+def test_portal_include_lists_and_tag_rule_contract():
     from shared.ignore_list import _MAX_STRING_LEN
 
     template, _ = _nested_resources()
     ui = json.loads((ROOT / 'setup/createUiDefinition.json').read_text())['parameters']
     elements = ui['steps'][0]['elements']
     sections = {e['name']: e for e in elements if e['type'] == 'Microsoft.Common.Section'}
-    assert [s['label'] for s in sections.values()] == ['Subscriptions', 'Resources to exclude', 'Exclude tags', 'Include tags']
+    assert [s['label'] for s in sections.values()] == ['Subscriptions', 'Regions and resource types', 'Exclude tags', 'Include tags']
     controls = [e for section in sections.values() for e in section['elements']]
     assert not any(e['name'].startswith('probe') for e in elements + controls)
     # Tags: an Exclude tags and an Include tags section, each a line and a Name | Value table: the name
@@ -323,13 +323,15 @@ def test_portal_exclusions_and_tag_rule_contract():
         assert '.tagsApi.value' in name['element']['constraints']['allowedValues']
         assert f".{grid['name'][:7]}Tags.{grid['name']}, $rowIndex" in value['element']['constraints']['allowedValues']
         assert "'Any value'" in value['element']['constraints']['allowedValues']
-    for control in controls:
-        if control.get('multiselect'):
-            assert control['defaultValue'] == []
+    regions = next(e for e in controls if e['name'] == 'includeLocations')
+    assert '.locationsApi.value' in regions['defaultValue']
+    types = next(e for e in controls if e['name'] == 'includeResourceTypes')
+    assert types['defaultValue'] == [v['label'] for v in types['constraints']['allowedValues']]
     outputs = ui['outputs']
-    assert '.resources.excludeResourceGroups' in outputs['excludeResourceGroups']
-    rg = next(e for e in controls if e['name'] == 'excludeResourceGroups')
-    assert 'item.id' in rg['constraints']['allowedValues']
+    for key in ('includeLocations', 'includeResourceTypes'):
+        assert f'.resources.{key}' in outputs[key]
+        assert "parse('[]')" in outputs[key]  # all selected remains unrestricted
+    assert 'excludeResourceGroups' not in outputs
     deployment = next(r for r in template['resources'] if r['name'] == 's247-diag-logs-resources')
     expression = deployment['properties']['parameters']['resourceFilters']['value']
     for mode in ('include', 'exclude'):
@@ -355,7 +357,8 @@ def test_portal_subscription_checks_have_recovery_and_scope_warnings():
     assert 'Deploy another collector' in scope['limit']['options']['text']
     assert 'nextLink' in scope['pagination']['visible']
     monitored = ui['outputs']['monitoredSubscriptionIds']
-    assert '.subscriptions.excludeSubscriptions' in monitored
+    assert '.subscriptions.otherSubscriptions' in monitored
+    assert 'or(equals(sub.subscriptionId, subscription().subscriptionId), contains(' in monitored
     assert "equals(sub.state, 'Enabled')" in monitored
     assert 'perm.notActions' in monitored and 'toLower(action)' in monitored
     # Built-in role patterns, matched as exact (lower-case) entries: Owner '*', Contributor

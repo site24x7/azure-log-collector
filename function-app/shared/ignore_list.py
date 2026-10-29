@@ -1,8 +1,11 @@
-"""Multi-level ignore list stored in Azure Blob Storage.
+"""Resource filters ("ignore list") stored in Azure Blob Storage.
 
-The ignore list allows filtering resources by subscription, resource group,
-location, resource type, tag, or specific resource ID.  It is persisted as a
-JSON blob in the Function App's storage account.
+What is collected is chosen with include lists: subscriptions, regions
+(locations) and resource types. An empty list means all of them, including
+ones that appear later. The subscription that hosts the collector is always
+included. Tags can be included and excluded; single resources can be excluded
+by ID (dashboard). It is persisted as a JSON blob in the Function App's
+storage account.
 
 Tag filtering supports both **include** and **exclude** modes:
 
@@ -37,14 +40,42 @@ BLOB_NAME = "ignore-list.json"
 # edits from Site24x7 (including clearing every filter) always win.
 INITIAL_FILTERS_SETTING = "INITIAL_RESOURCE_FILTERS"
 
+# Include lists (empty = all) and the exclusion of single resources by ID.
+LIST_KEYS = ("include_subscriptions", "include_locations", "include_resource_types", "resource_ids")
+
 _EMPTY_IGNORE_LIST: Dict = {
-    "resource_groups": [],
-    "locations": [],
+    "include_subscriptions": [],
+    "include_locations": [],
+    "include_resource_types": [],
     "resource_ids": [],
-    "subscriptions": [],
     "tags": {"include": [], "exclude": []},
-    "resource_types": [],
 }
+
+# Exclusion lists of earlier versions. Empty ones are dropped; one with rules cannot be
+# turned into include lists, so the filters count as unreadable (scans stop) rather
+# than silently collecting what it excluded.
+_LEGACY_EXCLUDE_KEYS = ("subscriptions", "resource_groups", "locations", "resource_types")
+
+
+class LegacyFilters(ValueError):
+    """Saved filters use the earlier exclusion lists."""
+
+
+def _migrate_legacy(ignore_list: Dict) -> Dict:
+    for key in _LEGACY_EXCLUDE_KEYS:
+        if key in ignore_list:
+            if ignore_list[key]:
+                raise LegacyFilters(key)
+            del ignore_list[key]
+    for key in LIST_KEYS:
+        ignore_list.setdefault(key, [])
+    return _migrate_tags(ignore_list)
+
+
+def _hosting_subscription() -> str:
+    """The subscription that hosts the collector: always collected from."""
+    first = os.environ.get("SUBSCRIPTION_IDS", "").split(",")[0]
+    return first.strip().lower()
 
 
 def _get_blob_client():
@@ -82,10 +113,7 @@ def _migrate_tags(ignore_list: Dict) -> Dict:
 _MAX_LIST_ITEMS = 1000
 _MAX_STRING_LEN = 500
 
-_ALLOWED_KEYS = {
-    "resource_groups", "locations", "resource_ids",
-    "subscriptions", "resource_types", "tags",
-}
+_ALLOWED_KEYS = set(LIST_KEYS) | {"tags"}
 
 
 def validate_ignore_list(body) -> str:
@@ -99,7 +127,7 @@ def validate_ignore_list(body) -> str:
     if unknown:
         return f"Unknown keys: {', '.join(sorted(unknown))}"
 
-    for key in ("resource_groups", "locations", "resource_ids", "subscriptions", "resource_types"):
+    for key in LIST_KEYS:
         if key not in body:
             continue
         val = body[key]
@@ -168,10 +196,14 @@ def load_ignore_list(strict: bool = False) -> Dict:
 
     try:
         data = blob_client.download_blob().readall()
-        ignore_list = json.loads(data)
-        ignore_list = _migrate_tags(ignore_list)
+        ignore_list = _migrate_legacy(json.loads(data))
         logger.info("Loaded ignore list from blob storage")
         return ignore_list
+    except LegacyFilters as e:
+        logger.error("Saved filters use the earlier exclusion lists (%s): save new filters", e)
+        if strict:
+            raise IgnoreListUnavailable("legacy exclusion filters") from e
+        return copy.deepcopy(_EMPTY_IGNORE_LIST)
     except Exception as e:
         # A missing blob or a missing container (a new collector) means nothing is saved yet.
         missing = isinstance(e, ResourceNotFoundError) or "BlobNotFound" in str(e) or "not found" in str(e).lower()
@@ -204,13 +236,16 @@ def _initial_filters():
     raw = os.environ.get(INITIAL_FILTERS_SETTING, "").strip()
     if not raw:
         return None
+    # Earlier versions' exclusion keys: empty ones are dropped, others raise LegacyFilters.
     filters = json.loads(raw)
+    if isinstance(filters, dict):
+        filters = _migrate_legacy(filters)
     err = validate_ignore_list(filters)
     if err:
         raise ValueError(err)
     ignore_list = copy.deepcopy(_EMPTY_IGNORE_LIST)
     ignore_list.update(_migrate_tags(filters))
-    ignore_list = _migrate_tags(ignore_list)
+    ignore_list = _migrate_legacy(ignore_list)
     has_rules = any(ignore_list[key] for key in ignore_list if key != "tags") \
         or ignore_list["tags"]["include"] or ignore_list["tags"]["exclude"]
     return ignore_list if has_rules else None
@@ -232,7 +267,7 @@ def _save_initial_filters(blob_client):
         logger.info("Saved the deployment's resource filters as the ignore list")
         return filters
     except ResourceExistsError:
-        return _migrate_tags(json.loads(blob_client.download_blob().readall()))
+        return _migrate_legacy(json.loads(blob_client.download_blob().readall()))
 
 
 def _ensure_container() -> None:
@@ -300,60 +335,43 @@ def is_ignored(resource: Dict, ignore_list: Dict) -> bool:
     """Check if a resource should be excluded from log collection.
 
     A resource is ignored when:
-    1. It matches any dimension rule (subscription, resource group, location,
-       resource type, resource ID, or exclude tag), **OR**
-    2. Include tags are defined and the resource does NOT match any of them.
+    1. Its ID is in ``resource_ids``, **OR**
+    2. An include list (subscriptions, locations, resource types) has entries
+       and the resource is not in it (the hosting subscription is always
+       included), **OR**
+    3. It matches an exclude tag, or include tags are defined and it matches
+       none of them. Exclude tags always take priority over include tags.
 
-    Exclude tags always take priority over include tags.
-
-    ``resource`` is expected to have ``id``, ``location``,
-    ``resource_group``, ``subscription_id``, ``type``, and ``tags`` keys.
+    ``resource`` is expected to have ``id``, ``location``, ``subscription_id``,
+    ``type``, and ``tags`` keys; a rule whose detail is missing (an ID-only
+    resource) does not apply.
     """
     resource_id = resource.get("id", "").lower()
     location = resource.get("location", "").lower()
-    resource_group = resource.get("resource_group", "").lower()
     subscription_id = resource.get("subscription_id", "").lower()
     resource_type = resource.get("type", "").lower()
     resource_tags = resource.get("tags") or {}
-
-    # If resource_group isn't a direct field, try parsing from the resource id
-    if not resource_group and resource_id:
-        resource_group = _extract_rg_from_id(resource_id).lower()
 
     # If subscription_id isn't a direct field, try parsing from the resource id
     if not subscription_id and resource_id:
         subscription_id = _extract_sub_from_id(resource_id).lower()
 
-    # Check resource_ids
     ignored_ids = [rid.lower() for rid in (ignore_list.get("resource_ids") or [])]
     if resource_id in ignored_ids:
         return True
 
-    # Check subscriptions
-    ignored_subs = [s.lower() for s in (ignore_list.get("subscriptions") or [])]
-    if subscription_id in ignored_subs:
+    subscriptions = {s.lower() for s in (ignore_list.get("include_subscriptions") or [])}
+    if subscriptions and subscription_id and subscription_id != _hosting_subscription() \
+            and subscription_id not in subscriptions:
         return True
 
-    # Check resource_groups: a name matches that group in every subscription; a full
-    # ID (/subscriptions/<id>/resourceGroups/<name>, as the deployment form saves it)
-    # matches only the group in that subscription.
-    ignored_rgs = [rg.strip().rstrip("/").lower() for rg in (ignore_list.get("resource_groups") or [])]
-    if resource_group in ignored_rgs:
-        return True
-    if resource_group and subscription_id and \
-            f"/subscriptions/{subscription_id}/resourcegroups/{resource_group}" in ignored_rgs:
+    # Regions choose regional resources; global ones (DNS, Front Door, ...) have no region to pick.
+    locations = {loc.lower() for loc in (ignore_list.get("include_locations") or [])}
+    if locations and location and location != "global" and location not in locations:
         return True
 
-    # Check locations
-    ignored_locations = [
-        loc.lower() for loc in (ignore_list.get("locations") or [])
-    ]
-    if location in ignored_locations:
-        return True
-
-    # Check resource_types (e.g. "Microsoft.Compute/virtualMachines")
-    ignored_types = [t.lower() for t in (ignore_list.get("resource_types") or [])]
-    if resource_type in ignored_types:
+    resource_types = {t.lower() for t in (ignore_list.get("include_resource_types") or [])}
+    if resource_types and resource_type and resource_type not in resource_types:
         return True
 
     # ── Tag-based filtering (include/exclude) ──
@@ -389,21 +407,12 @@ def get_ignore_list() -> Dict:
 
 def update_ignore_list(ignore_list: Dict) -> bool:
     """Public setter — validates and saves an updated ignore list."""
-    for key in ("resource_groups", "locations", "resource_ids", "subscriptions", "resource_types"):
+    for key in LIST_KEYS:
         if key not in ignore_list:
             ignore_list[key] = []
     # Ensure tags has include/exclude structure
     ignore_list = _migrate_tags(ignore_list)
     return save_ignore_list(ignore_list)
-
-
-def _extract_rg_from_id(resource_id: str) -> str:
-    """Extract resource group name from a fully-qualified Azure resource ID."""
-    parts = resource_id.strip("/").split("/")
-    for i, part in enumerate(parts):
-        if part.lower() == "resourcegroups" and i + 1 < len(parts):
-            return parts[i + 1]
-    return ""
 
 
 def _extract_sub_from_id(resource_id: str) -> str:

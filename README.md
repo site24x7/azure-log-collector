@@ -130,9 +130,12 @@ This takes 5–10 minutes and provisions:
 - Initial resource scan and diagnostic settings configuration
 
 The collector starts collecting as soon as it is deployed. The portal form's second page
-sets optional filters first: subscriptions to leave out, resource groups, regions and
-resource types to exclude, and tags to exclude or include. They are saved once as the
-collector's filters; change them later in Site24x7 (the collector's Resource Filters tab).
+chooses what is collected first: the other subscriptions to include (the deployment's own
+subscription is always included), the regions and resource types to include (all by
+default, including ones added later), and tags to exclude or include. They are saved once
+as the collector's filters; change them later in Site24x7 (the collector's Resource
+Filters tab). To add a subscription later, give the collector's managed identity Reader and
+Monitoring Contributor on it; the next scan finds it.
 
 At the end, you'll see the **Dashboard URL** — open it in your browser.
 
@@ -150,7 +153,7 @@ https://<FUNCTION_APP_NAME>.azurewebsites.net/api/dashboard?code=<FUNCTION_KEY>
 | Tab | What it shows |
 |-----|---------------|
 | **Overview** | Subscriptions, regions, last scan details, errors |
-| **Filters** | Ignore lists (subscriptions, RGs, locations, types, tags) + log type toggles |
+| **Filters** | Include lists (subscriptions, regions, resource types), include/exclude tags + log type toggles |
 | **Resources** | All configured resources with categories and storage accounts |
 | **Debug** | System health, config validation, recent events, processing runs |
 

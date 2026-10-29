@@ -163,7 +163,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             logger.debug("GetStatus: Ignore list loaded OK")
         except Exception as e:
             logger.error("GetStatus: Failed to load ignore list: %s\n%s", e, traceback.format_exc())
-            ignore_list = {"resource_groups": [], "locations": [], "resource_ids": []}
+            ignore_list = {}
             status["errors"].append(f"ignore_list: {e}")
 
         # Get provisioned regions (returns dict: region → storage account name)

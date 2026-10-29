@@ -695,7 +695,8 @@ def try_acquire_scan_lock(ttl_seconds: int = 900) -> bool:
     return written is not None and acquired["acquired"]
 
 
-def save_resource_inventory(resources: List[Dict], subscription_ids: List[str]) -> bool:
+def save_resource_inventory(resources: List[Dict], subscription_ids: List[str],
+                            subscription_names: Optional[Dict[str, str]] = None) -> bool:
     """Save the filter choices found by a scan, so the filter pages never have
     to list the subscription again. Values only, at most INVENTORY_MAX_VALUES
     of each."""
@@ -705,8 +706,9 @@ def save_resource_inventory(resources: List[Dict], subscription_ids: List[str]) 
     inventory = {
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "resource_count": len(resources),
-        "subscriptions": values(subscription_ids),
-        "resource_groups": values(r.get("resource_group", "") for r in resources),
+        # In the collector's order: the hosting subscription first.
+        "subscriptions": list(dict.fromkeys(s for s in subscription_ids if s))[:INVENTORY_MAX_VALUES],
+        "subscription_names": {s: n for s, n in (subscription_names or {}).items() if s in subscription_ids},
         "locations": values(r.get("location", "") for r in resources),
         "resource_types": values(r.get("type", "") for r in resources),
         "tags": values(f"{k}={v}" for r in resources for k, v in (r.get("tags") or {}).items()),

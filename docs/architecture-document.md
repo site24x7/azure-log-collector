@@ -587,14 +587,16 @@ Input: base64 sourceConfig + raw Azure log events
 
 ### 6.5 ignore_list.py — Resource Filtering
 
-Resource matching is case-insensitive where implemented. Tag names and values match case-insensitively (Azure tag names are case-insensitive); a `key=value` rule, including `key=` for an empty value, matches only resources that have the tag:
+Subscriptions, regions and resource types are include lists (empty = all, including ones added later); the hosting subscription is always included and global resources pass the region list. Matching is case-insensitive. Tag names and values match case-insensitively (Azure tag names are case-insensitive); a `key=value` rule, including `key=` for an empty value, matches only resources that have the tag:
 
 ```
 Resource → is_ignored()?
   ├─ Check: resource_id ∈ ignore_list.resource_ids?  → IGNORED
-  ├─ Check: resource_group ∈ ignore_list.resource_groups?  → IGNORED
-  ├─ Check: location ∈ ignore_list.locations?  → IGNORED
-  └─ None matched → NOT IGNORED
+  ├─ Check: include_subscriptions set and subscription not in it (not the hosting one)?  → IGNORED
+  ├─ Check: include_locations set and location (not global) not in it?  → IGNORED
+  ├─ Check: include_resource_types set and type not in it?  → IGNORED
+  ├─ Check: matches an exclude tag, or include tags set and matches none?  → IGNORED
+  └─ Otherwise → NOT IGNORED
 ```
 
 ### 6.6 log_parser.py — Diagnostic Record Parsing

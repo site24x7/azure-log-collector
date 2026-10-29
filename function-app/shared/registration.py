@@ -65,14 +65,16 @@ def _site_resource_id() -> str:
             f"/providers/Microsoft.Web/sites/{func_app_name}")
 
 
-# The functions Site24x7 calls. Site24x7 gets its own function key, named
-# "site24x7", on these only: never a host key, so it cannot open the dashboard
-# or debug data, and the customer can revoke it without touching their keys.
+# The functions Site24x7 calls, and the dashboard (with the functions its page
+# calls), which Site24x7 opens for its admins. Site24x7 gets its own function
+# key, named "site24x7", on these only: never a host key, and the customer can
+# revoke it without touching their keys.
 SITE24X7_FUNCTIONS = (
     "GetStatus", "TriggerScan", "StopProcessing",
     "GetIgnoreList", "UpdateIgnoreList", "GetDisabledLogTypes", "UpdateDisabledLogTypes",
-    "UpdateEntraLogTypes", "UpdateGeneralLogType", "UpdateSettings",
+    "UpdateEntraLogTypes", "GetGeneralLogType", "UpdateGeneralLogType", "UpdateSettings",
     "GetConfiguredResources", "CheckUpdate", "RemoveDiagSettings",
+    "Dashboard", "GetDebugInfo", "HealthCheck",
 )
 SITE24X7_KEY_NAME = "site24x7"
 
@@ -183,10 +185,17 @@ def build_status_summary(include_names: bool = True) -> Dict:
         "planned_regions": int(scan.get("planned_regions", 0) or 0),
         "planned_resource_types": int(scan.get("planned_resource_types", 0) or 0),
     }
-    subscriptions = []
-    for raw in os.environ.get("SUBSCRIPTION_IDS", "").split(","):
+    # The configured subscriptions, then the others the last scan found the identity can see.
+    from shared.subscriptions import configured_subscription_ids
+    from shared.config_store import get_resource_inventory
+    subscriptions = configured_subscription_ids()
+    try:
+        seen = (get_resource_inventory() or {}).get("subscriptions") or []
+    except Exception:
+        seen = []
+    for raw in seen if isinstance(seen, list) else []:
         try:
-            subscription = str(uuid.UUID(raw.strip()))
+            subscription = str(uuid.UUID(str(raw).strip()))
         except (ValueError, AttributeError):
             continue
         if subscription not in subscriptions:
