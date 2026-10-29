@@ -11,7 +11,7 @@ _DETAIL_RULES = ("locations", "resource_types", "tags")
 
 
 def main(req: func.HttpRequest, scanQueue: func.Out[str]) -> func.HttpResponse:
-    from shared.ignore_list import IgnoreListUnavailable, load_ignore_list, update_ignore_list, is_ignored
+    from shared.ignore_list import IgnoreListUnavailable, load_ignore_list, update_ignore_list, is_ignored, validate_ignore_list
     from shared.config_store import get_configured_resources, unmark_resource_configured
 
     logging.info("UpdateIgnoreList: Updating ignore list")
@@ -27,7 +27,7 @@ def main(req: func.HttpRequest, scanQueue: func.Out[str]) -> func.HttpResponse:
         )
 
     # Validate ignore list structure
-    err = _validate_ignore_list(body)
+    err = validate_ignore_list(body)
     if err:
         return func.HttpResponse(
             json.dumps({"error": err}),
@@ -121,78 +121,13 @@ def main(req: func.HttpRequest, scanQueue: func.Out[str]) -> func.HttpResponse:
 
 def _normalized(key, value):
     """Compare rule lists regardless of order, with the same case rules as the
-    filter: locations and types match case-insensitively, tag rules exactly
-    (a tag key is case-sensitive). Legacy flat tags are exclude rules."""
+    filter: everything matches case-insensitively, tag names and values too
+    (Azure tag names are case-insensitive). Legacy flat tags are exclude rules."""
     if key == "tags":
         if isinstance(value, list):
             value = {"include": [], "exclude": value}
         value = value if isinstance(value, dict) else {}
-        return {k: sorted(str(v) for v in (value.get(k) or [])) for k in ("include", "exclude")}
+        return {k: sorted(str(v).lower() for v in (value.get(k) or [])) for k in ("include", "exclude")}
     if isinstance(value, list):
         return sorted(str(v).lower() for v in value)
     return []
-
-
-# Maximum items per list to prevent denial-of-service via oversized payloads
-_MAX_LIST_ITEMS = 1000
-_MAX_STRING_LEN = 500
-
-_ALLOWED_KEYS = {
-    "resource_groups", "locations", "resource_ids",
-    "subscriptions", "resource_types", "tags",
-}
-
-
-def _validate_ignore_list(body) -> str:
-    """Validate ignore list structure. Returns error string or empty on success."""
-    if not isinstance(body, dict):
-        return "Body must be a JSON object"
-
-    unknown = set(body.keys()) - _ALLOWED_KEYS
-    if unknown:
-        return f"Unknown keys: {', '.join(sorted(unknown))}"
-
-    for key in ("resource_groups", "locations", "resource_ids", "subscriptions", "resource_types"):
-        if key not in body:
-            continue
-        val = body[key]
-        if not isinstance(val, list):
-            return f"'{key}' must be an array"
-        if len(val) > _MAX_LIST_ITEMS:
-            return f"'{key}' exceeds maximum of {_MAX_LIST_ITEMS} items"
-        for item in val:
-            if not isinstance(item, str):
-                return f"'{key}' items must be strings"
-            if len(item) > _MAX_STRING_LEN:
-                return f"'{key}' item exceeds maximum length of {_MAX_STRING_LEN}"
-
-    if "tags" in body:
-        tags = body["tags"]
-        if isinstance(tags, list):
-            if len(tags) > _MAX_LIST_ITEMS:
-                return f"'tags' exceeds maximum of {_MAX_LIST_ITEMS} items"
-            for t in tags:
-                if not isinstance(t, str):
-                    return "'tags' items must be strings"
-                if len(t) > _MAX_STRING_LEN:
-                    return f"'tags' item exceeds maximum length of {_MAX_STRING_LEN}"
-        elif isinstance(tags, dict):
-            unknown_tags = set(tags.keys()) - {"include", "exclude"}
-            if unknown_tags:
-                return f"Unknown tags keys: {', '.join(sorted(unknown_tags))}"
-            for sub_key in ("include", "exclude"):
-                if sub_key in tags:
-                    sub = tags[sub_key]
-                    if not isinstance(sub, list):
-                        return f"'tags.{sub_key}' must be an array"
-                    if len(sub) > _MAX_LIST_ITEMS:
-                        return f"'tags.{sub_key}' exceeds maximum of {_MAX_LIST_ITEMS} items"
-                    for t in sub:
-                        if not isinstance(t, str):
-                            return f"'tags.{sub_key}' items must be strings"
-                        if len(t) > _MAX_STRING_LEN:
-                            return f"'tags.{sub_key}' item exceeds maximum length of {_MAX_STRING_LEN}"
-        else:
-            return "'tags' must be an array or object with include/exclude"
-
-    return ""

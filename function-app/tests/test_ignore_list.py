@@ -6,6 +6,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from shared.ignore_list import (
+    IgnoreListUnavailable,
     load_ignore_list,
     save_ignore_list,
     is_ignored,
@@ -57,6 +58,16 @@ class TestTagMatches:
 
     def test_empty_tags(self):
         assert _tag_matches({}, "env=dev") is False
+
+    def test_tag_names_match_case_insensitively(self):
+        # Azure tag names are case-insensitive; its tag list returns Owner and owner alike.
+        assert _tag_matches({"Owner": "alex"}, "owner=alex") is True
+        assert _tag_matches({"owner": "x"}, "Owner") is True
+
+    def test_empty_value_rule_needs_the_tag(self):
+        assert _tag_matches({"keep": ""}, "keep=") is True
+        assert _tag_matches({}, "keep=") is False
+        assert _tag_matches({"keep": "yes"}, "keep=") is False
 
 
 # ─── _migrate_tags ───────────────────────────────────────────────────────────
@@ -349,3 +360,127 @@ class TestUpdateIgnoreList:
         update_ignore_list(data)
         saved = mock_save.call_args[0][0]
         assert saved["tags"] == {"include": [], "exclude": ["env=dev"]}
+
+
+# ─── Initial filters from the deployment form ────────────────────────────────
+
+
+def _not_found_blob():
+    blob_client = MagicMock()
+    blob_client.download_blob.side_effect = Exception("BlobNotFound")
+    return blob_client
+
+
+class TestInitialFilters:
+    FILTERS = {"resource_groups": ["rg-test"], "locations": ["westeurope"],
+               "resource_types": ["Microsoft.KeyVault/vaults"],
+               "tags": {"include": ["env=prod"], "exclude": ["skip"]}}
+
+    @patch("shared.ignore_list._ensure_container")
+    @patch("shared.ignore_list._get_blob_client")
+    def test_saved_once_when_no_list_exists(self, mock_get_blob, _container, monkeypatch):
+        monkeypatch.setenv("INITIAL_RESOURCE_FILTERS", json.dumps(self.FILTERS))
+        blob_client = _not_found_blob()
+        mock_get_blob.return_value = blob_client
+
+        result = load_ignore_list(strict=True)
+
+        assert result["resource_groups"] == ["rg-test"]
+        assert result["tags"] == {"include": ["env=prod"], "exclude": ["skip"]}
+        assert result["subscriptions"] == [] and result["resource_ids"] == []
+        _, kwargs = blob_client.upload_blob.call_args
+        assert kwargs == {"overwrite": False}
+
+    @patch("shared.ignore_list._ensure_container")
+    @patch("shared.ignore_list._get_blob_client")
+    def test_existing_list_wins(self, mock_get_blob, _container, monkeypatch):
+        """A saved list (here: everything cleared in Site24x7) is never replaced by the deployment's filters."""
+        monkeypatch.setenv("INITIAL_RESOURCE_FILTERS", json.dumps(self.FILTERS))
+        saved = {"resource_groups": [], "locations": [], "resource_ids": [], "subscriptions": [],
+                 "tags": {"include": [], "exclude": []}, "resource_types": []}
+        blob_client = MagicMock()
+        download = MagicMock()
+        download.readall.return_value = json.dumps(saved).encode()
+        blob_client.download_blob.return_value = download
+        mock_get_blob.return_value = blob_client
+
+        assert load_ignore_list(strict=True) == saved
+        blob_client.upload_blob.assert_not_called()
+
+    @patch("shared.ignore_list._ensure_container")
+    @patch("shared.ignore_list._get_blob_client")
+    def test_another_worker_saved_first(self, mock_get_blob, _container, monkeypatch):
+        from azure.core.exceptions import ResourceExistsError
+        monkeypatch.setenv("INITIAL_RESOURCE_FILTERS", json.dumps(self.FILTERS))
+        winner = {"resource_groups": ["other"], "locations": [], "resource_ids": [], "subscriptions": [],
+                  "tags": {"include": [], "exclude": []}, "resource_types": []}
+        download = MagicMock()
+        download.readall.return_value = json.dumps(winner).encode()
+        blob_client = MagicMock()
+        blob_client.download_blob.side_effect = [Exception("BlobNotFound"), download]
+        blob_client.upload_blob.side_effect = ResourceExistsError("exists")
+        mock_get_blob.return_value = blob_client
+
+        assert load_ignore_list(strict=True) == winner
+
+    @patch("shared.ignore_list._get_blob_client")
+    def test_no_filters_keeps_empty_list(self, mock_get_blob, monkeypatch):
+        monkeypatch.setenv("INITIAL_RESOURCE_FILTERS", json.dumps({"resource_groups": [], "tags": {"include": [], "exclude": []}}))
+        blob_client = _not_found_blob()
+        mock_get_blob.return_value = blob_client
+
+        assert load_ignore_list(strict=True)["resource_groups"] == []
+        blob_client.upload_blob.assert_not_called()
+
+    @patch("shared.ignore_list._get_blob_client")
+    def test_malformed_filters_stop_scans(self, mock_get_blob, monkeypatch):
+        """Scans never fall back to collecting everything."""
+        monkeypatch.setenv("INITIAL_RESOURCE_FILTERS", json.dumps({"resource_groups": "rg-test"}))
+        mock_get_blob.return_value = _not_found_blob()
+
+        with pytest.raises(IgnoreListUnavailable):
+            load_ignore_list(strict=True)
+
+    @patch("shared.ignore_list._ensure_container")
+    @patch("shared.ignore_list._get_blob_client")
+    def test_save_failure_stops_scans(self, mock_get_blob, _container, monkeypatch):
+        monkeypatch.setenv("INITIAL_RESOURCE_FILTERS", json.dumps(self.FILTERS))
+        blob_client = _not_found_blob()
+        blob_client.upload_blob.side_effect = Exception("AuthorizationFailure")
+        mock_get_blob.return_value = blob_client
+
+        with pytest.raises(IgnoreListUnavailable):
+            load_ignore_list(strict=True)
+
+
+class TestResourceGroupIds:
+    """The deployment form saves excluded resource groups as full IDs (one subscription only)."""
+
+    RG_ID = "/subscriptions/aaaa-1111/resourceGroups/rg-test"
+
+    def test_full_id_matches_its_subscription(self):
+        resource = {"id": "/subscriptions/aaaa-1111/resourceGroups/RG-Test/providers/Microsoft.KeyVault/vaults/kv1"}
+        assert is_ignored(resource, {"resource_groups": [self.RG_ID]}) is True
+
+    def test_full_id_does_not_match_same_name_elsewhere(self):
+        resource = {"id": "/subscriptions/bbbb-2222/resourceGroups/rg-test/providers/Microsoft.KeyVault/vaults/kv1"}
+        assert is_ignored(resource, {"resource_groups": [self.RG_ID]}) is False
+
+    def test_name_still_matches_every_subscription(self):
+        resource = {"id": "/subscriptions/bbbb-2222/resourceGroups/rg-test/providers/Microsoft.KeyVault/vaults/kv1"}
+        assert is_ignored(resource, {"resource_groups": ["rg-test"]}) is True
+
+
+class TestMissingContainer:
+    @patch("shared.ignore_list._ensure_container")
+    @patch("shared.ignore_list._get_blob_client")
+    def test_new_collector_without_config_container_saves_the_filters(self, mock_get_blob, _container, monkeypatch):
+        """A new collector has no config container yet: that is 'nothing saved', not a read failure."""
+        from azure.core.exceptions import ResourceNotFoundError
+        monkeypatch.setenv("INITIAL_RESOURCE_FILTERS", json.dumps({"resource_groups": ["rg-test"]}))
+        blob_client = MagicMock()
+        blob_client.download_blob.side_effect = ResourceNotFoundError("The specified container does not exist.")
+        mock_get_blob.return_value = blob_client
+
+        assert load_ignore_list(strict=True)["resource_groups"] == ["rg-test"]
+        blob_client.upload_blob.assert_called_once()

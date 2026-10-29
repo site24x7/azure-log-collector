@@ -37,15 +37,75 @@
         "description": "true: logs from categories that have no Site24x7 log type are sent to a general log type. false (default): they are skipped. You can change this later in Site24x7."
       }
     },
-    "confirmAfterDiscovery": {
-      "type": "string",
-      "defaultValue": "true",
-      "allowedValues": [
-        "true",
-        "false"
-      ],
+    "monitoredSubscriptionIds": {
+      "type": "array",
+      "defaultValue": "[createArray(subscription().subscriptionId)]",
       "metadata": {
-        "description": "true (recommended): after its first resource scan, the collector waits for an admin to confirm in Site24x7 before it sets up storage, log types and diagnostic settings. false: it sets them up right away."
+        "description": "Optional. Subscription IDs to collect from; the deployment form fills it. Omit to use the deployment subscription. An empty list is rejected. The deployment subscription is always included and comes first: it hosts the collector."
+      },
+      "minLength": 1
+    },
+    "excludeResourceGroups": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "Optional. Full resource-group IDs to exclude only those groups, or names to exclude matching groups across all monitored subscriptions."
+      }
+    },
+    "excludeLocations": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "Optional. Azure regions (for example westeurope) whose resources are not collected."
+      }
+    },
+    "excludeResourceTypes": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "Optional. Resource types (for example Microsoft.KeyVault/vaults) that are not collected."
+      }
+    },
+    "includeTags": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "Optional. When set, only resources with at least one of these tags are collected. Each item is key (any value) or key=value."
+      }
+    },
+    "includeTagFilter": {
+      "type": "object",
+      "defaultValue": {},
+      "metadata": {
+        "description": "Optional. Tags from the deployment form's tag editor (tag names and values per entry; an empty value matches any value), or an object with rules: an array of key/value rows. Combined with includeTags."
+      }
+    },
+    "excludeTagFilter": {
+      "type": "object",
+      "defaultValue": {},
+      "metadata": {
+        "description": "Optional. Tags from the deployment form's tag editor (tag names and values per entry; an empty value matches any value), or an object with rules: an array of key/value rows. Combined with excludeTags."
+      }
+    },
+    "includeTagRows": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "Optional. Tag rules from the deployment form: rows of key and value (an empty value matches any value; rows without a key are ignored). Resources with any of these tags are collected; combined with includeTagFilter and includeTags."
+      }
+    },
+    "excludeTagRows": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "Optional. Tag rules from the deployment form: rows of key and value (an empty value matches any value; rows without a key are ignored). Resources with any of these tags are excluded; combined with excludeTagFilter and excludeTags."
+      }
+    },
+    "excludeTags": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "Optional. Resources with any of these tags are not collected, even when they match an include tag. Each item is key (any value) or key=value."
       }
     },
     "resourceGroupName": {
@@ -68,6 +128,7 @@
   "variables": {
     "rgName": "[if(not(empty(trim(parameters('resourceGroupName')))), trim(parameters('resourceGroupName')), if(empty(variables('cleanSuffix')), 's247-diag-logs-rg', concat('s247-diag-logs-', variables('cleanSuffix'), '-rg')))]",
     "cleanSuffix": "[replace(replace(replace(replace(toLower(trim(parameters('deploymentSuffix'))), '-', ''), '_', ''), '.', ''), ' ', '')]",
+    "monitoredSubscriptions": "[concat(createArray(subscription().subscriptionId), filter(parameters('monitoredSubscriptionIds'), lambda('id', not(equals(toLower(lambdaVariables('id')), toLower(subscription().subscriptionId))))))]",
     "uniqueSuffix": "[if(empty(variables('cleanSuffix')), substring(uniqueString(subscription().id, 's247-diag-logs'), 0, 6), variables('cleanSuffix'))]",
     "storageAccountName": "[concat('s247diag', variables('uniqueSuffix'))]",
     "functionAppName": "[concat('s247-diag-func-', variables('uniqueSuffix'))]",
@@ -75,7 +136,7 @@
     "seedStorageName": "[if(greater(length(variables('uniqueSuffix')), 6), concat('s247dr', variables('uniqueSuffix')), take(concat('s247diag', replace(replace(deployment().location, ' ', ''), '-', ''), variables('uniqueSuffix')), 24))]",
     "hostingPlanName": "[concat('s247-diag-func-', variables('uniqueSuffix'), '-plan')]",
     "appInsightsName": "[concat('s247-diag-func-', variables('uniqueSuffix'), '-ai')]",
-    "functionZipUrl": "https://github.com/site24x7/azure-log-collector/releases/download/v1.0.1/released-package.zip",
+    "functionZipUrl": "https://github.com/site24x7/azure-log-collector/releases/download/v1.1.0-beta1/released-package.zip",
     "readerRoleId": "acdd72a7-3385-48ef-bd42-f606fba81ae7",
     "monitoringContributorRoleId": "749f88d5-cbae-40b8-bcfc-e573ddc772fa",
     "deploymentContainerName": "[concat('app-package-', take(variables('functionAppName'), 50))]",
@@ -215,7 +276,7 @@
             "value": "[variables('rgName')]"
           },
           "subscriptionIds": {
-            "value": "[subscription().subscriptionId]"
+            "value": "[join(variables('monitoredSubscriptions'), ',')]"
           },
           "site24x7DeviceKey": {
             "value": "[parameters('site24x7DeviceKey')]"
@@ -223,8 +284,8 @@
           "generalLogTypeEnabled": {
             "value": "[parameters('generalLogTypeEnabled')]"
           },
-          "confirmAfterDiscovery": {
-            "value": "[parameters('confirmAfterDiscovery')]"
+          "resourceFilters": {
+            "value": "[createObject('resource_groups', parameters('excludeResourceGroups'), 'locations', parameters('excludeLocations'), 'resource_types', parameters('excludeResourceTypes'), 'tags', createObject('include', concat(map(if(contains(parameters('includeTagFilter'), 'rules'), parameters('includeTagFilter').rules, flatten(map(items(parameters('includeTagFilter')), lambda('editor', items(lambdaVariables('editor').value))))), lambda('tag', if(empty(lambdaVariables('tag').value), lambdaVariables('tag').key, concat(lambdaVariables('tag').key, '=', lambdaVariables('tag').value)))), map(filter(parameters('includeTagRows'), lambda('row', not(empty(string(coalesce(lambdaVariables('row').key, '')))))), lambda('row', if(empty(string(coalesce(lambdaVariables('row').value, ''))), string(lambdaVariables('row').key), concat(string(lambdaVariables('row').key), '=', string(lambdaVariables('row').value))))), parameters('includeTags')), 'exclude', concat(map(if(contains(parameters('excludeTagFilter'), 'rules'), parameters('excludeTagFilter').rules, flatten(map(items(parameters('excludeTagFilter')), lambda('editor', items(lambdaVariables('editor').value))))), lambda('tag', if(empty(lambdaVariables('tag').value), lambdaVariables('tag').key, concat(lambdaVariables('tag').key, '=', lambdaVariables('tag').value)))), map(filter(parameters('excludeTagRows'), lambda('row', not(empty(string(coalesce(lambdaVariables('row').key, '')))))), lambda('row', if(empty(string(coalesce(lambdaVariables('row').value, ''))), string(lambdaVariables('row').key), concat(string(lambdaVariables('row').key), '=', string(lambdaVariables('row').value))))), parameters('excludeTags'))))]"
           },
           "site24x7Domain": {
             "value": "[parameters('site24x7Domain')]"
@@ -276,8 +337,8 @@
             "generalLogTypeEnabled": {
               "type": "string"
             },
-            "confirmAfterDiscovery": {
-              "type": "string"
+            "resourceFilters": {
+              "type": "object"
             },
             "site24x7Domain": {
               "type": "string"
@@ -486,8 +547,8 @@
                       "value": "0 0 */6 * * *"
                     },
                     {
-                      "name": "REVIEW_BEFORE_COLLECTING",
-                      "value": "[parameters('confirmAfterDiscovery')]"
+                      "name": "INITIAL_RESOURCE_FILTERS",
+                      "value": "[string(parameters('resourceFilters'))]"
                     },
                     {
                       "name": "RESOURCE_GROUP_NAME",
@@ -575,7 +636,12 @@
       "type": "Microsoft.Resources/deployments",
       "apiVersion": "2022-09-01",
       "name": "[concat('s247-diag-logs-sub-roles-', variables('uniqueSuffix'))]",
+      "subscriptionId": "[variables('monitoredSubscriptions')[copyIndex()]]",
       "location": "[deployment().location]",
+      "copy": {
+        "name": "subscriptionRoles",
+        "count": "[length(variables('monitoredSubscriptions'))]"
+      },
       "dependsOn": [
         "s247-diag-logs-resources"
       ],
@@ -641,7 +707,7 @@
       "resourceGroup": "[variables('rgName')]",
       "dependsOn": [
         "s247-diag-logs-resources",
-        "[concat('s247-diag-logs-sub-roles-', variables('uniqueSuffix'))]"
+        "subscriptionRoles"
       ],
       "properties": {
         "mode": "Incremental",

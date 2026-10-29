@@ -69,7 +69,7 @@ def _site_resource_id() -> str:
 # "site24x7", on these only: never a host key, so it cannot open the dashboard
 # or debug data, and the customer can revoke it without touching their keys.
 SITE24X7_FUNCTIONS = (
-    "GetStatus", "TriggerScan", "StopProcessing", "StartCollecting",
+    "GetStatus", "TriggerScan", "StopProcessing",
     "GetIgnoreList", "UpdateIgnoreList", "GetDisabledLogTypes", "UpdateDisabledLogTypes",
     "UpdateEntraLogTypes", "UpdateGeneralLogType", "UpdateSettings",
     "GetConfiguredResources", "CheckUpdate", "RemoveDiagSettings",
@@ -150,7 +150,7 @@ def _revoke(resource_id: str, function: str, token: str) -> None:
 
 def build_status_summary(include_names: bool = True) -> Dict:
     """Read-only status shown to every Site24x7 user; contains no secrets."""
-    from shared.config_store import get_scan_state, get_configured_resources, is_collection_active, get_processing_enabled
+    from shared.config_store import get_scan_state, get_configured_resources, get_processing_enabled
     from shared.debug_logger import get_processing_stats
 
     scan = get_scan_state() or {}
@@ -180,9 +180,6 @@ def build_status_summary(include_names: bool = True) -> Dict:
         "recent_since": runs[-1].get("timestamp", "") if runs else "",
         "reported_at": datetime.now(timezone.utc).isoformat(),
         "s247_errors": safe_scan_errors(scan.get("s247_errors")),
-        # New deployments wait for an admin to start collecting; until then
-        # scans only report what they would configure.
-        "review_pending": not is_collection_active(),
         "planned_regions": int(scan.get("planned_regions", 0) or 0),
         "planned_resource_types": int(scan.get("planned_resource_types", 0) or 0),
     }

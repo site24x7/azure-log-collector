@@ -86,10 +86,16 @@ def test_scan_stops_when_the_ignore_list_cannot_be_read():
             load_ignore_list(strict=True)             # scans do not configure excluded resources
 
 
-def test_changing_a_tag_key_case_queues_a_scan():
-    # Tag keys match case-sensitively, so Env=prod -> env=prod changes what is excluded.
+def test_changing_a_tag_key_case_queues_no_scan():
+    # Tag names match case-insensitively (as in Azure), so Env=prod -> env=prod excludes the same resources.
     previous = dict(EMPTY, tags={"include": [], "exclude": ["Env=prod"]})
     _, _, _, queue = _run({"tags": {"include": [], "exclude": ["env=prod"]}}, previous=previous)
+    queue.set.assert_not_called()
+
+
+def test_a_new_tag_rule_queues_a_scan():
+    previous = dict(EMPTY, tags={"include": [], "exclude": ["env=prod"]})
+    _, _, _, queue = _run({"tags": {"include": [], "exclude": ["env=prod", "owner"]}}, previous=previous)
     queue.set.assert_called_once()
 
 

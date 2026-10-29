@@ -129,9 +129,10 @@ This takes 5–10 minutes and provisions:
   Contributor (the collector's own resource group)
 - Initial resource scan and diagnostic settings configuration
 
-Deployments from the ARM template start in **review mode**: the collector only discovers
-resources until an admin reviews the exclusions and log categories in Site24x7 and clicks
-**Start Collecting**. Set the template parameter `confirmAfterDiscovery=false` to skip that.
+The collector starts collecting as soon as it is deployed. The portal form's second page
+sets optional filters first: subscriptions to leave out, resource groups, regions and
+resource types to exclude, and tags to exclude or include. They are saved once as the
+collector's filters; change them later in Site24x7 (the collector's Resource Filters tab).
 
 At the end, you'll see the **Dashboard URL** — open it in your browser.
 

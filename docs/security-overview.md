@@ -2,7 +2,7 @@
 
 **Audience:** Customer security, compliance and platform teams evaluating the collector before deploying it into their Azure tenant.
 
-**Summary:** The collector is an Azure Function App that runs in your subscription. It uses its managed identity for Azure Resource Manager (ARM), storage account keys for reading the logs it buffers, and your Site24x7 Device Key for Site24x7. It creates diagnostic settings, regional storage accounts and Site24x7 log types. A deployment from the Azure portal template changes nothing until an admin starts collecting (`confirmAfterDiscovery`, on by default; turning it off, or installing with `setup/setup.sh`, which does not set `REVIEW_BEFORE_COLLECTING`, starts collecting at once). This document states what it can do and what it holds, including the open items in section 12.
+**Summary:** The collector is an Azure Function App that runs in your subscription. It uses its managed identity for Azure Resource Manager (ARM), storage account keys for reading the logs it buffers, and your Site24x7 Device Key for Site24x7. It creates diagnostic settings, regional storage accounts and Site24x7 log types. A deployment starts collecting at once, limited by the filters chosen on the portal form (section 4). This document states what it can do and what it holds, including the open items in section 12.
 
 ---
 
@@ -76,20 +76,14 @@ Monitoring Contributor covers diagnostic settings on every resource in the subsc
 
 ---
 
-## 4. Review before collecting
+## 4. Filters chosen at deployment
 
-A new portal-template deployment starts in review mode (`REVIEW_BEFORE_COLLECTING=true`; the template parameter `confirmAfterDiscovery` defaults to `true`).
+A deployment collects at once; there is no separate approval step. The portal form's second page decides what is collected before anything is created:
+- **Subscriptions:** every active subscription where the deploying user can grant access (Owner, or Contributor and User Access Administrator) is included, minus any they exclude. The subscription that hosts the collector is always included. The managed identity gets Reader and Monitoring Contributor in each included subscription, and nowhere else.
+- **Exclusions:** resource groups, regions and resource types.
+- **Tags:** resources with any of the excluded tags are not collected; if include tags are set, only resources with at least one of them are.
 
-**Until an admin starts collecting**, scans only:
-- discover resources;
-- apply the exclusions;
-- report what they would set up: the number of resources, regions and resource types.
-
-They create no storage accounts, Site24x7 log types or diagnostic settings, and remove nothing.
-
-**Starting collection:** an admin reviews the exclusions and log categories on the Site24x7 page, then clicks **Start Collecting** (`POST /api/start-collecting`). The approval is stored in the collector's storage. If it can't be read, scans stay read-only.
-
-Collectors installed before this feature, and deployments with `confirmAfterDiscovery=false`, collect without review.
+The template passes these to the collector once (`INITIAL_RESOURCE_FILTERS`). On first use the collector validates them and saves them as its filters, without overwriting filters that already exist. If they are invalid or cannot be saved, the scan stops instead of collecting everything. Later changes are made in Site24x7 (or the dashboard) and are never replaced by the deployment's values.
 
 ---
 
@@ -119,7 +113,7 @@ Once collecting, every scan (every 6 hours, and on demand) does the following:
 The collector registers with Site24x7 after every scan, on restart, when its key changes (see Operational freshness and connectivity). It sends:
 - its Function App name, address, resource ID, subscription, resource group and region;
 - its version and a status summary;
-- the **`site24x7` function key**. This is a dedicated key, not a host key, and the collector creates it on just these 14 functions: status, scan, processing, start-collecting, ignore-list (get and put), disabled-logtypes (get and post), entra-logtypes, general-logtype (put), settings, configured-resources, check-update and remove-diagnostic-settings.
+- the **`site24x7` function key**. This is a dedicated key, not a host key, and the collector creates it on just these 13 functions: status, scan, processing, ignore-list (get and put), disabled-logtypes (get and post), entra-logtypes, general-logtype (put), settings, configured-resources, check-update and remove-diagnostic-settings.
 
 Site24x7 stores the key encrypted. With it, Site24x7 admins can run those actions from the Site24x7 page. Each action is:
 - available to Site24x7 Super Admins and Admins only;
@@ -136,7 +130,7 @@ The resource group lock forbids deleting keys, so the collector revokes a functi
 
 ## 7. HTTP endpoints
 
-All 18 HTTP functions use `authLevel: function`. Each needs a valid function or host key, and there is no anonymous endpoint (including `/api/health`). They are: dashboard, status, health, debug, scan, start-collecting, processing, settings, ignore-list (get and put), disabled-logtypes (get and post), general-logtype (get and put), entra-logtypes, configured-resources, check-update, remove-diagnostic-settings.
+All 17 HTTP functions use `authLevel: function`. Each needs a valid function or host key, and there is no anonymous endpoint (including `/api/health`). They are: dashboard, status, health, debug, scan, processing, settings, ignore-list (get and put), disabled-logtypes (get and post), general-logtype (get and put), entra-logtypes, configured-resources, check-update, remove-diagnostic-settings.
 
 **Input checks**
 - Request bodies must be JSON objects.

@@ -461,11 +461,7 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
 
 <div class="toast" id="toast"></div>
 <div id="authBanner" class="badge-red" role="alert" style="display:none;position:fixed;top:0;left:0;right:0;z-index:101;padding:12px 20px;font-size:13px;line-height:1.5"></div>
-<div id="reviewBanner" role="status" style="display:none;margin:12px 20px;padding:12px 16px;border:1px solid var(--accent);border-radius:6px;font-size:13px;line-height:1.5">
-  <strong>Waiting for review.</strong> The collector has found your resources but has not changed anything yet:
-  no storage accounts, log types or diagnostic settings. Check the exclusions and log categories, then start collecting.
-  <button class="btn" id="startCollectingBtn" style="margin-left:12px" onclick="startCollecting()">Start Collecting</button>
-</div>
+
 
 <script>
 const BASE = window.location.origin;
@@ -646,7 +642,6 @@ async function loadStatus() {
       scanText = 'Scan in progress\u2026';
     }
     document.getElementById('lastScan').textContent = scanText;
-    document.getElementById('reviewBanner').style.display = s.review_pending ? 'block' : 'none';
 
     // Show the full phase stepper while a scan is running
     let phaseEl = document.getElementById('scanPhase');
@@ -1083,17 +1078,6 @@ async function removeDiagSettings() {
       ? 'A resource scan is running. Try again when it finishes.' : 'Removal failed', 'error');
   }
   setLoading('removeBtn', false);
-}
-
-async function startCollecting() {
-  if (!confirm('Start collecting?\\n\\nThe collector creates storage accounts and Site24x7 log types, and adds diagnostic settings to every resource not excluded.')) return;
-  setLoading('startCollectingBtn', true);
-  try {
-    await api('start-collecting', { method: 'POST' });
-    showToast('Collecting started; a resource scan is running');
-    setTimeout(loadStatus, 2000);
-  } catch (e) { showToast('Could not start collecting', 'error'); }
-  setLoading('startCollectingBtn', false);
 }
 
 // ─── Ignore List ─────────────────────────────────────────────────────────

@@ -7,6 +7,24 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.1.0-beta1] — unreleased
+
+- Filters on the deployment form. The portal form's second page includes every
+  active subscription where the deploying user can grant access (others can be
+  excluded) and sets optional exclusions: resource groups, regions, resource
+  types, and tags to exclude or include, picked from the subscription's existing
+  tags. The collector saves them once as its filters (`INITIAL_RESOURCE_FILTERS`)
+  and never overwrites filters changed later.
+- Collection starts at once: the review step (`confirmAfterDiscovery`,
+  `REVIEW_BEFORE_COLLECTING`, `POST /api/start-collecting` and the dashboard's
+  Start Collecting button) is removed.
+- The managed identity gets Reader and Monitoring Contributor in every included
+  subscription.
+- Tag names match case-insensitively, as in Azure. A `key=` rule (empty value)
+  matches only resources that have the tag with an empty value.
+- Resource-group exclusions accept full resource-group IDs, which exclude that
+  group in its own subscription only.
+
 ## [1.0.1] — 2026-10-28
 
 First stable release of 1.0.1, with the same code as 1.0.1-rc1. Compared with

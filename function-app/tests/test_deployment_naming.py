@@ -168,8 +168,9 @@ def test_resource_group_lock_is_created_last():
     assert not any(r['type'] == 'Microsoft.Authorization/locks' for r in nested)
     last = template['resources'][-1]
     assert last['properties']['template']['resources'][0]['type'] == 'Microsoft.Authorization/locks'
-    roles = next(r['name'] for r in template['resources'] if 'sub-roles' in r['name'])
-    assert set(last['dependsOn']) == {'s247-diag-logs-resources', roles}
+    # The roles are granted once per monitored subscription (a copy loop); the lock waits for all of them.
+    roles = next(r for r in template['resources'] if 'sub-roles' in r['name'])
+    assert set(last['dependsOn']) == {'s247-diag-logs-resources', roles['copy']['name']}
 
 
 def test_dashboard_output_uses_the_apps_real_host_name():
@@ -237,13 +238,18 @@ def test_deployment_form_defaults_and_texts():
     params = template['parameters']
     # The portal escapes angle brackets in descriptions, so they would show as &lt; &gt;.
     assert not any('<' in p['metadata']['description'] or '>' in p['metadata']['description'] for p in params.values())
-    assert params['confirmAfterDiscovery']['defaultValue'] == 'true'
+    # No review step: the deployment's optional filters are saved once as the collector's exclusions.
+    assert 'confirmAfterDiscovery' not in params
+    for name in ('excludeResourceGroups', 'excludeLocations', 'excludeResourceTypes', 'includeTags', 'excludeTags'):
+        assert params[name]['type'] == 'array' and params[name]['defaultValue'] == []
+        assert params[name]['metadata']['description'].startswith('Optional.')
     assert params['generalLogTypeEnabled']['defaultValue'] == 'false'
     for optional in ('resourceGroupName', 'deploymentSuffix'):
         assert params[optional]['metadata']['description'].startswith('Optional.')
     site = next(r for r in nested if r['type'] == 'Microsoft.Web/sites')
     settings = {s['name']: s['value'] for s in site['properties']['siteConfig']['appSettings']}
-    assert settings['REVIEW_BEFORE_COLLECTING'] == "[parameters('confirmAfterDiscovery')]"
+    assert 'REVIEW_BEFORE_COLLECTING' not in settings
+    assert settings['INITIAL_RESOURCE_FILTERS'] == "[string(parameters('resourceFilters'))]"
 
 
 def test_portal_form_matches_the_template():
@@ -251,10 +257,24 @@ def test_portal_form_matches_the_template():
     template, _ = _nested_resources()
     ui = json.loads((ROOT / 'setup/createUiDefinition.json').read_text())['parameters']
     outputs = ui['outputs']
-    assert set(outputs) - {'location'} == set(template['parameters'])
+    # Not on the form: the tag lists / tag filter objects for
+    # command-line deployments (the form's Name | Value tables fill includeTagRows/excludeTagRows).
+    form_params = set(template['parameters']) - {'includeTags', 'excludeTags', 'includeTagFilter', 'excludeTagFilter'}
+    assert set(outputs) - {'location'} == form_params
     assert outputs['location'] == '[location()]'
     fields = {f['name']: f for f in ui['basics']}
-    assert set(fields) == set(template['parameters'])
+    def controls(elements):
+        result = {}
+        for field in elements:
+            result[field['name']] = field
+            result.update(controls(field.get('elements', [])))
+        return result
+    filters = controls(ui['steps'][0]['elements'])
+    # Computed outputs: the subscriptions that pass the access check, and the tag tables' rows.
+    assert set(fields) | (set(filters) & form_params) == form_params - {'monitoredSubscriptionIds', 'includeTagRows', 'excludeTagRows'}
+    assert 'collectFrom' not in filters
+    assert filters['excludeSubscriptions']['label'] == 'Subscriptions to exclude'
+    assert filters['excludeSubscriptions']['defaultValue'] == []
     assert fields['resourceGroupName']['label'] == 'Resource group name (optional)'
     assert fields['deploymentSuffix']['label'] == 'Deployment suffix (optional)'
     assert fields['site24x7DeviceKey']['type'] == 'Microsoft.Common.PasswordBox'
@@ -263,7 +283,7 @@ def test_portal_form_matches_the_template():
     assert ui['config']['basics']['location']['allowedValues'] == check['properties']['template']['parameters']['location']['allowedValues']
     domains = [o['value'] for o in fields['site24x7Domain']['constraints']['allowedValues']]
     assert domains == template['parameters']['site24x7Domain']['allowedValues']
-    for name in ('confirmAfterDiscovery', 'generalLogTypeEnabled'):
+    for name in ('generalLogTypeEnabled',):
         values = {o['value'] for o in fields[name]['constraints']['allowedValues']}
         assert values == set(template['parameters'][name]['allowedValues'])
 
@@ -278,3 +298,92 @@ def test_application_insights_uses_the_collectors_own_workspace():
     assert ws['properties']['retentionInDays'] == 30
     assert ai['properties']['WorkspaceResourceId'] == "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('logWorkspaceName'))]"
     assert ai['dependsOn'] == [ai['properties']['WorkspaceResourceId']]
+
+
+def test_portal_exclusions_and_tag_rule_contract():
+    from shared.ignore_list import _MAX_STRING_LEN
+
+    template, _ = _nested_resources()
+    ui = json.loads((ROOT / 'setup/createUiDefinition.json').read_text())['parameters']
+    elements = ui['steps'][0]['elements']
+    sections = {e['name']: e for e in elements if e['type'] == 'Microsoft.Common.Section'}
+    assert [s['label'] for s in sections.values()] == ['Subscriptions', 'Resources to exclude', 'Exclude tags', 'Include tags']
+    controls = [e for section in sections.values() for e in section['elements']]
+    assert not any(e['name'].startswith('probe') for e in elements + controls)
+    # Tags: an Exclude tags and an Include tags section, each a line and a Name | Value table: the name
+    # from the subscription's existing tags, then one of that tag's existing values or Any value.
+    tags = sections['excludeTags']['elements'] + sections['includeTags']['elements']
+    assert [(e['name'], e['type']) for e in tags] == [
+        ('excludeHeading', 'Microsoft.Common.TextBlock'), ('excludeTagGrid', 'Microsoft.Common.EditableGrid'),
+        ('includeHeading', 'Microsoft.Common.TextBlock'), ('includeTagGrid', 'Microsoft.Common.EditableGrid')]
+    for grid in (e for e in tags if e['type'] == 'Microsoft.Common.EditableGrid'):
+        name, value = grid['constraints']['columns']
+        assert (name['header'], value['header']) == ('Name', 'Value')
+        assert name['element']['type'] == value['element']['type'] == 'Microsoft.Common.DropDown'
+        assert '.tagsApi.value' in name['element']['constraints']['allowedValues']
+        assert f".{grid['name'][:7]}Tags.{grid['name']}, $rowIndex" in value['element']['constraints']['allowedValues']
+        assert "'Any value'" in value['element']['constraints']['allowedValues']
+    for control in controls:
+        if control.get('multiselect'):
+            assert control['defaultValue'] == []
+    outputs = ui['outputs']
+    assert '.resources.excludeResourceGroups' in outputs['excludeResourceGroups']
+    rg = next(e for e in controls if e['name'] == 'excludeResourceGroups')
+    assert 'item.id' in rg['constraints']['allowedValues']
+    deployment = next(r for r in template['resources'] if r['name'] == 's247-diag-logs-resources')
+    expression = deployment['properties']['parameters']['resourceFilters']['value']
+    for mode in ('include', 'exclude'):
+        assert f'.{mode}Tags.{mode}TagGrid' in outputs[mode + 'TagRows']
+        # Rows without a name are dropped; the command-line filter objects still work.
+        assert f"filter(parameters('{mode}TagRows')" in expression
+        assert f"flatten(map(items(parameters('{mode}TagFilter'))" in expression
+        assert f"parameters('{mode}Tags')" in expression
+
+
+def test_portal_subscription_checks_have_recovery_and_scope_warnings():
+    ui = json.loads((ROOT / 'setup/createUiDefinition.json').read_text())['parameters']
+    elements = {e['name']: e for e in ui['steps'][0]['elements']}
+    assert elements['homePerm']['request']['path'].startswith('[concat(subscription().id,')
+    scope = {e['name']: e for e in elements['subscriptions']['elements']}
+    assert scope['accessCheck']['defaultValue'] == 'Automatic'
+    assert 'Retry 1' in json.dumps(scope['accessCheck'])
+    for index in range(10):
+        path = elements[f'check{index}']['request']['path']
+        assert '.subscriptions.accessCheck' in path
+        assert 'subsApi' not in path  # API-to-API dependencies do not fire in the portal.
+        assert 'decodeBase64' in path
+    assert 'Deploy another collector' in scope['limit']['options']['text']
+    assert 'nextLink' in scope['pagination']['visible']
+    monitored = ui['outputs']['monitoredSubscriptionIds']
+    assert '.subscriptions.excludeSubscriptions' in monitored
+    assert "equals(sub.state, 'Enabled')" in monitored
+    assert 'perm.notActions' in monitored and 'toLower(action)' in monitored
+    # Built-in role patterns, matched as exact (lower-case) entries: Owner '*', Contributor
+    # '*' minus Authorization writes, User Access Administrator 'Microsoft.Authorization/*'.
+    assert '"microsoft.authorization/roleassignments/write"' in monitored
+    assert '"microsoft.resources/deployments/write"' in monitored
+    assert '"microsoft.authorization/*/write"' in monitored
+
+
+def test_deployment_subscription_is_always_monitored_first():
+    # The collector manages its storage through the first monitored subscription (the one that
+    # hosts it); a form that failed to verify it must not leave it out.
+    d = json.loads((ROOT / 'setup/azuredeploy.json').read_text())
+    expression = d['variables']['monitoredSubscriptions']
+    assert expression.startswith("[concat(createArray(subscription().subscriptionId), filter(parameters('monitoredSubscriptionIds')")
+
+
+def test_picked_tag_names_and_values_are_kept_exactly():
+    # Names and values come from the subscription's existing tags: never trimmed or rewritten.
+    template, _ = _nested_resources()
+    deployment = next(r for r in template['resources'] if r['name'] == 's247-diag-logs-resources')
+    expression = deployment['properties']['parameters']['resourceFilters']['value']
+    assert 'trim(' not in expression
+    ui = json.loads((ROOT / 'setup/createUiDefinition.json').read_text())['parameters']
+    grid = next(e for s in ui['steps'][0]['elements'] if s['type'] == 'Microsoft.Common.Section'
+                for e in s['elements'] if e['name'] == 'excludeTagGrid')
+    names = grid['constraints']['columns'][0]['element']['constraints']['allowedValues']
+    values = grid['constraints']['columns'][1]['element']['constraints']['allowedValues']
+    # Names with "=" or quotes are not offered; there is no separate "(empty)" value.
+    assert "'='" in names and "substring(string(split('\"', ',')), 2, 1)" in names and 'createArray' not in names
+    assert '(empty)' not in values

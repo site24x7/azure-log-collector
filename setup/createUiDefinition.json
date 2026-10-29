@@ -125,27 +125,6 @@
         "visible": true
       },
       {
-        "name": "confirmAfterDiscovery",
-        "type": "Microsoft.Common.OptionsGroup",
-        "label": "Confirm after discovery",
-        "toolTip": "Recommended. After its first resource scan, the collector waits for an admin to confirm in Site24x7 before it sets up storage, log types and diagnostic settings.",
-        "defaultValue": "Yes (recommended)",
-        "constraints": {
-          "allowedValues": [
-            {
-              "label": "Yes (recommended)",
-              "value": "true"
-            },
-            {
-              "label": "No, start right away",
-              "value": "false"
-            }
-          ],
-          "required": true
-        },
-        "visible": true
-      },
-      {
         "name": "generalLogTypeEnabled",
         "type": "Microsoft.Common.OptionsGroup",
         "label": "Collect categories without a log type",
@@ -193,15 +172,540 @@
         "visible": true
       }
     ],
-    "steps": [],
+    "steps": [
+      {
+        "name": "filters",
+        "label": "Resource filters",
+        "elements": [
+          {
+            "name": "intro",
+            "type": "Microsoft.Common.TextBlock",
+            "visible": true,
+            "options": {
+              "text": "Optional. Leave filters empty to collect logs from all supported resources in the subscriptions included below. Collection starts automatically after deployment."
+            }
+          },
+          {
+            "name": "subsApi",
+            "type": "Microsoft.Solutions.ArmApiControl",
+            "request": {
+              "method": "GET",
+              "path": "/subscriptions?api-version=2022-12-01"
+            }
+          },
+          {
+            "name": "homePerm",
+            "type": "Microsoft.Solutions.ArmApiControl",
+            "request": {
+              "method": "GET",
+              "path": "[concat(subscription().id, '/providers/Microsoft.Authorization/permissions?api-version=2022-04-01')]"
+            }
+          },
+          {
+            "name": "rgApi",
+            "type": "Microsoft.Solutions.ArmApiControl",
+            "request": {
+              "method": "GET",
+              "path": "[concat(subscription().id, '/resourcegroups?api-version=2021-04-01')]"
+            }
+          },
+          {
+            "name": "locationsApi",
+            "type": "Microsoft.Solutions.ArmApiControl",
+            "request": {
+              "method": "GET",
+              "path": "[concat(subscription().id, '/locations?api-version=2022-12-01')]"
+            }
+          },
+          {
+            "name": "tagsApi",
+            "type": "Microsoft.Solutions.ArmApiControl",
+            "request": {
+              "method": "GET",
+              "path": "[concat(subscription().id, '/tagNames?api-version=2021-04-01')]"
+            }
+          },
+          {
+            "name": "subscriptions",
+            "type": "Microsoft.Common.Section",
+            "label": "Subscriptions",
+            "elements": [
+              {
+                "name": "scopeHelp",
+                "type": "Microsoft.Common.TextBlock",
+                "visible": true,
+                "options": {
+                  "text": "Every active subscription where you can grant access is included. The subscription chosen on Basics hosts the collector and is always included."
+                }
+              },
+              {
+                "name": "excludeSubscriptions",
+                "type": "Microsoft.Common.DropDown",
+                "label": "Subscriptions to exclude",
+                "toolTip": "Leave empty to include every verified subscription. The subscription chosen on Basics hosts the collector and is always included. The collector receives Reader and Monitoring Contributor access in each included subscription.",
+                "placeholder": "None",
+                "multiselect": true,
+                "filter": true,
+                "selectAll": false,
+                "defaultValue": [],
+                "visible": true,
+                "constraints": {
+                  "required": false,
+                  "allowedValues": "[map(filter(filter(coalesce(steps('filters').subsApi.value, parse('[]')), (sub) => equals(sub.state, 'Enabled')), (sub) => not(equals(sub.subscriptionId, subscription().subscriptionId))), (item) => parse(concat('{\"label\":', substring(string(map(take(filter(filter(coalesce(steps('filters').subsApi.value, parse('[]')), (sub) => equals(sub.state, 'Enabled')), (sub) => not(equals(sub.subscriptionId, subscription().subscriptionId))), 1), (unused) => item.displayName)), 1, sub(length(string(map(take(filter(filter(coalesce(steps('filters').subsApi.value, parse('[]')), (sub) => equals(sub.state, 'Enabled')), (sub) => not(equals(sub.subscriptionId, subscription().subscriptionId))), 1), (unused) => item.displayName))), 2)), ',\"value\":', substring(string(map(take(filter(filter(coalesce(steps('filters').subsApi.value, parse('[]')), (sub) => equals(sub.state, 'Enabled')), (sub) => not(equals(sub.subscriptionId, subscription().subscriptionId))), 1), (unused) => item.subscriptionId)), 1, sub(length(string(map(take(filter(filter(coalesce(steps('filters').subsApi.value, parse('[]')), (sub) => equals(sub.state, 'Enabled')), (sub) => not(equals(sub.subscriptionId, subscription().subscriptionId))), 1), (unused) => item.subscriptionId))), 2)), ',\"description\":', substring(string(map(take(filter(filter(coalesce(steps('filters').subsApi.value, parse('[]')), (sub) => equals(sub.state, 'Enabled')), (sub) => not(equals(sub.subscriptionId, subscription().subscriptionId))), 1), (unused) => item.subscriptionId)), 1, sub(length(string(map(take(filter(filter(coalesce(steps('filters').subsApi.value, parse('[]')), (sub) => equals(sub.state, 'Enabled')), (sub) => not(equals(sub.subscriptionId, subscription().subscriptionId))), 1), (unused) => item.subscriptionId))), 2)), '}')))]"
+                }
+              },
+              {
+                "name": "accessCheck",
+                "type": "Microsoft.Common.DropDown",
+                "label": "Subscription access check",
+                "defaultValue": "Automatic",
+                "visible": "[greater(length(filter(filter(coalesce(steps('filters').subsApi.value, parse('[]')), (sub) => equals(sub.state, 'Enabled')), (sub) => not(equals(sub.subscriptionId, subscription().subscriptionId)))), 0)]",
+                "toolTip": "If a subscription below has not been verified, choose Retry 1, then Retry 2 if needed. No permissions are changed by this check.",
+                "constraints": {
+                  "required": false,
+                  "allowedValues": "[parse(concat('[{\"label\":\"Automatic\",\"value\":\"0:', encodeBase64(string(map(filter(filter(coalesce(steps('filters').subsApi.value, parse('[]')), (sub) => equals(sub.state, 'Enabled')), (sub) => not(equals(sub.subscriptionId, subscription().subscriptionId))), (sub) => sub.subscriptionId))), '\"},{\"label\":\"Retry 1\",\"value\":\"1:', encodeBase64(string(map(filter(filter(coalesce(steps('filters').subsApi.value, parse('[]')), (sub) => equals(sub.state, 'Enabled')), (sub) => not(equals(sub.subscriptionId, subscription().subscriptionId))), (sub) => sub.subscriptionId))), '\"},{\"label\":\"Retry 2\",\"value\":\"2:', encodeBase64(string(map(filter(filter(coalesce(steps('filters').subsApi.value, parse('[]')), (sub) => equals(sub.state, 'Enabled')), (sub) => not(equals(sub.subscriptionId, subscription().subscriptionId))), (sub) => sub.subscriptionId))), '\"}]'))]"
+                }
+              },
+              {
+                "name": "summary",
+                "type": "Microsoft.Common.TextBlock",
+                "visible": true,
+                "options": {
+                  "text": "[if(empty(coalesce(steps('filters').subsApi.value, parse('[]'))), 'Loading subscriptions and checking access...', concat('Logs will be collected from ', string(length(filter(filter(coalesce(steps('filters').subsApi.value, parse('[]')), (sub) => equals(sub.state, 'Enabled')), (sub) => and(not(contains(coalesce(steps('filters').subscriptions.excludeSubscriptions, parse('[]')), sub.subscriptionId)), and(greater(length(filter(if(equals(sub.subscriptionId, subscription().subscriptionId), coalesce(steps('filters').homePerm.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 0), 1)), subscription().subscriptionId)), coalesce(steps('filters').check0.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 1), 1)), subscription().subscriptionId)), coalesce(steps('filters').check1.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 2), 1)), subscription().subscriptionId)), coalesce(steps('filters').check2.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 3), 1)), subscription().subscriptionId)), coalesce(steps('filters').check3.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 4), 1)), subscription().subscriptionId)), coalesce(steps('filters').check4.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 5), 1)), subscription().subscriptionId)), coalesce(steps('filters').check5.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 6), 1)), subscription().subscriptionId)), coalesce(steps('filters').check6.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 7), 1)), subscription().subscriptionId)), coalesce(steps('filters').check7.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 8), 1)), subscription().subscriptionId)), coalesce(steps('filters').check8.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 9), 1)), subscription().subscriptionId)), coalesce(steps('filters').check9.value, parse('[]')), parse('[]')))))))))))), (perm) => and(greater(length(filter(coalesce(perm.actions, parse('[]')), (action) => contains(parse('[\"*\", \"microsoft.authorization/*\", \"microsoft.authorization/roleassignments/*\", \"microsoft.authorization/roleassignments/write\"]'), toLower(action)))), 0), not(greater(length(filter(coalesce(perm.notActions, parse('[]')), (action) => contains(parse('[\"microsoft.authorization/*\", \"microsoft.authorization/*/write\", \"microsoft.authorization/roleassignments/*\", \"microsoft.authorization/roleassignments/write\", \"*/write\"]'), toLower(action)))), 0))))), 0), greater(length(filter(if(equals(sub.subscriptionId, subscription().subscriptionId), coalesce(steps('filters').homePerm.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 0), 1)), subscription().subscriptionId)), coalesce(steps('filters').check0.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 1), 1)), subscription().subscriptionId)), coalesce(steps('filters').check1.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 2), 1)), subscription().subscriptionId)), coalesce(steps('filters').check2.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 3), 1)), subscription().subscriptionId)), coalesce(steps('filters').check3.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 4), 1)), subscription().subscriptionId)), coalesce(steps('filters').check4.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 5), 1)), subscription().subscriptionId)), coalesce(steps('filters').check5.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 6), 1)), subscription().subscriptionId)), coalesce(steps('filters').check6.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 7), 1)), subscription().subscriptionId)), coalesce(steps('filters').check7.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 8), 1)), subscription().subscriptionId)), coalesce(steps('filters').check8.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 9), 1)), subscription().subscriptionId)), coalesce(steps('filters').check9.value, parse('[]')), parse('[]')))))))))))), (perm) => and(greater(length(filter(coalesce(perm.actions, parse('[]')), (action) => contains(parse('[\"*\", \"microsoft.resources/*\", \"microsoft.resources/deployments/*\", \"microsoft.resources/deployments/write\"]'), toLower(action)))), 0), not(greater(length(filter(coalesce(perm.notActions, parse('[]')), (action) => contains(parse('[\"microsoft.resources/*\", \"microsoft.resources/deployments/*\", \"microsoft.resources/deployments/write\", \"*/write\"]'), toLower(action)))), 0))))), 0)))))), ' of ', string(length(filter(coalesce(steps('filters').subsApi.value, parse('[]')), (sub) => equals(sub.state, 'Enabled')))), ' active subscriptions.'))]"
+                }
+              },
+              {
+                "name": "skipped",
+                "type": "Microsoft.Common.InfoBox",
+                "visible": "[and(greater(length(filter(filter(coalesce(steps('filters').subsApi.value, parse('[]')), (sub) => equals(sub.state, 'Enabled')), (sub) => and(not(contains(coalesce(steps('filters').subscriptions.excludeSubscriptions, parse('[]')), sub.subscriptionId)), not(contains(map(filter(filter(coalesce(steps('filters').subsApi.value, parse('[]')), (sub) => equals(sub.state, 'Enabled')), (sub) => and(not(contains(coalesce(steps('filters').subscriptions.excludeSubscriptions, parse('[]')), sub.subscriptionId)), and(greater(length(filter(if(equals(sub.subscriptionId, subscription().subscriptionId), coalesce(steps('filters').homePerm.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 0), 1)), subscription().subscriptionId)), coalesce(steps('filters').check0.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 1), 1)), subscription().subscriptionId)), coalesce(steps('filters').check1.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 2), 1)), subscription().subscriptionId)), coalesce(steps('filters').check2.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 3), 1)), subscription().subscriptionId)), coalesce(steps('filters').check3.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 4), 1)), subscription().subscriptionId)), coalesce(steps('filters').check4.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 5), 1)), subscription().subscriptionId)), coalesce(steps('filters').check5.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 6), 1)), subscription().subscriptionId)), coalesce(steps('filters').check6.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 7), 1)), subscription().subscriptionId)), coalesce(steps('filters').check7.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 8), 1)), subscription().subscriptionId)), coalesce(steps('filters').check8.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 9), 1)), subscription().subscriptionId)), coalesce(steps('filters').check9.value, parse('[]')), parse('[]')))))))))))), (perm) => and(greater(length(filter(coalesce(perm.actions, parse('[]')), (action) => contains(parse('[\"*\", \"microsoft.authorization/*\", \"microsoft.authorization/roleassignments/*\", \"microsoft.authorization/roleassignments/write\"]'), toLower(action)))), 0), not(greater(length(filter(coalesce(perm.notActions, parse('[]')), (action) => contains(parse('[\"microsoft.authorization/*\", \"microsoft.authorization/*/write\", \"microsoft.authorization/roleassignments/*\", \"microsoft.authorization/roleassignments/write\", \"*/write\"]'), toLower(action)))), 0))))), 0), greater(length(filter(if(equals(sub.subscriptionId, subscription().subscriptionId), coalesce(steps('filters').homePerm.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 0), 1)), subscription().subscriptionId)), coalesce(steps('filters').check0.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 1), 1)), subscription().subscriptionId)), coalesce(steps('filters').check1.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 2), 1)), subscription().subscriptionId)), coalesce(steps('filters').check2.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 3), 1)), subscription().subscriptionId)), coalesce(steps('filters').check3.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 4), 1)), subscription().subscriptionId)), coalesce(steps('filters').check4.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 5), 1)), subscription().subscriptionId)), coalesce(steps('filters').check5.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 6), 1)), subscription().subscriptionId)), coalesce(steps('filters').check6.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 7), 1)), subscription().subscriptionId)), coalesce(steps('filters').check7.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 8), 1)), subscription().subscriptionId)), coalesce(steps('filters').check8.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 9), 1)), subscription().subscriptionId)), coalesce(steps('filters').check9.value, parse('[]')), parse('[]')))))))))))), (perm) => and(greater(length(filter(coalesce(perm.actions, parse('[]')), (action) => contains(parse('[\"*\", \"microsoft.resources/*\", \"microsoft.resources/deployments/*\", \"microsoft.resources/deployments/write\"]'), toLower(action)))), 0), not(greater(length(filter(coalesce(perm.notActions, parse('[]')), (action) => contains(parse('[\"microsoft.resources/*\", \"microsoft.resources/deployments/*\", \"microsoft.resources/deployments/write\", \"*/write\"]'), toLower(action)))), 0))))), 0)))), (sub) => sub.subscriptionId), sub.subscriptionId))))), 0), greater(length(filter(filter(coalesce(steps('filters').subsApi.value, parse('[]')), (sub) => equals(sub.state, 'Enabled')), (sub) => and(not(contains(coalesce(steps('filters').subscriptions.excludeSubscriptions, parse('[]')), sub.subscriptionId)), and(greater(length(filter(if(equals(sub.subscriptionId, subscription().subscriptionId), coalesce(steps('filters').homePerm.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 0), 1)), subscription().subscriptionId)), coalesce(steps('filters').check0.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 1), 1)), subscription().subscriptionId)), coalesce(steps('filters').check1.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 2), 1)), subscription().subscriptionId)), coalesce(steps('filters').check2.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 3), 1)), subscription().subscriptionId)), coalesce(steps('filters').check3.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 4), 1)), subscription().subscriptionId)), coalesce(steps('filters').check4.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 5), 1)), subscription().subscriptionId)), coalesce(steps('filters').check5.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 6), 1)), subscription().subscriptionId)), coalesce(steps('filters').check6.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 7), 1)), subscription().subscriptionId)), coalesce(steps('filters').check7.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 8), 1)), subscription().subscriptionId)), coalesce(steps('filters').check8.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 9), 1)), subscription().subscriptionId)), coalesce(steps('filters').check9.value, parse('[]')), parse('[]')))))))))))), (perm) => and(greater(length(filter(coalesce(perm.actions, parse('[]')), (action) => contains(parse('[\"*\", \"microsoft.authorization/*\", \"microsoft.authorization/roleassignments/*\", \"microsoft.authorization/roleassignments/write\"]'), toLower(action)))), 0), not(greater(length(filter(coalesce(perm.notActions, parse('[]')), (action) => contains(parse('[\"microsoft.authorization/*\", \"microsoft.authorization/*/write\", \"microsoft.authorization/roleassignments/*\", \"microsoft.authorization/roleassignments/write\", \"*/write\"]'), toLower(action)))), 0))))), 0), greater(length(filter(if(equals(sub.subscriptionId, subscription().subscriptionId), coalesce(steps('filters').homePerm.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 0), 1)), subscription().subscriptionId)), coalesce(steps('filters').check0.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 1), 1)), subscription().subscriptionId)), coalesce(steps('filters').check1.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 2), 1)), subscription().subscriptionId)), coalesce(steps('filters').check2.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 3), 1)), subscription().subscriptionId)), coalesce(steps('filters').check3.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 4), 1)), subscription().subscriptionId)), coalesce(steps('filters').check4.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 5), 1)), subscription().subscriptionId)), coalesce(steps('filters').check5.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 6), 1)), subscription().subscriptionId)), coalesce(steps('filters').check6.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 7), 1)), subscription().subscriptionId)), coalesce(steps('filters').check7.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 8), 1)), subscription().subscriptionId)), coalesce(steps('filters').check8.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 9), 1)), subscription().subscriptionId)), coalesce(steps('filters').check9.value, parse('[]')), parse('[]')))))))))))), (perm) => and(greater(length(filter(coalesce(perm.actions, parse('[]')), (action) => contains(parse('[\"*\", \"microsoft.resources/*\", \"microsoft.resources/deployments/*\", \"microsoft.resources/deployments/write\"]'), toLower(action)))), 0), not(greater(length(filter(coalesce(perm.notActions, parse('[]')), (action) => contains(parse('[\"microsoft.resources/*\", \"microsoft.resources/deployments/*\", \"microsoft.resources/deployments/write\", \"*/write\"]'), toLower(action)))), 0))))), 0))))), 0))]",
+                "options": {
+                  "style": "Warning",
+                  "text": "[concat('Not included, because you cannot grant access there (Owner, or Contributor and User Access Administrator, is needed): ', replace(replace(replace(string(map(filter(filter(coalesce(steps('filters').subsApi.value, parse('[]')), (sub) => equals(sub.state, 'Enabled')), (sub) => and(not(contains(coalesce(steps('filters').subscriptions.excludeSubscriptions, parse('[]')), sub.subscriptionId)), not(contains(map(filter(filter(coalesce(steps('filters').subsApi.value, parse('[]')), (sub) => equals(sub.state, 'Enabled')), (sub) => and(not(contains(coalesce(steps('filters').subscriptions.excludeSubscriptions, parse('[]')), sub.subscriptionId)), and(greater(length(filter(if(equals(sub.subscriptionId, subscription().subscriptionId), coalesce(steps('filters').homePerm.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 0), 1)), subscription().subscriptionId)), coalesce(steps('filters').check0.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 1), 1)), subscription().subscriptionId)), coalesce(steps('filters').check1.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 2), 1)), subscription().subscriptionId)), coalesce(steps('filters').check2.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 3), 1)), subscription().subscriptionId)), coalesce(steps('filters').check3.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 4), 1)), subscription().subscriptionId)), coalesce(steps('filters').check4.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 5), 1)), subscription().subscriptionId)), coalesce(steps('filters').check5.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 6), 1)), subscription().subscriptionId)), coalesce(steps('filters').check6.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 7), 1)), subscription().subscriptionId)), coalesce(steps('filters').check7.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 8), 1)), subscription().subscriptionId)), coalesce(steps('filters').check8.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 9), 1)), subscription().subscriptionId)), coalesce(steps('filters').check9.value, parse('[]')), parse('[]')))))))))))), (perm) => and(greater(length(filter(coalesce(perm.actions, parse('[]')), (action) => contains(parse('[\"*\", \"microsoft.authorization/*\", \"microsoft.authorization/roleassignments/*\", \"microsoft.authorization/roleassignments/write\"]'), toLower(action)))), 0), not(greater(length(filter(coalesce(perm.notActions, parse('[]')), (action) => contains(parse('[\"microsoft.authorization/*\", \"microsoft.authorization/*/write\", \"microsoft.authorization/roleassignments/*\", \"microsoft.authorization/roleassignments/write\", \"*/write\"]'), toLower(action)))), 0))))), 0), greater(length(filter(if(equals(sub.subscriptionId, subscription().subscriptionId), coalesce(steps('filters').homePerm.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 0), 1)), subscription().subscriptionId)), coalesce(steps('filters').check0.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 1), 1)), subscription().subscriptionId)), coalesce(steps('filters').check1.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 2), 1)), subscription().subscriptionId)), coalesce(steps('filters').check2.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 3), 1)), subscription().subscriptionId)), coalesce(steps('filters').check3.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 4), 1)), subscription().subscriptionId)), coalesce(steps('filters').check4.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 5), 1)), subscription().subscriptionId)), coalesce(steps('filters').check5.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 6), 1)), subscription().subscriptionId)), coalesce(steps('filters').check6.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 7), 1)), subscription().subscriptionId)), coalesce(steps('filters').check7.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 8), 1)), subscription().subscriptionId)), coalesce(steps('filters').check8.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 9), 1)), subscription().subscriptionId)), coalesce(steps('filters').check9.value, parse('[]')), parse('[]')))))))))))), (perm) => and(greater(length(filter(coalesce(perm.actions, parse('[]')), (action) => contains(parse('[\"*\", \"microsoft.resources/*\", \"microsoft.resources/deployments/*\", \"microsoft.resources/deployments/write\"]'), toLower(action)))), 0), not(greater(length(filter(coalesce(perm.notActions, parse('[]')), (action) => contains(parse('[\"microsoft.resources/*\", \"microsoft.resources/deployments/*\", \"microsoft.resources/deployments/write\", \"*/write\"]'), toLower(action)))), 0))))), 0)))), (sub) => sub.subscriptionId), sub.subscriptionId)))), (sub) => sub.displayName)), '[', ''), ']', ''), '\"', ''), '. If a subscription was not checked yet, choose Retry in Subscription access check.')]"
+                }
+              },
+              {
+                "name": "limit",
+                "type": "Microsoft.Common.InfoBox",
+                "visible": "[greater(length(filter(filter(coalesce(steps('filters').subsApi.value, parse('[]')), (sub) => equals(sub.state, 'Enabled')), (sub) => not(equals(sub.subscriptionId, subscription().subscriptionId)))), 10)]",
+                "options": {
+                  "style": "Warning",
+                  "text": "One collector can include the subscription chosen on Basics and up to 10 more active subscriptions. Deploy another collector for the other subscriptions."
+                }
+              },
+              {
+                "name": "pagination",
+                "type": "Microsoft.Common.InfoBox",
+                "visible": "[not(empty(coalesce(steps('filters').subsApi.nextLink, '')))]",
+                "options": {
+                  "style": "Warning",
+                  "text": "Azure returned only part of the subscription list, so some subscriptions are not shown. Deploy another collector for them."
+                }
+              },
+              {
+                "name": "none",
+                "type": "Microsoft.Common.InfoBox",
+                "visible": "[and(not(empty(coalesce(steps('filters').subsApi.value, parse('[]')))), empty(filter(filter(coalesce(steps('filters').subsApi.value, parse('[]')), (sub) => equals(sub.state, 'Enabled')), (sub) => and(not(contains(coalesce(steps('filters').subscriptions.excludeSubscriptions, parse('[]')), sub.subscriptionId)), and(greater(length(filter(if(equals(sub.subscriptionId, subscription().subscriptionId), coalesce(steps('filters').homePerm.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 0), 1)), subscription().subscriptionId)), coalesce(steps('filters').check0.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 1), 1)), subscription().subscriptionId)), coalesce(steps('filters').check1.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 2), 1)), subscription().subscriptionId)), coalesce(steps('filters').check2.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 3), 1)), subscription().subscriptionId)), coalesce(steps('filters').check3.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 4), 1)), subscription().subscriptionId)), coalesce(steps('filters').check4.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 5), 1)), subscription().subscriptionId)), coalesce(steps('filters').check5.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 6), 1)), subscription().subscriptionId)), coalesce(steps('filters').check6.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 7), 1)), subscription().subscriptionId)), coalesce(steps('filters').check7.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 8), 1)), subscription().subscriptionId)), coalesce(steps('filters').check8.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 9), 1)), subscription().subscriptionId)), coalesce(steps('filters').check9.value, parse('[]')), parse('[]')))))))))))), (perm) => and(greater(length(filter(coalesce(perm.actions, parse('[]')), (action) => contains(parse('[\"*\", \"microsoft.authorization/*\", \"microsoft.authorization/roleassignments/*\", \"microsoft.authorization/roleassignments/write\"]'), toLower(action)))), 0), not(greater(length(filter(coalesce(perm.notActions, parse('[]')), (action) => contains(parse('[\"microsoft.authorization/*\", \"microsoft.authorization/*/write\", \"microsoft.authorization/roleassignments/*\", \"microsoft.authorization/roleassignments/write\", \"*/write\"]'), toLower(action)))), 0))))), 0), greater(length(filter(if(equals(sub.subscriptionId, subscription().subscriptionId), coalesce(steps('filters').homePerm.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 0), 1)), subscription().subscriptionId)), coalesce(steps('filters').check0.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 1), 1)), subscription().subscriptionId)), coalesce(steps('filters').check1.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 2), 1)), subscription().subscriptionId)), coalesce(steps('filters').check2.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 3), 1)), subscription().subscriptionId)), coalesce(steps('filters').check3.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 4), 1)), subscription().subscriptionId)), coalesce(steps('filters').check4.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 5), 1)), subscription().subscriptionId)), coalesce(steps('filters').check5.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 6), 1)), subscription().subscriptionId)), coalesce(steps('filters').check6.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 7), 1)), subscription().subscriptionId)), coalesce(steps('filters').check7.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 8), 1)), subscription().subscriptionId)), coalesce(steps('filters').check8.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 9), 1)), subscription().subscriptionId)), coalesce(steps('filters').check9.value, parse('[]')), parse('[]')))))))))))), (perm) => and(greater(length(filter(coalesce(perm.actions, parse('[]')), (action) => contains(parse('[\"*\", \"microsoft.resources/*\", \"microsoft.resources/deployments/*\", \"microsoft.resources/deployments/write\"]'), toLower(action)))), 0), not(greater(length(filter(coalesce(perm.notActions, parse('[]')), (action) => contains(parse('[\"microsoft.resources/*\", \"microsoft.resources/deployments/*\", \"microsoft.resources/deployments/write\", \"*/write\"]'), toLower(action)))), 0))))), 0))))))]",
+                "options": {
+                  "style": "Warning",
+                  "text": "No subscription can be included: you need Owner (or Contributor and User Access Administrator) in at least the subscription chosen on Basics."
+                }
+              }
+            ],
+            "visible": true
+          },
+          {
+            "name": "check0",
+            "type": "Microsoft.Solutions.ArmApiControl",
+            "request": {
+              "method": "GET",
+              "path": "[concat('/subscriptions/', coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 0), 1)), subscription().subscriptionId), '/providers/Microsoft.Authorization/permissions?api-version=2022-04-01&uiCheck=', first(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))]"
+            }
+          },
+          {
+            "name": "check1",
+            "type": "Microsoft.Solutions.ArmApiControl",
+            "request": {
+              "method": "GET",
+              "path": "[concat('/subscriptions/', coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 1), 1)), subscription().subscriptionId), '/providers/Microsoft.Authorization/permissions?api-version=2022-04-01&uiCheck=', first(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))]"
+            }
+          },
+          {
+            "name": "check2",
+            "type": "Microsoft.Solutions.ArmApiControl",
+            "request": {
+              "method": "GET",
+              "path": "[concat('/subscriptions/', coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 2), 1)), subscription().subscriptionId), '/providers/Microsoft.Authorization/permissions?api-version=2022-04-01&uiCheck=', first(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))]"
+            }
+          },
+          {
+            "name": "check3",
+            "type": "Microsoft.Solutions.ArmApiControl",
+            "request": {
+              "method": "GET",
+              "path": "[concat('/subscriptions/', coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 3), 1)), subscription().subscriptionId), '/providers/Microsoft.Authorization/permissions?api-version=2022-04-01&uiCheck=', first(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))]"
+            }
+          },
+          {
+            "name": "check4",
+            "type": "Microsoft.Solutions.ArmApiControl",
+            "request": {
+              "method": "GET",
+              "path": "[concat('/subscriptions/', coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 4), 1)), subscription().subscriptionId), '/providers/Microsoft.Authorization/permissions?api-version=2022-04-01&uiCheck=', first(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))]"
+            }
+          },
+          {
+            "name": "check5",
+            "type": "Microsoft.Solutions.ArmApiControl",
+            "request": {
+              "method": "GET",
+              "path": "[concat('/subscriptions/', coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 5), 1)), subscription().subscriptionId), '/providers/Microsoft.Authorization/permissions?api-version=2022-04-01&uiCheck=', first(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))]"
+            }
+          },
+          {
+            "name": "check6",
+            "type": "Microsoft.Solutions.ArmApiControl",
+            "request": {
+              "method": "GET",
+              "path": "[concat('/subscriptions/', coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 6), 1)), subscription().subscriptionId), '/providers/Microsoft.Authorization/permissions?api-version=2022-04-01&uiCheck=', first(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))]"
+            }
+          },
+          {
+            "name": "check7",
+            "type": "Microsoft.Solutions.ArmApiControl",
+            "request": {
+              "method": "GET",
+              "path": "[concat('/subscriptions/', coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 7), 1)), subscription().subscriptionId), '/providers/Microsoft.Authorization/permissions?api-version=2022-04-01&uiCheck=', first(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))]"
+            }
+          },
+          {
+            "name": "check8",
+            "type": "Microsoft.Solutions.ArmApiControl",
+            "request": {
+              "method": "GET",
+              "path": "[concat('/subscriptions/', coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 8), 1)), subscription().subscriptionId), '/providers/Microsoft.Authorization/permissions?api-version=2022-04-01&uiCheck=', first(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))]"
+            }
+          },
+          {
+            "name": "check9",
+            "type": "Microsoft.Solutions.ArmApiControl",
+            "request": {
+              "method": "GET",
+              "path": "[concat('/subscriptions/', coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 9), 1)), subscription().subscriptionId), '/providers/Microsoft.Authorization/permissions?api-version=2022-04-01&uiCheck=', first(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))]"
+            }
+          },
+          {
+            "name": "resources",
+            "type": "Microsoft.Common.Section",
+            "label": "Resources to exclude",
+            "elements": [
+              {
+                "name": "resourceHelp",
+                "type": "Microsoft.Common.TextBlock",
+                "visible": true,
+                "options": {
+                  "text": "Leave these lists empty to collect from all supported resources in the included subscriptions. Region and resource-type exclusions apply across every included subscription."
+                }
+              },
+              {
+                "name": "excludeResourceGroups",
+                "type": "Microsoft.Common.DropDown",
+                "label": "Resource groups to exclude",
+                "toolTip": "Resources in these resource groups are not collected. Lists the groups of the subscription chosen on Basics; groups in other subscriptions can be excluded in Site24x7 after deployment.",
+                "placeholder": "None",
+                "multiselect": true,
+                "filter": true,
+                "selectAll": false,
+                "defaultValue": [],
+                "visible": true,
+                "constraints": {
+                  "required": false,
+                  "allowedValues": "[map(coalesce(steps('filters').rgApi.value, parse('[]')), (item) => parse(concat('{\"label\":\"', item.name, '\",\"value\":\"', item.id, '\"', '}')))]"
+                },
+                "filterPlaceholder": "Search..."
+              },
+              {
+                "name": "rgPage",
+                "type": "Microsoft.Common.InfoBox",
+                "visible": "[not(empty(coalesce(steps('filters').rgApi.nextLink, '')))]",
+                "options": {
+                  "style": "Warning",
+                  "text": "The resource-group list is incomplete. Additional groups can be excluded in Site24x7 after deployment."
+                }
+              },
+              {
+                "name": "excludeLocations",
+                "type": "Microsoft.Common.DropDown",
+                "label": "Regions to exclude",
+                "toolTip": "Resources in these regions are not collected. This is about your resources, not the collector's own region.",
+                "placeholder": "None",
+                "multiselect": true,
+                "filter": true,
+                "selectAll": false,
+                "defaultValue": [],
+                "visible": true,
+                "constraints": {
+                  "required": false,
+                  "allowedValues": "[map(filter(coalesce(steps('filters').locationsApi.value, parse('[]')), (item) => equals(item.metadata.regionType, 'Physical')), (item) => parse(concat('{\"label\":\"', item.displayName, '\",\"value\":\"', item.name, '\"}')))]"
+                },
+                "filterPlaceholder": "Search..."
+              },
+              {
+                "name": "excludeResourceTypes",
+                "type": "Microsoft.Common.DropDown",
+                "label": "Resource types to exclude",
+                "toolTip": "Resources of these types are not collected in any included subscription. The list shows common types; other types can be excluded in Site24x7 after deployment.",
+                "placeholder": "None",
+                "multiselect": true,
+                "filter": true,
+                "selectAll": false,
+                "defaultValue": [],
+                "visible": true,
+                "constraints": {
+                  "required": false,
+                  "allowedValues": [
+                    {
+                      "label": "API Management",
+                      "description": "Microsoft.ApiManagement/service",
+                      "value": "Microsoft.ApiManagement/service"
+                    },
+                    {
+                      "label": "App Service and Function Apps",
+                      "description": "Microsoft.Web/sites",
+                      "value": "Microsoft.Web/sites"
+                    },
+                    {
+                      "label": "Application Gateway",
+                      "description": "Microsoft.Network/applicationGateways",
+                      "value": "Microsoft.Network/applicationGateways"
+                    },
+                    {
+                      "label": "Azure Firewall",
+                      "description": "Microsoft.Network/azureFirewalls",
+                      "value": "Microsoft.Network/azureFirewalls"
+                    },
+                    {
+                      "label": "Container Registry",
+                      "description": "Microsoft.ContainerRegistry/registries",
+                      "value": "Microsoft.ContainerRegistry/registries"
+                    },
+                    {
+                      "label": "Cosmos DB",
+                      "description": "Microsoft.DocumentDB/databaseAccounts",
+                      "value": "Microsoft.DocumentDB/databaseAccounts"
+                    },
+                    {
+                      "label": "Data Factory",
+                      "description": "Microsoft.DataFactory/factories",
+                      "value": "Microsoft.DataFactory/factories"
+                    },
+                    {
+                      "label": "Event Hubs",
+                      "description": "Microsoft.EventHub/namespaces",
+                      "value": "Microsoft.EventHub/namespaces"
+                    },
+                    {
+                      "label": "Front Door and CDN profiles",
+                      "description": "Microsoft.Cdn/profiles",
+                      "value": "Microsoft.Cdn/profiles"
+                    },
+                    {
+                      "label": "Key Vault",
+                      "description": "Microsoft.KeyVault/vaults",
+                      "value": "Microsoft.KeyVault/vaults"
+                    },
+                    {
+                      "label": "Kubernetes Service (AKS)",
+                      "description": "Microsoft.ContainerService/managedClusters",
+                      "value": "Microsoft.ContainerService/managedClusters"
+                    },
+                    {
+                      "label": "Load Balancer",
+                      "description": "Microsoft.Network/loadBalancers",
+                      "value": "Microsoft.Network/loadBalancers"
+                    },
+                    {
+                      "label": "Logic Apps",
+                      "description": "Microsoft.Logic/workflows",
+                      "value": "Microsoft.Logic/workflows"
+                    },
+                    {
+                      "label": "Network Security Group",
+                      "description": "Microsoft.Network/networkSecurityGroups",
+                      "value": "Microsoft.Network/networkSecurityGroups"
+                    },
+                    {
+                      "label": "Public IP address",
+                      "description": "Microsoft.Network/publicIPAddresses",
+                      "value": "Microsoft.Network/publicIPAddresses"
+                    },
+                    {
+                      "label": "Service Bus",
+                      "description": "Microsoft.ServiceBus/namespaces",
+                      "value": "Microsoft.ServiceBus/namespaces"
+                    },
+                    {
+                      "label": "SQL Database",
+                      "description": "Microsoft.Sql/servers/databases",
+                      "value": "Microsoft.Sql/servers/databases"
+                    },
+                    {
+                      "label": "Storage account",
+                      "description": "Microsoft.Storage/storageAccounts",
+                      "value": "Microsoft.Storage/storageAccounts"
+                    }
+                  ]
+                },
+                "filterPlaceholder": "Search..."
+              }
+            ],
+            "visible": true
+          },
+          {
+            "name": "excludeTags",
+            "type": "Microsoft.Common.Section",
+            "label": "Exclude tags",
+            "elements": [
+              {
+                "name": "excludeHeading",
+                "type": "Microsoft.Common.TextBlock",
+                "visible": true,
+                "options": {
+                  "text": "Resources with any of these tags are not collected."
+                }
+              },
+              {
+                "name": "excludeTagGrid",
+                "type": "Microsoft.Common.EditableGrid",
+                "label": "Tags to exclude",
+                "ariaLabel": "Tags to exclude",
+                "constraints": {
+                  "width": "Full",
+                  "rows": {
+                    "count": {
+                      "min": 0,
+                      "max": 50
+                    }
+                  },
+                  "columns": [
+                    {
+                      "id": "key",
+                      "header": "Name",
+                      "width": "1fr",
+                      "element": {
+                        "type": "Microsoft.Common.DropDown",
+                        "filter": true,
+                        "placeholder": "Choose a tag",
+                        "constraints": {
+                          "required": false,
+                          "allowedValues": "[map(filter(filter(skip(split(string(coalesce(steps('filters').tagsApi.value, parse('[]'))), '/tagNames/'), 1), (p) => and(contains(p, '\"'), not(empty(first(split(p, '\"')))), not(contains(first(split(p, '\"')), substring(string(split('\"', ',')), 2, 1))), not(contains(first(split(first(split(p, '\"')), '/tagValues/')), '=')), if(contains(first(split(p, '\"')), '/tagValues/'), equals(length(split(first(split(p, '\"')), '/tagValues/')), 2), or(contains(string(coalesce(steps('filters').tagsApi.value, parse('[]'))), concat('\"tagName\":\"', first(split(p, '\"')), '\"')), contains(string(coalesce(steps('filters').tagsApi.value, parse('[]'))), concat('\"tagName\": \"', first(split(p, '\"')), '\"')))), not(or(startsWith(first(split(p, '\"')), 'aks-managed-'), startsWith(first(split(p, '\"')), 'hidden-'))))), (p) => not(contains(first(split(p, '\"')), '/tagValues/'))), (p) => parse(concat('{\"label\":\"', first(split(p, '\"')), '\",\"value\":\"', first(split(p, '\"')), '\"}')))]"
+                        }
+                      }
+                    },
+                    {
+                      "id": "value",
+                      "header": "Value",
+                      "width": "1fr",
+                      "element": {
+                        "type": "Microsoft.Common.DropDown",
+                        "filter": true,
+                        "placeholder": "Any value",
+                        "constraints": {
+                          "required": false,
+                          "allowedValues": "[map(filter(filter(skip(split(string(coalesce(steps('filters').tagsApi.value, parse('[]'))), '/tagNames/'), 1), (p) => and(contains(p, '\"'), not(empty(first(split(p, '\"')))), not(contains(first(split(p, '\"')), substring(string(split('\"', ',')), 2, 1))), not(contains(first(split(first(split(p, '\"')), '/tagValues/')), '=')), if(contains(first(split(p, '\"')), '/tagValues/'), equals(length(split(first(split(p, '\"')), '/tagValues/')), 2), or(contains(string(coalesce(steps('filters').tagsApi.value, parse('[]'))), concat('\"tagName\":\"', first(split(p, '\"')), '\"')), contains(string(coalesce(steps('filters').tagsApi.value, parse('[]'))), concat('\"tagName\": \"', first(split(p, '\"')), '\"')))), not(or(startsWith(first(split(p, '\"')), 'aks-managed-'), startsWith(first(split(p, '\"')), 'hidden-'))))), (p) => or(equals(first(split(p, '\"')), coalesce(last(take(steps('filters').excludeTags.excludeTagGrid, $rowIndex)).key, '')), and(startsWith(first(split(p, '\"')), concat(coalesce(last(take(steps('filters').excludeTags.excludeTagGrid, $rowIndex)).key, ''), '/tagValues/')), not(empty(last(split(first(split(p, '\"')), '/tagValues/'))))))), (p) => parse(concat('{\"label\":\"', if(contains(first(split(p, '\"')), '/tagValues/'), last(split(first(split(p, '\"')), '/tagValues/')), 'Any value'), '\",\"value\":\"', if(contains(first(split(p, '\"')), '/tagValues/'), last(split(first(split(p, '\"')), '/tagValues/')), ''), '\"}')))]"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "visible": true
+          },
+          {
+            "name": "includeTags",
+            "type": "Microsoft.Common.Section",
+            "label": "Include tags",
+            "elements": [
+              {
+                "name": "includeHeading",
+                "type": "Microsoft.Common.TextBlock",
+                "visible": true,
+                "options": {
+                  "text": "Only resources with at least one of these tags are collected. Leave empty to collect all."
+                }
+              },
+              {
+                "name": "includeTagGrid",
+                "type": "Microsoft.Common.EditableGrid",
+                "label": "Tags to collect",
+                "ariaLabel": "Tags to collect",
+                "constraints": {
+                  "width": "Full",
+                  "rows": {
+                    "count": {
+                      "min": 0,
+                      "max": 50
+                    }
+                  },
+                  "columns": [
+                    {
+                      "id": "key",
+                      "header": "Name",
+                      "width": "1fr",
+                      "element": {
+                        "type": "Microsoft.Common.DropDown",
+                        "filter": true,
+                        "placeholder": "Choose a tag",
+                        "constraints": {
+                          "required": false,
+                          "allowedValues": "[map(filter(filter(skip(split(string(coalesce(steps('filters').tagsApi.value, parse('[]'))), '/tagNames/'), 1), (p) => and(contains(p, '\"'), not(empty(first(split(p, '\"')))), not(contains(first(split(p, '\"')), substring(string(split('\"', ',')), 2, 1))), not(contains(first(split(first(split(p, '\"')), '/tagValues/')), '=')), if(contains(first(split(p, '\"')), '/tagValues/'), equals(length(split(first(split(p, '\"')), '/tagValues/')), 2), or(contains(string(coalesce(steps('filters').tagsApi.value, parse('[]'))), concat('\"tagName\":\"', first(split(p, '\"')), '\"')), contains(string(coalesce(steps('filters').tagsApi.value, parse('[]'))), concat('\"tagName\": \"', first(split(p, '\"')), '\"')))), not(or(startsWith(first(split(p, '\"')), 'aks-managed-'), startsWith(first(split(p, '\"')), 'hidden-'))))), (p) => not(contains(first(split(p, '\"')), '/tagValues/'))), (p) => parse(concat('{\"label\":\"', first(split(p, '\"')), '\",\"value\":\"', first(split(p, '\"')), '\"}')))]"
+                        }
+                      }
+                    },
+                    {
+                      "id": "value",
+                      "header": "Value",
+                      "width": "1fr",
+                      "element": {
+                        "type": "Microsoft.Common.DropDown",
+                        "filter": true,
+                        "placeholder": "Any value",
+                        "constraints": {
+                          "required": false,
+                          "allowedValues": "[map(filter(filter(skip(split(string(coalesce(steps('filters').tagsApi.value, parse('[]'))), '/tagNames/'), 1), (p) => and(contains(p, '\"'), not(empty(first(split(p, '\"')))), not(contains(first(split(p, '\"')), substring(string(split('\"', ',')), 2, 1))), not(contains(first(split(first(split(p, '\"')), '/tagValues/')), '=')), if(contains(first(split(p, '\"')), '/tagValues/'), equals(length(split(first(split(p, '\"')), '/tagValues/')), 2), or(contains(string(coalesce(steps('filters').tagsApi.value, parse('[]'))), concat('\"tagName\":\"', first(split(p, '\"')), '\"')), contains(string(coalesce(steps('filters').tagsApi.value, parse('[]'))), concat('\"tagName\": \"', first(split(p, '\"')), '\"')))), not(or(startsWith(first(split(p, '\"')), 'aks-managed-'), startsWith(first(split(p, '\"')), 'hidden-'))))), (p) => or(equals(first(split(p, '\"')), coalesce(last(take(steps('filters').includeTags.includeTagGrid, $rowIndex)).key, '')), and(startsWith(first(split(p, '\"')), concat(coalesce(last(take(steps('filters').includeTags.includeTagGrid, $rowIndex)).key, ''), '/tagValues/')), not(empty(last(split(first(split(p, '\"')), '/tagValues/'))))))), (p) => parse(concat('{\"label\":\"', if(contains(first(split(p, '\"')), '/tagValues/'), last(split(first(split(p, '\"')), '/tagValues/')), 'Any value'), '\",\"value\":\"', if(contains(first(split(p, '\"')), '/tagValues/'), last(split(first(split(p, '\"')), '/tagValues/')), ''), '\"}')))]"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "visible": true
+          },
+          {
+            "name": "laterNote",
+            "type": "Microsoft.Common.TextBlock",
+            "visible": true,
+            "options": {
+              "text": "You can change all these filters later in the Site24x7 console, in the collector's Resource Filters tab."
+            }
+          }
+        ]
+      }
+    ],
     "outputs": {
       "location": "[location()]",
       "site24x7DeviceKey": "[basics('site24x7DeviceKey')]",
       "site24x7Domain": "[basics('site24x7Domain')]",
-      "confirmAfterDiscovery": "[basics('confirmAfterDiscovery')]",
       "generalLogTypeEnabled": "[basics('generalLogTypeEnabled')]",
       "resourceGroupName": "[basics('resourceGroupName')]",
-      "deploymentSuffix": "[basics('deploymentSuffix')]"
+      "deploymentSuffix": "[basics('deploymentSuffix')]",
+      "monitoredSubscriptionIds": "[map(filter(filter(coalesce(steps('filters').subsApi.value, parse('[]')), (sub) => equals(sub.state, 'Enabled')), (sub) => and(not(contains(coalesce(steps('filters').subscriptions.excludeSubscriptions, parse('[]')), sub.subscriptionId)), and(greater(length(filter(if(equals(sub.subscriptionId, subscription().subscriptionId), coalesce(steps('filters').homePerm.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 0), 1)), subscription().subscriptionId)), coalesce(steps('filters').check0.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 1), 1)), subscription().subscriptionId)), coalesce(steps('filters').check1.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 2), 1)), subscription().subscriptionId)), coalesce(steps('filters').check2.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 3), 1)), subscription().subscriptionId)), coalesce(steps('filters').check3.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 4), 1)), subscription().subscriptionId)), coalesce(steps('filters').check4.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 5), 1)), subscription().subscriptionId)), coalesce(steps('filters').check5.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 6), 1)), subscription().subscriptionId)), coalesce(steps('filters').check6.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 7), 1)), subscription().subscriptionId)), coalesce(steps('filters').check7.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 8), 1)), subscription().subscriptionId)), coalesce(steps('filters').check8.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 9), 1)), subscription().subscriptionId)), coalesce(steps('filters').check9.value, parse('[]')), parse('[]')))))))))))), (perm) => and(greater(length(filter(coalesce(perm.actions, parse('[]')), (action) => contains(parse('[\"*\", \"microsoft.authorization/*\", \"microsoft.authorization/roleassignments/*\", \"microsoft.authorization/roleassignments/write\"]'), toLower(action)))), 0), not(greater(length(filter(coalesce(perm.notActions, parse('[]')), (action) => contains(parse('[\"microsoft.authorization/*\", \"microsoft.authorization/*/write\", \"microsoft.authorization/roleassignments/*\", \"microsoft.authorization/roleassignments/write\", \"*/write\"]'), toLower(action)))), 0))))), 0), greater(length(filter(if(equals(sub.subscriptionId, subscription().subscriptionId), coalesce(steps('filters').homePerm.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 0), 1)), subscription().subscriptionId)), coalesce(steps('filters').check0.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 1), 1)), subscription().subscriptionId)), coalesce(steps('filters').check1.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 2), 1)), subscription().subscriptionId)), coalesce(steps('filters').check2.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 3), 1)), subscription().subscriptionId)), coalesce(steps('filters').check3.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 4), 1)), subscription().subscriptionId)), coalesce(steps('filters').check4.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 5), 1)), subscription().subscriptionId)), coalesce(steps('filters').check5.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 6), 1)), subscription().subscriptionId)), coalesce(steps('filters').check6.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 7), 1)), subscription().subscriptionId)), coalesce(steps('filters').check7.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 8), 1)), subscription().subscriptionId)), coalesce(steps('filters').check8.value, parse('[]')), if(equals(sub.subscriptionId, coalesce(first(take(skip(parse(decodeBase64(last(split(if(empty(steps('filters').subscriptions.accessCheck), '0:W10=', steps('filters').subscriptions.accessCheck), ':')))), 9), 1)), subscription().subscriptionId)), coalesce(steps('filters').check9.value, parse('[]')), parse('[]')))))))))))), (perm) => and(greater(length(filter(coalesce(perm.actions, parse('[]')), (action) => contains(parse('[\"*\", \"microsoft.resources/*\", \"microsoft.resources/deployments/*\", \"microsoft.resources/deployments/write\"]'), toLower(action)))), 0), not(greater(length(filter(coalesce(perm.notActions, parse('[]')), (action) => contains(parse('[\"microsoft.resources/*\", \"microsoft.resources/deployments/*\", \"microsoft.resources/deployments/write\", \"*/write\"]'), toLower(action)))), 0))))), 0)))), (sub) => sub.subscriptionId)]",
+      "excludeResourceGroups": "[if(empty(steps('filters').resources.excludeResourceGroups), parse('[]'), steps('filters').resources.excludeResourceGroups)]",
+      "excludeLocations": "[if(empty(steps('filters').resources.excludeLocations), parse('[]'), steps('filters').resources.excludeLocations)]",
+      "excludeResourceTypes": "[if(empty(steps('filters').resources.excludeResourceTypes), parse('[]'), steps('filters').resources.excludeResourceTypes)]",
+      "includeTagRows": "[coalesce(steps('filters').includeTags.includeTagGrid, parse('[]'))]",
+      "excludeTagRows": "[coalesce(steps('filters').excludeTags.excludeTagGrid, parse('[]'))]"
     }
   }
 }

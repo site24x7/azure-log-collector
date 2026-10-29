@@ -587,7 +587,7 @@ Input: base64 sourceConfig + raw Azure log events
 
 ### 6.5 ignore_list.py — Resource Filtering
 
-Resource matching is case-insensitive where implemented. Tag keys are case-sensitive; tag values are case-insensitive:
+Resource matching is case-insensitive where implemented. Tag names and values match case-insensitively (Azure tag names are case-insensitive); a `key=value` rule, including `key=` for an empty value, matches only resources that have the tag:
 
 ```
 Resource → is_ignored()?
