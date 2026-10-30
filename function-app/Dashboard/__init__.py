@@ -1153,14 +1153,14 @@ async function saveIgnoreList() {
   try {
     const r = await api('ignore-list', { method: 'PUT', body: JSON.stringify(_ignoreList) });
     if ((r.diag_settings_not_removed || 0) > 0) {
-      showToast(`Ignore list updated; ${r.diag_settings_not_removed} diagnostic settings could not be removed and will be retried on the next scan`, 'error');
+      showToast(`Filters saved. ${r.diag_settings_not_removed} diagnostic settings could not be removed; the next scan tries again.`, 'error');
     } else if (r.scan_queued) {
-      showToast('Ignore list updated; a scan was started to apply location, type and tag rules');
+      showToast('Filters saved. A scan has started to apply them.');
     } else {
-      showToast('Ignore list updated');
+      showToast('Filters saved');
     }
     loadStatus();
-  } catch (e) { showToast('Failed to save ignore list', 'error'); }
+  } catch (e) { showToast('Could not save the filters. Try again.', 'error'); }
 }
 
 function addFromSelect(key, selId) {

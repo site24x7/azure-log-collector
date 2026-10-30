@@ -7,7 +7,12 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
-## [1.1.0-beta3] — unreleased
+## [1.1.0-beta4] — unreleased
+
+- Dashboard: saving filters says "Filters saved" (it said "Ignore list
+  updated", the collector's internal name).
+
+## [1.1.0-beta3] — 2026-10-30
 
 - A region's storage account no longer fails for good when its generated name is
   taken elsewhere in Azure (by another customer, or held for a while after a
