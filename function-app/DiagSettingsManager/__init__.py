@@ -284,9 +284,10 @@ def _run_scan():
     )
     provisioned_regions = region_mgr.get_provisioned_regions(resource_group)
     logging.info(
-        "DiagSettingsManager: Phase 3 (regions) — added=%d, removed=%d in %.1fs [total=%.1fs]",
+        "DiagSettingsManager: Phase 3 (regions) — added=%d, removed=%d, failed=%d in %.1fs [total=%.1fs]",
         len(reconcile_result.get("added", [])),
         len(reconcile_result.get("removed", [])),
+        len(reconcile_result.get("errors", [])),
         _time.monotonic() - phase_start, _elapsed(),
     )
     phase_timings["phase3_regions"] = round(_time.monotonic() - phase_start, 1)
@@ -1091,6 +1092,7 @@ def _run_scan():
             "active": list(active_regions),
             "added": reconcile_result.get("added", []),
             "removed": reconcile_result.get("removed", []),
+            "failed": [e.get("region", "") for e in reconcile_result.get("errors", [])],
         },
     }
 

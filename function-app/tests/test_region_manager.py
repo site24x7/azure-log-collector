@@ -420,3 +420,66 @@ def test_storage_lock_is_removed_at_the_scope_it_was_created(rm):
         assert locks.delete_at_resource_level.call_args.kwargs["resource_name"] == "s247diagx"
     finally:
         rm_mod.ManagementLockClient = original
+
+
+class TestStorageNameFallback:
+    """A generated name taken elsewhere in Azure falls back to a random one."""
+
+    @staticmethod
+    def _taken(*names):
+        def check(params):
+            result = MagicMock()
+            result.name_available = params["name"] not in names
+            return result
+        return check
+
+    def test_regional_uses_random_name_when_generated_name_is_taken(self, rm):
+        from azure.core.exceptions import ResourceNotFoundError
+        mock_sa = MagicMock(id="/subscriptions/s/resourceGroups/rg/providers/Microsoft.Storage/storageAccounts/x")
+        with patch("shared.region_manager.StorageManagementClient") as mock_cls:
+            ops = mock_cls.return_value.storage_accounts
+            ops.check_name_availability.side_effect = self._taken("s247diageastusabc")
+            ops.get_properties.side_effect = ResourceNotFoundError("Not found")
+            ops.begin_create.return_value.result.return_value = mock_sa
+            with patch.object(rm, "apply_lock", return_value=True), \
+                 patch.object(rm, "apply_lifecycle_policy", return_value=True):
+                result = rm.provision_storage_account("rg", "eastus", "abc")
+        name = ops.begin_create.call_args.kwargs["account_name"]
+        assert name != "s247diageastusabc"
+        assert name.startswith(STORAGE_PREFIX) and len(name) <= 24 and name.isalnum() and name == name.lower()
+        assert result["storage_account_name"] == name
+        assert result["storage_account_id"] == mock_sa.id
+        tags = ops.begin_create.call_args.kwargs["parameters"]["tags"]
+        assert tags["region"] == "eastus" and tags["purpose"] == "diag-logs-regional"
+
+    def test_tenant_uses_random_name_when_generated_name_is_taken(self, rm):
+        from azure.core.exceptions import ResourceNotFoundError
+        with patch("shared.region_manager.StorageManagementClient") as mock_cls, \
+             patch.object(rm, "get_tenant_storage_account", return_value=None), \
+             patch.object(rm, "_resource_group_location", return_value="eastus"), \
+             patch.object(rm, "apply_lock", return_value=True), \
+             patch.object(rm, "apply_lifecycle_policy", return_value=True):
+            ops = mock_cls.return_value.storage_accounts
+            ops.check_name_availability.side_effect = self._taken("s247diagtenantabc")
+            ops.get_properties.side_effect = ResourceNotFoundError("Not found")
+            ops.begin_create.return_value.result.return_value = MagicMock(id="tenant-id")
+            result = rm.ensure_tenant_storage_account("rg", "abc")
+        name = ops.begin_create.call_args.kwargs["account_name"]
+        assert name != "s247diagtenantabc" and name.startswith("s247dt") and len(name) <= 24
+        assert result["name"] == name
+
+    def test_other_ownership_errors_do_not_fall_back(self, rm):
+        with patch("shared.region_manager.StorageManagementClient") as mock_cls:
+            ops = mock_cls.return_value.storage_accounts
+            ops.check_name_availability.return_value.name_available = False
+            ops.get_properties.side_effect = RuntimeError("Read permission denied")
+            result = rm.provision_storage_account("rg", "eastus", "abc")
+        assert result["storage_account_id"] == ""
+        ops.begin_create.assert_not_called()
+
+    def test_reconcile_counts_a_failed_region_as_an_error(self, rm):
+        with patch.object(rm, "provision_storage_account",
+                          return_value={"region": "eastus", "storage_account_id": "", "error": "quota"}):
+            result = rm.reconcile_regions("rg", {"eastus"}, {}, "abc")
+        assert result["added"] == []
+        assert result["errors"] == [{"region": "eastus", "error": "quota"}]

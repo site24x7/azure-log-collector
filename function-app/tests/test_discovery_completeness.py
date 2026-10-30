@@ -83,3 +83,34 @@ def test_subscription_list_error_marks_scan_incomplete_before_region_cleanup():
     assert mgr.discovery_complete is False
     assert regions.reconcile_regions.call_args.kwargs["allow_remove"] is False
     inventory.assert_not_called()  # keep the last complete choices
+
+
+def _http_error(status, code):
+    from azure.core.exceptions import HttpResponseError
+    error = HttpResponseError(message=code)
+    error.status_code = status
+    error.error = MagicMock(code=code)
+    return error
+
+
+def test_type_without_diagnostic_settings_is_cached_and_keeps_discovery_complete():
+    # Azure answers 400 ResourceTypeNotSupported for types such as network watchers
+    mgr = _manager()
+    client = MagicMock()
+    client.diagnostic_settings_category.list.side_effect = _http_error(400, "ResourceTypeNotSupported")
+    mgr._get_monitor_client = lambda sub: client
+    rid = "/subscriptions/s1/resourceGroups/rg/providers/Microsoft.Network/networkWatchers/w"
+    assert mgr.supports_diagnostic_logs(rid, "Microsoft.Network/networkWatchers") is False
+    assert mgr._diag_support_cache["microsoft.network/networkwatchers"] is False
+    assert mgr.discovery_complete is True
+
+
+def test_other_http_errors_still_mark_discovery_incomplete():
+    mgr = _manager()
+    client = MagicMock()
+    client.diagnostic_settings_category.list.side_effect = _http_error(400, "BadRequest")
+    mgr._get_monitor_client = lambda sub: client
+    rid = "/subscriptions/s1/resourceGroups/rg/providers/Microsoft.Web/sites/a"
+    assert mgr.supports_diagnostic_logs(rid, "Microsoft.Web/sites") is False
+    assert "microsoft.web/sites" not in mgr._diag_support_cache
+    assert mgr.discovery_complete is False

@@ -34,6 +34,13 @@ def _storage_name(storage_account_id: str) -> str:
     return (storage_account_id or "").rstrip("/").rsplit("/", 1)[-1].lower()
 
 
+
+def _type_not_supported(error: Exception) -> bool:
+    """Whether Azure answered that the resource type has no diagnostic settings
+    (400 ResourceTypeNotSupported), as opposed to a failure to answer."""
+    code = getattr(getattr(error, "error", None), "code", None) or ""
+    return getattr(error, "status_code", None) == 400 and code == "ResourceTypeNotSupported"
+
 class AzureManager:
     """Manage Azure resources, diagnostic categories, and diagnostic settings."""
 
@@ -87,6 +94,12 @@ class AzureManager:
             logger.debug(f"Diagnostic support for {rtype}: {has_logs}")
             return has_logs
         except Exception as e:
+            if _type_not_supported(e):
+                # Azure's definite answer for types without diagnostic settings
+                # (network watchers, for one): no logs, like an empty category list.
+                self._diag_support_cache[rtype] = False
+                logger.debug(f"Diagnostic support for {rtype}: not supported")
+                return False
             # Unknown, not "no logs": not cached, and the discovery is incomplete
             # (else every resource of this type would look gone and be cleaned up).
             self.discovery_errors.append(f"support check for {rtype}: {type(e).__name__}")

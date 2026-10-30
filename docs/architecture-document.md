@@ -223,7 +223,7 @@ Azure Diagnostic Settings require the destination Storage Account to be **in the
 
 | Property | Value |
 |----------|-------|
-| **Naming** | `s247diag{region}{suffix}` (max 24 chars, lowercase alphanumeric) |
+| **Naming** | `s247diag{region}{suffix}` (max 24 chars, lowercase alphanumeric); `s247diag` + 16 random hex characters when that name is taken elsewhere in Azure. Accounts are identified by their tags, not by name. |
 | **SKU** | `Standard_LRS` |
 | **Kind** | `StorageV2` |
 | **TLS** | Minimum TLS 1.2 |

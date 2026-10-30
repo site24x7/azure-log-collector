@@ -7,7 +7,21 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
-## [1.1.0-beta2] — unreleased
+## [1.1.0-beta3] — unreleased
+
+- A region's storage account no longer fails for good when its generated name is
+  taken elsewhere in Azure (by another customer, or held for a while after a
+  collector is deleted): the collector then uses a random name. Storage accounts
+  are found by their tags, so the name does not matter. Applies to the Entra ID
+  storage account too.
+- A region whose storage account could not be created is logged and reported as
+  failed, not as added.
+- Resource types for which Azure answers that diagnostic settings are not
+  supported (network watchers, for one) no longer mark the discovery as
+  incomplete. Before, every scan in a subscription with a network watcher
+  skipped its clean-up.
+
+## [1.1.0-beta2] — 2026-10-29
 
 - Filters are include lists: subscriptions, regions and resource types
   (`include_subscriptions`, `include_locations`, `include_resource_types`;

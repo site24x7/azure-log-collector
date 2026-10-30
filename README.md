@@ -37,6 +37,11 @@ group, `s247-diag-logs-<suffix>-rg`; installs without a suffix keep
 `s247-diag-logs-rg`. To redeploy an existing collector in place, set the
 `resourceGroupName` parameter to the group it already uses.
 
+These rules cover the accounts created at deployment, which fail the deployment
+with Azure's error when a name is taken. The storage accounts the collector
+creates later, one per region it finds resources in, fall back to a random name
+when the generated one is taken; the collector finds them by their tags.
+
 Check an explicit ARM suffix before deployment (Azure CLI login required):
 
 ```bash

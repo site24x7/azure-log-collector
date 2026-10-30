@@ -8,6 +8,7 @@ gets an ``insights-logs`` container for blob-based log collection.
 import logging
 import os
 import re
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Set
 
@@ -126,6 +127,11 @@ def is_own_account(name: str, tags: Optional[Dict], purpose: str, region: str,
     return name.lower() in _expected_names(purpose, region, suffix)
 
 
+class StorageNameUnavailable(RuntimeError):
+    """The name is taken outside this resource group (any Azure customer, or a
+    recently deleted account whose name Azure still holds)."""
+
+
 def _check_storage_name(client, resource_group: str, name: str, region: str) -> None:
     """Fail before creation on unavailable names or unreadable ownership."""
     availability = client.storage_accounts.check_name_availability(
@@ -135,16 +141,35 @@ def _check_storage_name(client, resource_group: str, name: str, region: str) -> 
         try:
             existing = client.storage_accounts.get_properties(resource_group, name)
         except ResourceNotFoundError as error:
-            raise RuntimeError(
-                f"Storage name '{name}' is unavailable globally. For a fresh install, "
-                "choose another deploymentSuffix/DEPLOYMENT_SUFFIX; do not change a live collector's suffix."
-            ) from error
+            raise StorageNameUnavailable(f"Storage name '{name}' is unavailable globally") from error
         tags = existing.tags or {}
         owner = (tags.get(COLLECTOR_TAG) or "").strip().lower()
         if tags.get("managed-by") != "s247-diag-logs" or (owner and owner != collector_id()):
             raise RuntimeError(f"Storage account '{name}' is not owned by this collector")
         if _sanitize_region(existing.primary_location or "") != _sanitize_region(region):
             raise RuntimeError(f"Storage account '{name}' already exists in a different region")
+
+
+def _fallback_storage_name(prefix: str) -> str:
+    """A random name for when the generated one is taken (24 characters at most).
+
+    Storage names are global across Azure, so a generated name can belong to
+    someone else or be held after a delete. Accounts are found by their tags,
+    not by name, so any name works once the account is created.
+    """
+    return prefix + secrets.token_hex(8)
+
+
+def _choose_storage_name(client, resource_group: str, name: str, region: str, prefix: str) -> str:
+    """The generated name, or a random one when Azure reports it taken globally."""
+    try:
+        _check_storage_name(client, resource_group, name, region)
+        return name
+    except StorageNameUnavailable as error:
+        fallback = _fallback_storage_name(prefix)
+        logger.warning("%s; using '%s' instead", error, fallback)
+        _check_storage_name(client, resource_group, fallback, region)
+        return fallback
 
 
 class RegionManager:
@@ -297,7 +322,8 @@ class RegionManager:
         storage_client = StorageManagementClient(self.credential, self.subscription_id)
 
         try:
-            _check_storage_name(storage_client, resource_group, sa_name, region)
+            sa_name = _choose_storage_name(storage_client, resource_group, sa_name, region, "s247dt")
+            result["name"] = sa_name
             poller = storage_client.storage_accounts.begin_create(
                 resource_group_name=resource_group,
                 account_name=sa_name,
@@ -387,7 +413,8 @@ class RegionManager:
 
         # 1. Create storage account
         try:
-            _check_storage_name(storage_client, resource_group, sa_name, region)
+            sa_name = _choose_storage_name(storage_client, resource_group, sa_name, region, STORAGE_PREFIX)
+            result["storage_account_name"] = sa_name
             poller = storage_client.storage_accounts.begin_create(
                 resource_group_name=resource_group,
                 account_name=sa_name,
@@ -412,6 +439,7 @@ class RegionManager:
             logger.info(f"Created storage account '{sa_name}' in {region}")
         except Exception as e:
             logger.error(f"Failed to create storage account '{sa_name}': {e}")
+            result["error"] = str(e)
             return result
 
         # 2. Create insights-logs container (diagnostic settings will create
@@ -633,6 +661,10 @@ class RegionManager:
         for region in to_add:
             try:
                 info = self.provision_storage_account(resource_group, region, suffix)
+                if not info.get("storage_account_id"):
+                    # Not created: the region stays without storage and the next scan retries
+                    summary["errors"].append({"region": region, "error": info.get("error", "storage account not created")})
+                    continue
                 summary["added"].append(info)
                 logger.info(f"Provisioned storage account for region {region}")
             except Exception as e:
