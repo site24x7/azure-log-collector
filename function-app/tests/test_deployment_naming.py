@@ -342,20 +342,22 @@ def test_portal_include_lists_and_tag_rule_contract():
         assert f"parameters('{mode}Tags')" in expression
 
 
-def test_portal_subscription_checks_have_recovery_and_scope_warnings():
+def test_portal_lists_only_subscriptions_the_user_can_grant_access_in():
     ui = json.loads((ROOT / 'setup/createUiDefinition.json').read_text())['parameters']
     elements = {e['name']: e for e in ui['steps'][0]['elements']}
     assert elements['homePerm']['request']['path'].startswith('[concat(subscription().id,')
     scope = {e['name']: e for e in elements['subscriptions']['elements']}
-    assert scope['accessCheck']['defaultValue'] == 'Automatic'
-    assert 'Retry 1' in json.dumps(scope['accessCheck'])
+    # Only the list and one line on why a subscription may be missing: no retry or limit messages.
+    assert list(scope) == ['home', 'otherSubscriptions', 'checkIds', 'notListed']
+    assert scope['checkIds']['visible'] is False
+    assert scope['checkIds']['defaultValue'] == 'Automatic'
+    assert 'Retry' not in scope['checkIds']['constraints']['allowedValues']  # one option only
+    assert 'do not have enough permissions' in scope['notListed']['options']['text']
     for index in range(10):
         path = elements[f'check{index}']['request']['path']
-        assert '.subscriptions.accessCheck' in path
+        assert '.subscriptions.checkIds' in path
         assert 'subsApi' not in path  # API-to-API dependencies do not fire in the portal.
         assert 'decodeBase64' in path
-    assert 'Deploy another collector' in scope['limit']['options']['text']
-    assert 'nextLink' in scope['pagination']['visible']
     monitored = ui['outputs']['monitoredSubscriptionIds']
     assert '.subscriptions.otherSubscriptions' in monitored
     assert 'or(equals(sub.subscriptionId, subscription().subscriptionId), contains(' in monitored

@@ -11,6 +11,9 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 
 - Dashboard: saving filters says "Filters saved" (it said "Ignore list
   updated", the collector's internal name).
+- Deployment form: Other subscriptions lists only the subscriptions where you can
+  grant access, with one line on why another is missing. The Subscription access
+  check drop-down and its retry, limit and partial-list messages are removed.
 
 ## [1.1.0-beta3] — 2026-10-30
 
