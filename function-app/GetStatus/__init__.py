@@ -26,10 +26,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         processing_enabled = get_processing_enabled()
         monitor_pipeline = os.environ.get("MONITOR_PIPELINE_RESOURCES", "false").lower() == "true"
         auto_scan = os.environ.get("AUTO_SCAN_ENABLED", "true").lower() == "true"
-        try:
-            safe_delete_days = int(os.environ.get("SAFE_DELETE_MAX_AGE_DAYS", "7"))
-        except (ValueError, TypeError):
-            safe_delete_days = 7
         # Load scan state from blob (primary) or app setting (fallback)
         last_scan_time = "never"
         s247_reachable = None
@@ -105,7 +101,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             "update_state": _update_state(),
             "monitor_pipeline_resources": monitor_pipeline,
             "auto_scan_enabled": auto_scan,
-            "safe_delete_days": safe_delete_days,
             "update_check_url": bool(update_check_url),
             "provisioned_regions": [],
             "resources": {"total": 0, "active": 0, "ignored": 0},

@@ -159,16 +159,6 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
       <span>Monitor Pipeline Resources <i class="info-tip">i<span class="tip-text">When enabled, diagnostic settings are created on the pipeline's own resources (function app, storage accounts in the pipeline resource group). Disable to prevent self-referential log loops that can generate oversized blobs.</span></i></span>
       <button class="toggle" id="pipelineToggle" onclick="togglePipelineMonitoring()"></button>
     </div>
-    <div class="toggle-row">
-      <label for="safeDeleteDays" style="margin:0">Safe-Delete Retention <i class="info-tip">i<span class="tip-text">Storage accounts are only deleted when no blobs are newer than this many days. Prevents data loss during region cleanup. Range: 1–365 days.</span></i></label>
-      <div style="display:flex;align-items:center;gap:6px">
-        <input type="number" id="safeDeleteDays" min="1" max="365" value="7"
-          style="width:60px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);font-size:13px;text-align:center"
-          oninput="checkSafeDeleteChanged()" />
-        <span style="font-size:11px;color:var(--muted)">days</span>
-        <button class="btn btn-primary" id="saveSafeDeleteBtn" onclick="updateSafeDeleteDays()" style="padding:4px 10px;font-size:12px" disabled>Save</button>
-      </div>
-    </div>
     <div class="btn-group">
       <button class="btn btn-primary" id="scanBtn" onclick="triggerScan()">&#9654; Trigger Scan <i class="info-tip">i<span class="tip-text">Manually trigger a full resource scan. Discovers Azure resources, creates Site24x7 log types, and configures/reconciles diagnostic settings.</span></i></button>
       <button class="btn btn-primary" id="updateBtn" onclick="checkUpdate()">
@@ -744,16 +734,9 @@ async function loadStatus() {
       fieldsEl.style.display = 'none';
       warnEl.textContent = entra.any_enabled
         ? 'A log type is enabled but the dedicated storage account has not been created yet. Run a scan (or wait for one) — it is provisioned automatically and the fields then appear here.'
-        : 'Enable at least one log type in Step 1 first. The dedicated storage account is created on the next scan (and removed when all types are turned off); the subscription and account then appear here.';
+        : 'Enable at least one log type in Step 1 first. The dedicated storage account is created on the next scan; the subscription and account then appear here.';
       warnEl.style.display = 'block';
     }
-
-    const sdInput = document.getElementById('safeDeleteDays');
-    if (s.safe_delete_days != null) {
-      sdInput.value = s.safe_delete_days;
-      sdInput.dataset.original = s.safe_delete_days;
-    }
-    document.getElementById('saveSafeDeleteBtn').disabled = true;
 
     // Subscriptions
     const subEl = document.getElementById('subList');
@@ -942,30 +925,6 @@ async function togglePipelineMonitoring() {
     toggle.classList.toggle('on', newState);
     showToast(`Pipeline resource monitoring ${newState ? 'enabled' : 'disabled'}. Takes effect on next scan.`);
   } catch (e) { showToast('Failed to toggle pipeline monitoring', 'error'); }
-}
-
-function checkSafeDeleteChanged() {
-  const input = document.getElementById('safeDeleteDays');
-  const btn = document.getElementById('saveSafeDeleteBtn');
-  const val = parseInt(input.value, 10);
-  const orig = parseInt(input.dataset.original || '7', 10);
-  btn.disabled = isNaN(val) || val < 1 || val > 365 || val === orig;
-}
-
-async function updateSafeDeleteDays() {
-  const input = document.getElementById('safeDeleteDays');
-  const btn = document.getElementById('saveSafeDeleteBtn');
-  const val = parseInt(input.value, 10);
-  if (isNaN(val) || val < 1 || val > 365) {
-    showToast('Safe-delete days must be between 1 and 365', 'error');
-    return;
-  }
-  try {
-    await api('settings', { method: 'PUT', body: JSON.stringify({key: 'SAFE_DELETE_MAX_AGE_DAYS', value: val}) });
-    input.dataset.original = val;
-    btn.disabled = true;
-    showToast('Safe-delete retention updated to ' + val + ' days');
-  } catch (e) { showToast('Failed to update safe-delete retention', 'error'); }
 }
 
 async function triggerScan() {

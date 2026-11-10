@@ -33,16 +33,16 @@ def test_failed_support_check_is_not_cached_as_no_logs():
     assert mgr.discovery_complete is False
 
 
-def test_incomplete_discovery_does_not_remove_storage_accounts():
+def test_incomplete_discovery_does_not_idle_storage_accounts():
     region_mgr = RegionManager.__new__(RegionManager)
-    region_mgr.deprovision_storage_account = MagicMock(return_value=True)
+    region_mgr.set_retention = MagicMock(return_value=True)
     region_mgr.provision_storage_account = MagicMock(return_value={"region": "eastus"})
     summary = region_mgr.reconcile_regions("rg", {"eastus"}, {"westeurope": "s247diagwesteu"}, "sfx",
                                            allow_remove=False)
-    region_mgr.deprovision_storage_account.assert_not_called()
-    assert summary["removed"] == []
-    region_mgr.reconcile_regions("rg", {"eastus"}, {"westeurope": "s247diagwesteu"}, "sfx")
-    region_mgr.deprovision_storage_account.assert_called_once()
+    region_mgr.set_retention.assert_not_called()
+    assert summary["idle"] == []
+    summary = region_mgr.reconcile_regions("rg", {"eastus"}, {"westeurope": "s247diagwesteu"}, "sfx")
+    assert summary["idle"] == ["westeurope"]
 
 
 def test_subscription_list_error_marks_scan_incomplete_before_region_cleanup():

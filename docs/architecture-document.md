@@ -210,12 +210,12 @@ Azure Diagnostic Settings require the destination Storage Account to be **in the
 │  │ eastus     ──────┼────┼── s247diageastus  │  ✓ Already exists  │
 │  │ westus     ──────┼────┼── (missing)       │  → Provision new   │
 │  │ westeurope ──────┼────┼── s247diagwesteu  │  ✓ Already exists  │
-│  │ (none)     ──────┼────┼── s247diagcentus  │  → Deprovision     │
+│  │ (none)     ──────┼────┼── s247diagcentus  │  → Keep idle       │
 │  └─────────────────┘    └──────────────────┘                     │
 │                                                                   │
 │  Reconciliation:                                                  │
 │  • to_add    = active_regions - provisioned_regions               │
-│  • to_remove = provisioned_regions - active_regions               │
+│  • to_idle   = provisioned_regions - active_regions (1-day rule)  │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
@@ -229,7 +229,7 @@ Azure Diagnostic Settings require the destination Storage Account to be **in the
 | **TLS** | Minimum TLS 1.2 |
 | **Public Access** | Disabled |
 | **Base Container** | `insights-logs` (validation container) |
-| **Resource Lock** | `CanNotDelete` (name: `s247-lock-{account_name}`) |
+| **Retention** | Lifecycle rule `s247-diag-logs-retention`: `BLOB_RETENTION_DAYS` (7); 1 day while the region is not collected. Never deleted: a deleted name can be taken by anyone in Azure. |
 | **Tags** | `managed-by: s247-diag-logs`, `purpose: diag-logs-regional`, `region: {region}` |
 
 ### 4.4 Multi-Region Data Flow
@@ -272,6 +272,8 @@ Azure Diagnostic Settings require the destination Storage Account to be **in the
 
 **Trigger:** Timer (configurable via `%TIMER_SCHEDULE%`) or on-demand via `POST /api/scan`
 
+A scan is also queued when a worker starts after an installation (no scan yet), an update (the last scan ran on another version) or a restart (the last scan finished `MIN_SCAN_INTERVAL_MINUTES`, default 30, or more ago). The first `BlobLogProcessor` run of each worker checks this (`shared/startup_scan.py`); `ScanWorker` drops a request that a scan started after it already covers.
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  STEP 1: LOAD CONFIGURATION                                            │
@@ -294,7 +296,7 @@ Azure Diagnostic Settings require the destination Storage Account to be **in the
 │  ├─ Extract active regions from resources                                │
 │  ├─ List provisioned storage accounts (by tag)                          │
 │  ├─ to_add = active - provisioned → provision_storage_account()         │
-│  └─ to_remove = provisioned - active → deprovision_storage_account()    │
+│  └─ to_idle = provisioned - active → set_retention(1 day), never delete │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  STEP 5: CATEGORY COLLECTION                                            │
 │  ├─ For each resource:                                                   │
@@ -345,7 +347,7 @@ Azure Diagnostic Settings require the destination Storage Account to be **in the
   "regions": {
     "active": ["eastus", "westus", "westeurope"],
     "added": [{"region": "westus", "storage_account": "s247diag<westus><suffix>"}],
-    "removed": ["centralus"]
+    "idle": ["centralus"]
   }
 }
 ```
@@ -516,18 +518,16 @@ Azure Diagnostic Settings require the destination Storage Account to be **in the
 
 ### 6.1 region_manager.py — Regional Storage Lifecycle
 
-Manages per-region Storage Account provisioning, deprovisioning, and reconciliation.
+Manages per-region Storage Account provisioning, retention, and reconciliation.
 
 | Method | Purpose |
 |--------|---------|
 | `get_storage_name_for_region(region, suffix)` | Generate name: `s247diag{region}{suffix}` (max 24 chars) |
 | `get_active_regions(resources)` | Extract unique regions from resource list |
 | `get_provisioned_regions(resource_group)` | List accounts by tag: `managed-by: s247-diag-logs` |
-| `provision_storage_account(rg, region, suffix)` | Create account + container + CanNotDelete lock |
-| `deprovision_storage_account(rg, region, name)` | Check for recent blobs before removing lock and deleting account |
-| `reconcile_regions(rg, active, provisioned, suffix)` | Add missing / remove unused regions |
-| `apply_lock(rg, name, type)` | Apply `CanNotDelete` management lock |
-| `remove_lock(rg, lock_name)` | Remove lock before deletion |
+| `provision_storage_account(rg, region, suffix)` | Create account + container + retention rule |
+| `set_retention(rg, name, days)` | Set the retention rule, writing only on a change |
+| `reconcile_regions(rg, active, provisioned, suffix)` | Add missing regions; idle unused ones (1-day rule); restore the normal rule for active ones |
 
 ### 6.2 azure_manager.py — Azure SDK Operations
 
@@ -1024,7 +1024,7 @@ If a function key is exposed:
 |---------|-------|
 | Minimum TLS | 1.2 |
 | Public blob access | Disabled |
-| Management locks | `CanNotDelete` on regional accounts |
+| Management locks | `CanNotDelete` on the collector's resource group (set by the template) |
 | Access method | Connection string (AzureWebJobsStorage) / Managed Identity |
 
 ---
@@ -1067,7 +1067,7 @@ When OPEN: post_logs() returns False immediately (records remain for retry withi
 | Site24x7 API unavailable | Circuit breaker opens; records remain for retry within storage retention |
 | Blob download fails | Skip blob, continue processing others |
 | Diagnostic setting creation fails | Log error, track in error count |
-| ManagementLockClient unavailable | Graceful fallback, proceed without locks |
+| Retention rule cannot be set | Counted as a region error; the next scan retries |
 | Config blob not found | Return empty/default structure |
 | Partial scan failure | Continue processing remaining resources |
 

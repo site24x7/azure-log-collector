@@ -157,6 +157,11 @@ def _run_scan():
     store configs, and configure/reconcile diagnostic settings."""
     import time as _time
     _scan_start_mono = _time.monotonic()
+    # Kept in the scan state: ScanWorker drops requests made before this scan
+    # started, and a worker start scans again when the version changed.
+    from shared.updater import get_local_version
+    scan_record = {"last_scan_started_at": datetime.now(timezone.utc).isoformat(),
+                   "collector_version": get_local_version()}
     MAX_SCAN_SECONDS = 480  # 8 min hard guard (Consumption plan has 10 min max)
 
     def _elapsed():
@@ -284,9 +289,9 @@ def _run_scan():
     )
     provisioned_regions = region_mgr.get_provisioned_regions(resource_group)
     logging.info(
-        "DiagSettingsManager: Phase 3 (regions) — added=%d, removed=%d, failed=%d in %.1fs [total=%.1fs]",
+        "DiagSettingsManager: Phase 3 (regions) — added=%d, idle=%d, failed=%d in %.1fs [total=%.1fs]",
         len(reconcile_result.get("added", [])),
-        len(reconcile_result.get("removed", [])),
+        len(reconcile_result.get("idle", [])),
         len(reconcile_result.get("errors", [])),
         _time.monotonic() - phase_start, _elapsed(),
     )
@@ -550,9 +555,8 @@ def _run_scan():
             # Resolve the subscription display name (portal shows name, not GUID)
             entra_target_sub_name = region_mgr.get_subscription_name(subscription_ids[0])
     else:
-        # No Entra type enabled — remove the dedicated SA if one exists
-        # (safe-delete guard skips it while it still holds recent blobs).
-        region_mgr.deprovision_tenant_storage_account(resource_group)
+        # No Entra type enabled — keep the dedicated SA, if any, idle
+        region_mgr.idle_tenant_storage_account(resource_group)
         entra_target_sa = {}
 
     # ── Phase 5: Create log types ──
@@ -793,6 +797,7 @@ def _run_scan():
             "s247_reachable": s247_reachable,
             "in_progress": False,
             "time_budget_exhausted": True,
+            **scan_record,
         })
         return {"time_budget_exhausted": True, **stats}
 
@@ -1068,6 +1073,7 @@ def _run_scan():
         "last_full_reconcile": (scan_time if reconcile_due and reconcile_complete
                                 else last_reconcile),
         "in_progress": False,
+        **scan_record,
     }
     # The scan state blob is the record of the last scan. Never write an app
     # setting here: every app-setting change restarts the Function App, and
@@ -1091,7 +1097,7 @@ def _run_scan():
         "regions": {
             "active": list(active_regions),
             "added": reconcile_result.get("added", []),
-            "removed": reconcile_result.get("removed", []),
+            "idle": reconcile_result.get("idle", []),
             "failed": [e.get("region", "") for e in reconcile_result.get("errors", [])],
         },
     }

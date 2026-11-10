@@ -403,7 +403,7 @@ Token bucket pattern: tokens refill at `rate / per` per second. Default is 100 r
 
 ### shared/region_manager.py
 
-Manages per-region storage account lifecycle (provisioning, deprovisioning, reconciliation).
+Manages per-region storage account lifecycle (provisioning, retention, reconciliation). Accounts are never deleted: an unused one is kept idle with a 1-day retention.
 
 **Imports:** `azure.identity.DefaultAzureCredential`, `azure.mgmt.storage.StorageManagementClient`, `azure.mgmt.resource.ResourceManagementClient`
 
@@ -418,18 +418,16 @@ RegionManager(subscription_id: str)
 | `get_storage_name_for_region` | `(region: str, suffix: str)` | `str` | Static — derive storage account name |
 | `get_active_regions` | `(resources: List[Dict])` | `Set[str]` | Extract unique regions from resource list |
 | `get_provisioned_regions` | `(resource_group: str)` | `Dict[str, str]` | List per-region storage accounts (region → name) |
-| `provision_storage_account` | `(resource_group: str, region: str, suffix: str)` | `Dict` | Create storage account with `insights-logs` container and lock |
-| `deprovision_storage_account` | `(resource_group: str, region: str, sa_name: str)` | `bool` | Remove lock and delete (with safety check for recent blobs) |
-| `reconcile_regions` | `(resource_group: str, active_regions: Set[str], provisioned_map: Dict[str, str], suffix: str)` | `Dict` | Add/remove storage accounts to match active regions |
-| `apply_lock` | `(resource_group: str, resource_name: str, resource_type: str)` | `bool` | Apply CanNotDelete management lock |
-| `remove_lock` | `(resource_group: str, lock_name: str)` | `bool` | Remove management lock |
+| `provision_storage_account` | `(resource_group: str, region: str, suffix: str)` | `Dict` | Create storage account with `insights-logs` container and the retention rule |
+| `set_retention` | `(resource_group: str, sa_name: str, days: int)` | `bool` | Set the account's retention rule, writing only on a change |
+| `idle_tenant_storage_account` | `(resource_group: str)` | `bool` | Keep the Entra ID account idle while no Entra log type is enabled |
+| `reconcile_regions` | `(resource_group: str, active_regions: Set[str], provisioned_map: Dict[str, str], suffix: str)` | `Dict` | Add accounts for new regions; idle unused ones (1-day retention); restore the normal retention when a region is active again. Returns `added`, `idle`, `errors` |
 
 #### Internal
 
 | Function | Signature | Returns |
 |----------|-----------|---------|
-| `_has_recent_blobs` | `(self, resource_group, sa_name, storage_client, safe_days=7)` | `bool` (instance method) |
-| `_get_safe_delete_days` | `()` | `int` |
+| `_retention_days` | `(self, storage_client, resource_group, sa_name)` | `Optional[int]` (instance method) |
 | `_sanitize_region` | `(region: str)` | `str` |
 | `_storage_account_name` | `(region: str, suffix: str)` | `str` |
 
@@ -593,7 +591,7 @@ run_scan()
 ├── 7. Region reconciliation:
 │      region_manager.get_active_regions(active_resources)
 │      region_manager.get_provisioned_regions(resource_group)
-│      region_manager.reconcile_regions() → add/remove storage accounts
+│      region_manager.reconcile_regions() → add new / idle unused storage accounts
 │
 ├── 8. For each resource:
 │      ├── azure_manager.get_diagnostic_categories(resource_id)
@@ -1144,8 +1142,8 @@ The function app follows a **logged-but-non-fatal** pattern:
 
 **region_manager.py:**
 - Container creation failures caught silently (container may already exist)
-- Recent blob check errs on side of caution: assumes blobs exist if check fails (prevents data loss)
-- Lock-not-found on removal treated as success (idempotent)
+- Retention is read before it is written: an unchanged rule is not rewritten every scan
+- A failed retention change is a region error and is retried on the next scan
 
 ---
 
@@ -1564,7 +1562,6 @@ curl http://localhost:7071/api/debug
 | `SKIP_AUTO_UPDATE` | No | `true` disables AutoUpdater entirely — emergency switch |
 | `MIN_RELEASE_AGE_MINUTES` | No | Grace period before a new release is eligible (default: `60`) |
 | `SITE24X7_UPLOAD_DOMAIN` | No | Override upload endpoint (for testing with mock server) |
-| `SAFE_DELETE_MAX_AGE_DAYS` | No | Protects regional account deletion when blobs newer than this remain (default: 7 days) |
 | `BLOB_RETENTION_DAYS` | No | Days after which the storage lifecycle rule deletes log blobs, sent or not (default 7) |
 
 ## Operational freshness and connectivity

@@ -96,7 +96,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         safe_env_keys = [
             "SUBSCRIPTION_IDS", "SITE24X7_BASE_URL",
             "GENERAL_LOGTYPE_ENABLED", "PROCESSING_ENABLED",
-            "SAFE_DELETE_MAX_AGE_DAYS", "UPDATE_CHECK_URL",
+            "BLOB_RETENTION_DAYS", "UPDATE_CHECK_URL",
             "RESOURCE_GROUP_NAME", "RESOURCE_GROUP",
             "DIAG_STORAGE_SUFFIX", "WEBSITE_SITE_NAME",
             "REGION_NAME", "FUNCTIONS_WORKER_RUNTIME",

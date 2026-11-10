@@ -14,6 +14,21 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 - Deployment form: Other subscriptions lists only the subscriptions where you can
   grant access, with one line on why another is missing. The Subscription access
   check drop-down and its retry, limit and partial-list messages are removed.
+- A scan starts by itself after an installation, an update and a restart (unless
+  one finished in the last 30 minutes). Scan requests that an already started scan
+  covers are dropped, so a new collector scans once.
+- Storage accounts are no longer deleted. When a region (or Entra ID) is no
+  longer collected, its account is kept with a 1-day retention, so logs that still
+  reach it (a diagnostic setting that could not be removed, a failed push) do not
+  build up; the normal retention comes back when the region is collected again.
+  Deleting failed every time anyway: the collector's role cannot remove locks. A
+  deleted account's name could also be taken by anyone in Azure. The per-account
+  lock code, which never worked for the same reason, is removed, and so is the
+  `SAFE_DELETE_MAX_AGE_DAYS` setting (Dashboard and Site24x7) that only delayed
+  the deletion.
+- Filter choices list each resource type once (Azure returns some types in two
+  spellings) and no longer offer "global" as a region: resources without a region
+  are always collected.
 
 ## [1.1.0-beta3] — 2026-10-30
 

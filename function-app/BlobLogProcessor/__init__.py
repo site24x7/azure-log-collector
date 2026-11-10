@@ -62,9 +62,23 @@ MAX_BATCH_BYTES = 4 * 1024 * 1024
 _ENTRA_NORMALIZED = frozenset(get_entra_normalized_categories())
 
 
-def main(timer: func.TimerRequest) -> None:
+def main(timer: func.TimerRequest, scanQueue: func.Out[str] = None) -> None:
     if timer.past_due:
         logger.warning("BlobLogProcessor: Timer is past due")
+
+    # Scan after an installation, an update or a restart: the first run of each
+    # worker queues one, like Scan now (shared/startup_scan.py).
+    try:
+        from shared.startup_scan import startup_scan_reason
+        reason = startup_scan_reason()
+        if reason and scanQueue is not None:
+            scanQueue.set(json.dumps({
+                "requested_at": datetime.now(timezone.utc).isoformat(),
+                "source": reason,
+            }))
+            logger.info("BlobLogProcessor: Scan queued after %s", reason)
+    except Exception as e:
+        logger.warning("BlobLogProcessor: startup scan request failed: %s", type(e).__name__)
 
     # Report to Site24x7 after a restart and when the function key was rotated
     # (cheap: at most one ARM key read per worker every 15 minutes). Runs even

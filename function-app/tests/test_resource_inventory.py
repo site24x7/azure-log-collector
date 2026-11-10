@@ -32,6 +32,21 @@ def test_inventory_keeps_distinct_sorted_values_only():
     assert "id" not in json.dumps(inv)          # no per-resource list
 
 
+def test_inventory_lists_a_type_once_and_no_global_region():
+    # Azure returns some types in two spellings; the filters match without case.
+    resources = [{"type": "Microsoft.Insights/autoscalesettings", "location": "westus3"},
+                 {"type": "microsoft.insights/autoscalesettings", "location": "WestUS3"},
+                 {"type": "Microsoft.Network/dnszones", "location": "global", "tags": {"Env": "Prod"}},
+                 {"type": "Microsoft.Web/sites", "location": "eastus", "tags": {"env": "prod"}}]
+    written = {}
+    with patch.object(config_store, "_write_blob", side_effect=lambda p, d: written.update({p: json.loads(d)}) or True):
+        config_store.save_resource_inventory(resources, [])
+    inv = written[config_store.RESOURCE_INVENTORY_BLOB]
+    assert inv["resource_types"] == ["Microsoft.Insights/autoscalesettings", "Microsoft.Network/dnszones", "Microsoft.Web/sites"]
+    assert inv["locations"] == ["WestUS3", "eastus"]       # global resources are always collected
+    assert inv["tags"] == ["Env=Prod"]
+
+
 def test_inventory_values_are_capped(monkeypatch):
     monkeypatch.setattr(config_store, "INVENTORY_MAX_VALUES", 2)
     many = [{"location": f"region-{i}"} for i in range(5)]

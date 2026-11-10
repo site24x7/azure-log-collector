@@ -1,15 +1,19 @@
-"""Per-region Storage Account lifecycle management with resource locks.
+"""Per-region Storage Account lifecycle management.
 
-Provisions and deprovisions Storage Accounts per-region so Azure diagnostic
-settings can stream logs to a same-region destination. Each storage account
-gets an ``insights-logs`` container for blob-based log collection.
+Provisions Storage Accounts per-region so Azure diagnostic settings can stream
+logs to a same-region destination. Each storage account gets an
+``insights-logs`` container for blob-based log collection.
+
+An account is never deleted: a name released by a deletion can be taken by
+anyone in Azure. When its region has no collected resources the account is
+kept idle instead, with a short retention so logs that still reach it (a
+diagnostic setting that could not be removed, a failed push) do not build up.
 """
 
 import logging
 import os
 import re
 import secrets
-from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Set
 
 from azure.identity import DefaultAzureCredential
@@ -18,30 +22,25 @@ from azure.mgmt.resource import ResourceManagementClient
 from azure.core.exceptions import ResourceNotFoundError
 from shared.storage_names import legacy_regional_storage_name, regional_storage_name, tenant_storage_name
 
-# ManagementLockClient may not be available in all azure-mgmt-resource versions
-try:
-    from azure.mgmt.resource.locks import ManagementLockClient
-except ImportError:
-    ManagementLockClient = None  # type: ignore[assignment,misc]
-
 logger = logging.getLogger(__name__)
 
 STORAGE_PREFIX = "s247diag"
 LOGS_CONTAINER = "insights-logs"
-LOCK_PREFIX = "s247-lock-sa"
 # Dedicated, non-regional storage account for tenant-scoped logs (Entra ID).
 # Tagged distinctly so BlobLogProcessor polls it but region reconciliation
-# (which only considers ``diag-logs-regional``) never deprovisions it — giving
+# (which only considers ``diag-logs-regional``) never idles it — giving
 # a stable target the tenant admin can point an Entra diagnostic setting at.
 TENANT_STORAGE_PURPOSE = "diag-logs-tenant"
-# Default: don't delete storage accounts with blobs newer than this.
-# Overridable via SAFE_DELETE_MAX_AGE_DAYS env var.
-SAFE_DELETE_MAX_AGE_DAYS_DEFAULT = 7
 # Lifecycle policy: blobs in insights-logs-* containers are deleted after this many
 # days. The processor reads incrementally via block-list checkpoints and never
 # deletes blobs itself, so retention is enforced here. Override via
 # BLOB_RETENTION_DAYS env var.
 BLOB_RETENTION_DAYS_DEFAULT = 7
+# Retention of an idle account (its region, or Entra ID, is not collected).
+# The processor still reads idle accounts, so logs that are still configured
+# are sent within minutes; anything else is deleted after about a day.
+IDLE_RETENTION_DAYS = 1
+RETENTION_RULE_NAME = "s247-diag-logs-retention"
 
 
 def _get_blob_retention_days() -> int:
@@ -51,15 +50,6 @@ def _get_blob_retention_days() -> int:
         return int(os.environ.get("BLOB_RETENTION_DAYS", BLOB_RETENTION_DAYS_DEFAULT))
     except (ValueError, TypeError):
         return BLOB_RETENTION_DAYS_DEFAULT
-
-
-def _get_safe_delete_days() -> int:
-    """Return safe-delete threshold from env var or default."""
-    import os
-    try:
-        return int(os.environ.get("SAFE_DELETE_MAX_AGE_DAYS", SAFE_DELETE_MAX_AGE_DAYS_DEFAULT))
-    except (ValueError, TypeError):
-        return SAFE_DELETE_MAX_AGE_DAYS_DEFAULT
 
 
 def _sanitize_region(region: str) -> str:
@@ -309,11 +299,13 @@ class RegionManager:
         Idempotent — returns the existing account if present, otherwise creates
         one in the RG's location, tagged ``diag-logs-tenant`` (no region tag so
         region reconciliation leaves it alone), with the base insights-logs
-        container, a resource lock, and the standard retention lifecycle policy.
+        container and the standard retention lifecycle policy.
         Returns ``{"region", "name", "id"}`` (id empty on create failure).
         """
         existing = self.get_tenant_storage_account(resource_group)
         if existing:
+            # It may have been idle while no Entra log type was enabled
+            self.set_retention(resource_group, existing["name"], _get_blob_retention_days())
             return existing
 
         region = self._resource_group_location(resource_group)
@@ -360,11 +352,6 @@ class RegionManager:
             if "already exists" not in str(e).lower():
                 logger.warning(f"Failed to create container in '{sa_name}': {e}")
 
-        self.apply_lock(
-            resource_group=resource_group,
-            resource_name=sa_name,
-            resource_type="Microsoft.Storage/storageAccounts",
-        )
         self.apply_lifecycle_policy(
             storage_client=storage_client,
             resource_group=resource_group,
@@ -372,23 +359,19 @@ class RegionManager:
         )
         return result
 
-    def deprovision_tenant_storage_account(self, resource_group: str) -> bool:
-        """Delete the dedicated tenant SA when no Entra log type is enabled.
+    def idle_tenant_storage_account(self, resource_group: str) -> bool:
+        """Keep the tenant account idle while no Entra log type is enabled.
 
-        Reuses ``deprovision_storage_account`` so the same safeguards apply —
-        it skips deletion if the account still has recent (unprocessed) blobs,
-        and restores the lock if the delete fails. No-op if the account doesn't
-        exist. Returns True only if it was actually deleted.
+        The account stays (see the module docstring) with the idle retention.
+        No-op if it doesn't exist. Returns True when it is idle.
         """
         existing = self.get_tenant_storage_account(resource_group)
         if not existing:
             return False
-        return self.deprovision_storage_account(
-            resource_group, existing.get("region", ""), existing["name"]
-        )
+        return self.set_retention(resource_group, existing["name"], IDLE_RETENTION_DAYS)
 
     # ------------------------------------------------------------------
-    # Provision / deprovision
+    # Provision / retention
     # ------------------------------------------------------------------
 
     def provision_storage_account(
@@ -460,14 +443,7 @@ class RegionManager:
             else:
                 logger.warning(f"Failed to create container in '{sa_name}': {e}")
 
-        # 3. Apply resource lock
-        self.apply_lock(
-            resource_group=resource_group,
-            resource_name=sa_name,
-            resource_type="Microsoft.Storage/storageAccounts",
-        )
-
-        # 4. Apply lifecycle (management) policy: delete blobs in insights-logs-*
+        # 3. Apply lifecycle (management) policy: delete blobs in insights-logs-*
         #    after BLOB_RETENTION_DAYS. The function reads blobs incrementally via
         #    block-list checkpoints and never deletes them itself, so this rule is
         #    the sole retention mechanism.
@@ -496,7 +472,7 @@ class RegionManager:
             "policy": {
                 "rules": [
                     {
-                        "name": "s247-diag-logs-retention",
+                        "name": RETENTION_RULE_NAME,
                         "enabled": True,
                         "type": "Lifecycle",
                         "definition": {
@@ -533,106 +509,37 @@ class RegionManager:
             )
             return False
 
-    def deprovision_storage_account(
-        self, resource_group: str, region: str, sa_name: str
-    ) -> bool:
-        """Remove lock and delete the per-region storage account.
-
-        Checks for unprocessed blobs first. If any blob in an
-        ``insights-logs-*`` container is newer than the configured
-        ``SAFE_DELETE_MAX_AGE_DAYS`` (default 7), the deletion is skipped
-        to avoid data loss.
-        """
-        safe_days = _get_safe_delete_days()
-        storage_client = StorageManagementClient(
-            self.credential, self.subscription_id
-        )
-
-        # Safety check: look for recent blobs before deleting
-        if self._has_recent_blobs(resource_group, sa_name, storage_client, safe_days):
-            logger.warning(
-                "Storage account '%s' in %s has unprocessed blobs newer than "
-                "%d days — skipping deletion to avoid data loss",
-                sa_name, region, safe_days,
-            )
-            return False
-
-        lock_nm = f"s247-lock-{_sanitize_region(sa_name)}"
-
-        # Order:
-        #   1. Remove lock so delete can proceed
-        #   2. Attempt delete
-        #   3. If delete fails, restore the lock so the SA isn't left
-        #      unprotected with unprocessed logs inside it.
-        if not self.remove_lock(resource_group, lock_nm, resource_name=sa_name,
-                                resource_type="Microsoft.Storage/storageAccounts"):
-            logger.error(f"Could not remove the lock on '{sa_name}'; not deleting it")
-            return False
+    def _retention_days(self, storage_client: StorageManagementClient,
+                        resource_group: str, sa_name: str) -> Optional[int]:
+        """Days of this collector's retention rule on the account, or None."""
         try:
-            storage_client.storage_accounts.delete(
+            policy = storage_client.management_policies.get(
                 resource_group_name=resource_group,
                 account_name=sa_name,
+                management_policy_name="default",
             )
-            logger.info(f"Deleted storage account '{sa_name}' in {region}")
+            for rule in policy.policy.rules or []:
+                if rule.name == RETENTION_RULE_NAME and rule.enabled:
+                    return int(rule.definition.actions.base_blob.delete.days_after_modification_greater_than)
+        except Exception:
+            pass
+        return None
+
+    def set_retention(self, resource_group: str, sa_name: str, days: int) -> bool:
+        """Make the account's retention rule ``days``, writing only on a change.
+
+        Checked on every scan, so a change that failed corrects itself on the
+        next one. Best-effort: returns False on failure but never raises.
+        """
+        storage_client = StorageManagementClient(self.credential, self.subscription_id)
+        if self._retention_days(storage_client, resource_group, sa_name) == days:
             return True
-        except Exception as e:
-            logger.error(f"Failed to delete storage account '{sa_name}': {e}")
-            # Rollback: re-apply the lock so the SA is not left unprotected.
-            try:
-                self.apply_lock(
-                    resource_group=resource_group,
-                    resource_name=sa_name,
-                    resource_type="Microsoft.Storage/storageAccounts",
-                )
-                logger.warning(
-                    "Re-applied lock on '%s' after delete failure", sa_name
-                )
-            except Exception as relock_err:
-                logger.error(
-                    "Could not restore lock on '%s' after delete failure — "
-                    "storage account is UNPROTECTED: %s",
-                    sa_name, relock_err,
-                )
-            return False
-
-    def _has_recent_blobs(
-        self, resource_group: str, sa_name: str,
-        storage_client: StorageManagementClient,
-        safe_days: int = SAFE_DELETE_MAX_AGE_DAYS_DEFAULT,
-    ) -> bool:
-        """Check if a storage account has blobs newer than the safe-delete cutoff."""
-        from azure.storage.blob import BlobServiceClient
-
-        cutoff = datetime.now(timezone.utc) - timedelta(days=safe_days)
-        try:
-            keys = storage_client.storage_accounts.list_keys(resource_group, sa_name)
-            acct_key = keys.keys[0].value
-            conn_str = (
-                f"DefaultEndpointsProtocol=https;AccountName={sa_name};"
-                f"AccountKey={acct_key};EndpointSuffix=core.windows.net"
-            )
-            blob_service = BlobServiceClient.from_connection_string(conn_str)
-
-            for container in blob_service.list_containers():
-                cname = container["name"]
-                if not cname.startswith("insights-logs"):
-                    continue
-                container_client = blob_service.get_container_client(cname)
-                for blob in container_client.list_blobs():
-                    if blob.last_modified and blob.last_modified > cutoff:
-                        logger.debug(
-                            "Found recent blob %s/%s (modified %s) in '%s'",
-                            cname, blob.name, blob.last_modified, sa_name,
-                        )
-                        return True
-            return False
-        except Exception as e:
-            # If we can't check, err on the side of caution
-            logger.warning(
-                "Failed to check blobs in '%s', assuming recent blobs exist: %s",
-                sa_name, e,
-            )
-            return True
+        return self.apply_lifecycle_policy(
+            storage_client=storage_client,
+            resource_group=resource_group,
+            sa_name=sa_name,
+            retention_days=days,
+        )
 
     # ------------------------------------------------------------------
     # Reconciliation
@@ -646,17 +553,20 @@ class RegionManager:
         suffix: str,
         allow_remove: bool = True,
     ) -> Dict:
-        """Add/remove per-region storage accounts to match active regions.
+        """Match the storage accounts to the active regions.
 
-        ``allow_remove=False`` (an incomplete discovery) only adds: a region
-        that merely failed to list must not lose its storage account.
-        Returns a summary dict with ``added``, ``removed``, and ``errors``.
+        A missing active region gets an account; an account whose region is no
+        longer active is kept idle (short retention), and gets the normal
+        retention back when the region is active again.
+        ``allow_remove=False`` (an incomplete discovery) idles nothing: a region
+        that merely failed to list keeps its normal retention.
+        Returns a summary dict with ``added``, ``idle`` and ``errors``.
         """
         provisioned_regions = set(provisioned_map.keys())
         to_add = active_regions - provisioned_regions
-        to_remove = provisioned_regions - active_regions if allow_remove else set()
+        to_idle = provisioned_regions - active_regions if allow_remove else set()
 
-        summary: Dict = {"added": [], "removed": [], "errors": []}
+        summary: Dict = {"added": [], "idle": [], "errors": []}
 
         for region in to_add:
             try:
@@ -671,109 +581,20 @@ class RegionManager:
                 summary["errors"].append({"region": region, "error": str(e)})
                 logger.error(f"Error provisioning storage for region {region}: {e}")
 
-        for region in to_remove:
-            sa_name = provisioned_map.get(region, "")
-            if not sa_name:
+        normal_days = _get_blob_retention_days()
+        for region, sa_name in sorted(provisioned_map.items()):
+            if not sa_name or region not in (active_regions | to_idle):
                 continue
-            try:
-                success = self.deprovision_storage_account(resource_group, region, sa_name)
-                if success:
-                    summary["removed"].append(region)
-                else:
-                    summary["errors"].append(
-                        {"region": region, "error": "deprovision returned False"}
-                    )
-            except Exception as e:
-                summary["errors"].append({"region": region, "error": str(e)})
-                logger.error(f"Error deprovisioning storage for region {region}: {e}")
+            idle = region in to_idle
+            if self.set_retention(resource_group, sa_name, IDLE_RETENTION_DAYS if idle else normal_days):
+                if idle:
+                    summary["idle"].append(region)
+            else:
+                summary["errors"].append({"region": region, "error": "retention not set"})
 
         logger.info(
             f"Reconciliation complete — added: {len(summary['added'])}, "
-            f"removed: {len(summary['removed'])}, "
+            f"idle: {len(summary['idle'])}, "
             f"errors: {len(summary['errors'])}"
         )
         return summary
-
-    # ------------------------------------------------------------------
-    # Resource locks
-    # ------------------------------------------------------------------
-
-    def apply_lock(
-        self,
-        resource_group: str,
-        resource_name: str,
-        resource_type: str,
-    ) -> bool:
-        """Apply a CanNotDelete management lock to a resource."""
-        if ManagementLockClient is None:
-            logger.warning("ManagementLockClient unavailable — skipping lock")
-            return False
-        lock_client = ManagementLockClient(
-            self.credential, self.subscription_id
-        )
-        parts = resource_type.split("/", 1)
-        if len(parts) != 2:
-            logger.error(f"Invalid resource_type format: {resource_type}")
-            return False
-
-        provider_namespace = parts[0]
-        resource_type_short = parts[1]
-        lock_nm = f"s247-lock-{_sanitize_region(resource_name)}"
-
-        try:
-            lock_client.management_locks.create_or_update_at_resource_level(
-                resource_group_name=resource_group,
-                resource_provider_namespace=provider_namespace,
-                parent_resource_path="",
-                resource_type=resource_type_short,
-                resource_name=resource_name,
-                lock_name=lock_nm,
-                parameters={
-                    "level": "CanNotDelete",
-                    "notes": "Managed by s247-diag-logs — do not remove manually.",
-                },
-            )
-            logger.info(f"Applied lock '{lock_nm}' on {resource_name}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to apply lock on {resource_name}: {e}")
-            return False
-
-    def remove_lock(self, resource_group: str, lock_name: str, resource_name: str = "",
-                    resource_type: str = "") -> bool:
-        """Remove a management lock by name.
-
-        With ``resource_name``/``resource_type`` the lock is removed from that
-        resource, the scope apply_lock created it at; without them, from the
-        resource group.
-        """
-        if ManagementLockClient is None:
-            logger.warning("ManagementLockClient unavailable — skipping lock removal")
-            return False
-        lock_client = ManagementLockClient(
-            self.credential, self.subscription_id
-        )
-        try:
-            if resource_name:
-                provider_namespace, resource_type_short = resource_type.split("/", 1)
-                lock_client.management_locks.delete_at_resource_level(
-                    resource_group_name=resource_group,
-                    resource_provider_namespace=provider_namespace,
-                    parent_resource_path="",
-                    resource_type=resource_type_short,
-                    resource_name=resource_name,
-                    lock_name=lock_name,
-                )
-            else:
-                lock_client.management_locks.delete_at_resource_group_level(
-                    resource_group_name=resource_group,
-                    lock_name=lock_name,
-                )
-            logger.info(f"Removed lock '{lock_name}' from '{resource_name or resource_group}'")
-            return True
-        except Exception as e:
-            if "NotFound" in str(type(e).__name__) or "not found" in str(e).lower():
-                logger.debug(f"Lock '{lock_name}' not found — nothing to remove")
-                return True
-            logger.error(f"Failed to remove lock '{lock_name}': {e}")
-            return False

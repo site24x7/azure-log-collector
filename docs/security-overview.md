@@ -24,7 +24,7 @@ The Function App makes outbound HTTPS calls only:
 |---|---|
 | `plus.site24x7.<dc>` (`/applog/*`) | Log type catalog and creation, collector registration |
 | `logc.site24x7.<dc>` (`/upload`) | Sending log records |
-| `management.azure.com` | ARM: list resources, manage diagnostic settings, storage accounts, locks, own app settings, function keys |
+| `management.azure.com` | ARM: list resources, manage diagnostic settings, storage accounts, own app settings, function keys |
 | `*.blob/queue/table.core.windows.net` | The collector's own storage (state, queues) and the regional log storage accounts |
 | Managed identity endpoint (local to the Function App) | Azure access tokens |
 | `api.github.com`, `github.com`, `objects.githubusercontent.com`, `release-assets.githubusercontent.com` | Update checks and update packages, only when `UPDATE_CHECK_URL` is set (the template sets it to this repository) |
@@ -64,15 +64,15 @@ The deployment template writes no key to its outputs. `dashboardUrl` is the addr
 |---|---|---|
 | Reader | Each monitored subscription | List resources and their log categories |
 | Monitoring Contributor | Each monitored subscription | Create, update and delete diagnostic settings |
-| Contributor | The collector's own resource group (`s247-diag-logs-<suffix>-rg`, or `s247-diag-logs-rg`) | Regional storage accounts and their locks, the Function App's own app settings, its function keys (the `site24x7` key) and code deployment (self-update) |
+| Contributor | The collector's own resource group (`s247-diag-logs-<suffix>-rg`, or `s247-diag-logs-rg`) | Regional storage accounts, the Function App's own app settings, its function keys (the `site24x7` key) and code deployment (self-update) |
 
 It has no Owner role and no `Microsoft.Authorization/roleAssignments` write. Its Contributor role covers its own resource group only.
 
 Monitoring Contributor covers diagnostic settings on every resource in the subscription, so a compromised collector could change or remove diagnostic settings it did not create. The collector itself only touches settings named for this collector (`s247-diag-logs-<suffix>`). It removes the older shared name `s247-diag-logs` only when that setting sends to this collector's own storage account.
 
-**Locks:** the resource group gets a CanNotDelete lock at deployment, and each regional storage account gets its own lock. The collector removes an account's lock only to delete an account it no longer needs (section 5).
+**Locks:** the resource group gets a CanNotDelete lock at deployment. The collector cannot change locks (its Contributor role has no lock rights) and never deletes a storage account (section 5).
 
-**Ownership:** each storage account carries an `s247-collector` tag naming its collector. A collector only reads, adopts or deletes its own accounts, even when several share a resource group. It never overwrites or deletes a diagnostic setting with its name that sends somewhere other than its own resource group.
+**Ownership:** each storage account carries an `s247-collector` tag naming its collector. A collector only reads, adopts or changes its own accounts, even when several share a resource group. It never overwrites or deletes a diagnostic setting with its name that sends somewhere other than its own resource group.
 
 ---
 
@@ -95,7 +95,7 @@ Once collecting, every scan (every 6 hours, and on demand) does the following:
   - It applies a lifecycle rule that deletes blobs after `BLOB_RETENTION_DAYS`, 7 by default.
   - Public blob access is off and TLS 1.2 is the minimum.
 - **Clean-up:** removes this collector's setting from resources that became excluded or were deleted.
-- **Unused storage:** deletes a regional storage account no longer needed. It skips that if the account holds logs newer than `SAFE_DELETE_MAX_AGE_DAYS`, 7 by default.
+- **Unused storage:** keeps a storage account whose region (or, for the Entra ID account, Entra ID) is no longer collected, and changes its lifecycle rule to delete blobs after 1 day. Logs that still reach it, through a diagnostic setting that could not be removed or a failed push, do not build up. When the region is collected again, the normal rule comes back. Accounts are never deleted, because a deleted account's name can be taken by anyone in Azure.
 - **Site24x7:** creates the Site24x7 log types for new categories.
 
 **Safeguards**
@@ -243,7 +243,7 @@ AutoUpdater records each run as an event; the new version confirms the update on
 | Question | Answer |
 |---|---|
 | Can it read data outside its own resource group? | It reads the resource inventory and log categories of the monitored subscriptions, and the log blobs in its own regional storage accounts. It does not read data of your other resources (disks, databases, other storage accounts). |
-| Can it change my resources? | It manages diagnostic settings on resources in the monitored subscriptions (only its own, as described in section 3). It creates and deletes storage accounts in its own resource group, and writes its own app settings. It does nothing until an admin starts collecting (section 4). |
+| Can it change my resources? | It manages diagnostic settings on resources in the monitored subscriptions (only its own, as described in section 3). It creates storage accounts in its own resource group (it never deletes them), and writes its own app settings. It does nothing until an admin starts collecting (section 4). |
 | Can it change permissions? | No. It has no role-assignment rights. |
 | What if the GitHub repository were compromised? | An attacker would need to publish a release that passes the update gates (section 9) and wait for the age gate. You can turn updates off (`SKIP_AUTO_UPDATE=true`) or point `UPDATE_CHECK_URL` at your own fork. |
 | What if Site24x7 were compromised? | With the Device Key, an attacker could send logs into your Site24x7 account. With the stored `site24x7` key (section 6), they could call those 17 endpoints, for example change settings, remove diagnostic settings, or open the dashboard and its (redacted) debug data. Revoke it with `SITE24X7_KEY_EXCLUDE=*`. They cannot reach your other Azure resources: the collector's identity is limited as described in section 3. |

@@ -6,6 +6,13 @@
       "name": "timer",
       "direction": "in",
       "schedule": "0 */2 * * * *"
+    },
+    {
+      "type": "queue",
+      "name": "scanQueue",
+      "direction": "out",
+      "queueName": "scan-requests",
+      "connection": "AzureWebJobsStorage"
     }
   ]
 }

@@ -701,7 +701,12 @@ def save_resource_inventory(resources: List[Dict], subscription_ids: List[str],
     to list the subscription again. Values only, at most INVENTORY_MAX_VALUES
     of each."""
     def values(items):
-        return sorted({v for v in items if v})[:INVENTORY_MAX_VALUES]
+        # Azure returns some types in two spellings (Microsoft.Insights/... and
+        # microsoft.insights/...), and the filters match without case: list each once.
+        unique = {}
+        for v in sorted(v for v in items if v):
+            unique.setdefault(v.lower(), v)
+        return list(unique.values())[:INVENTORY_MAX_VALUES]
 
     inventory = {
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -709,7 +714,10 @@ def save_resource_inventory(resources: List[Dict], subscription_ids: List[str],
         # In the collector's order: the hosting subscription first.
         "subscriptions": list(dict.fromkeys(s for s in subscription_ids if s))[:INVENTORY_MAX_VALUES],
         "subscription_names": {s: n for s, n in (subscription_names or {}).items() if s in subscription_ids},
-        "locations": values(r.get("location", "") for r in resources),
+        # Global resources (DNS, Front Door, ...) have no region and are always
+        # included (ignore_list.is_ignored), so "global" is not a region to pick.
+        "locations": values(r.get("location", "") for r in resources
+                            if (r.get("location") or "").lower() != "global"),
         "resource_types": values(r.get("type", "") for r in resources),
         "tags": values(f"{k}={v}" for r in resources for k, v in (r.get("tags") or {}).items()),
     }

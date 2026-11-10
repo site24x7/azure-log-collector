@@ -41,8 +41,7 @@ def test_general_logtype_toggle_needs_a_json_boolean(body):
 @pytest.mark.parametrize("body", [
     {"key": "AUTO_SCAN_ENABLED", "value": "no"},
     {"key": "AUTO_SCAN_ENABLED", "value": 1},
-    {"key": "SAFE_DELETE_MAX_AGE_DAYS", "value": "14"},
-    {"key": "SAFE_DELETE_MAX_AGE_DAYS", "value": True},
+    {"key": "SAFE_DELETE_MAX_AGE_DAYS", "value": 14},           # no longer a setting
     {"key": ["AUTO_SCAN_ENABLED"], "value": True},
     ["AUTO_SCAN_ENABLED", True],
 ])
@@ -57,7 +56,7 @@ def test_settings_accept_real_values():
     with patch("shared.azure_manager.AzureManager") as mgr, patch("shared.debug_logger.log_audit"):
         mgr.return_value.update_app_setting.return_value = True
         assert UpdateSettings.main(_req({"key": "AUTO_SCAN_ENABLED", "value": False})).status_code == 200
-        assert UpdateSettings.main(_req({"key": "SAFE_DELETE_MAX_AGE_DAYS", "value": 14})).status_code == 200
+        assert UpdateSettings.main(_req({"key": "MONITOR_PIPELINE_RESOURCES", "value": True})).status_code == 200
 
 
 # ── disabled log types ───────────────────────────────────────────────────────

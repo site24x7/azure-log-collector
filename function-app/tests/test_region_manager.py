@@ -10,7 +10,8 @@ from shared.region_manager import (
     _storage_account_name,
     STORAGE_PREFIX,
     LOGS_CONTAINER,
-    SAFE_DELETE_MAX_AGE_DAYS_DEFAULT,
+    IDLE_RETENTION_DAYS,
+    RETENTION_RULE_NAME,
 )
 
 
@@ -155,15 +156,17 @@ class TestTenantStorageAccount:
             mock_cls.return_value.storage_accounts.list_by_resource_group.return_value = [
                 self._tenant_acct()
             ]
-            result = rm.ensure_tenant_storage_account("my-rg", "abc")
+            with patch.object(rm, "set_retention", return_value=True) as keep:
+                result = rm.ensure_tenant_storage_account("my-rg", "abc")
             assert result["name"] == "s247diagtenantabc"
             # No create call when it already exists
             mock_cls.return_value.storage_accounts.begin_create.assert_not_called()
+            # back on the normal retention after being idle
+            keep.assert_called_once_with("my-rg", "s247diagtenantabc", 7)
 
     def test_ensure_creates_when_missing(self, rm):
         with patch("shared.region_manager.StorageManagementClient") as mock_cls, \
              patch("shared.region_manager.ResourceManagementClient") as mock_rc, \
-             patch.object(rm, "apply_lock"), \
              patch.object(rm, "apply_lifecycle_policy"):
             sc = mock_cls.return_value
             sc.storage_accounts.list_by_resource_group.return_value = []  # none yet
@@ -193,24 +196,25 @@ class TestTenantStorageAccount:
             mock_sc.return_value.subscriptions.get.side_effect = Exception("no access")
             assert rm.get_subscription_name("sub-123") == ""
 
-    def test_deprovision_noop_when_absent(self, rm):
-        with patch("shared.region_manager.StorageManagementClient") as mock_cls:
+    def test_idle_noop_when_absent(self, rm):
+        with patch("shared.region_manager.StorageManagementClient") as mock_cls, \
+             patch.object(rm, "set_retention") as keep:
             mock_cls.return_value.storage_accounts.list_by_resource_group.return_value = [
                 self._regional_acct()
             ]
-            # No tenant SA present → nothing to delete
-            assert rm.deprovision_tenant_storage_account("my-rg") is False
+            # No tenant SA present → nothing to idle
+            assert rm.idle_tenant_storage_account("my-rg") is False
+        keep.assert_not_called()
 
-    def test_deprovision_delegates_when_present(self, rm):
+    def test_idle_keeps_the_account_with_short_retention(self, rm):
         with patch("shared.region_manager.StorageManagementClient") as mock_cls, \
-             patch.object(rm, "deprovision_storage_account", return_value=True) as dep:
+             patch.object(rm, "set_retention", return_value=True) as keep:
             mock_cls.return_value.storage_accounts.list_by_resource_group.return_value = [
                 self._tenant_acct()
             ]
-            assert rm.deprovision_tenant_storage_account("my-rg") is True
-            dep.assert_called_once()
-            # called with the tenant SA's name
-            assert dep.call_args[0][2] == "s247diagtenantabc"
+            assert rm.idle_tenant_storage_account("my-rg") is True
+        keep.assert_called_once_with("my-rg", "s247diagtenantabc", IDLE_RETENTION_DAYS)
+        mock_cls.return_value.storage_accounts.delete.assert_not_called()
 
 
 class TestProvisionStorageAccount:
@@ -220,8 +224,7 @@ class TestProvisionStorageAccount:
 
         with patch("shared.region_manager.StorageManagementClient") as mock_cls:
             mock_cls.return_value.storage_accounts.begin_create.return_value.result.return_value = mock_sa
-            with patch.object(rm, "apply_lock", return_value=True), \
-                 patch.object(rm, "apply_lifecycle_policy", return_value=True) as alp:
+            with patch.object(rm, "apply_lifecycle_policy", return_value=True) as alp:
                 result = rm.provision_storage_account("rg", "eastus", "abc")
                 assert result["storage_account_id"] == mock_sa.id
                 assert result["region"] == "eastus"
@@ -265,161 +268,83 @@ class TestApplyLifecyclePolicy:
         assert rm.apply_lifecycle_policy(client, "rg", "sa1") is False
 
 
-class TestDeprovisionStorageAccount:
-    def test_removes_lock_and_deletes(self, rm):
+def _policy(days, name=RETENTION_RULE_NAME, enabled=True):
+    rule = MagicMock(enabled=enabled)
+    rule.name = name
+    rule.definition.actions.base_blob.delete.days_after_modification_greater_than = float(days)
+    return MagicMock(policy=MagicMock(rules=[rule]))
+
+
+class TestSetRetention:
+    def test_writes_only_on_a_change(self, rm):
         with patch("shared.region_manager.StorageManagementClient") as mock_cls:
-            with patch.object(rm, "remove_lock", return_value=True):
-                with patch.object(rm, "_has_recent_blobs", return_value=False):
-                    assert rm.deprovision_storage_account("rg", "eastus", "sa-name") is True
-                    mock_cls.return_value.storage_accounts.delete.assert_called_once()
+            policies = mock_cls.return_value.management_policies
+            policies.get.return_value = _policy(7)
+            assert rm.set_retention("rg", "sa", 7) is True
+            policies.create_or_update.assert_not_called()
+            assert rm.set_retention("rg", "sa", IDLE_RETENTION_DAYS) is True
+            days = (policies.create_or_update.call_args.kwargs["properties"]["policy"]["rules"][0]
+                    ["definition"]["actions"]["baseBlob"]["delete"]["daysAfterModificationGreaterThan"])
+            assert days == IDLE_RETENTION_DAYS
 
-    def test_delete_failure(self, rm):
+    @pytest.mark.parametrize("current", [
+        Exception("no policy yet"), _policy(7, name="someone-elses-rule"), _policy(1, enabled=False)])
+    def test_writes_when_our_rule_is_missing(self, rm, current):
         with patch("shared.region_manager.StorageManagementClient") as mock_cls:
-            mock_cls.return_value.storage_accounts.delete.side_effect = Exception("Locked")
-            with patch.object(rm, "remove_lock", return_value=True):
-                with patch.object(rm, "apply_lock", return_value=True) as mock_apply:
-                    with patch.object(rm, "_has_recent_blobs", return_value=False):
-                        assert rm.deprovision_storage_account("rg", "eastus", "sa-name") is False
-                        # Lock must be restored after failure
-                        mock_apply.assert_called_once()
+            policies = mock_cls.return_value.management_policies
+            if isinstance(current, Exception):
+                policies.get.side_effect = current
+            else:
+                policies.get.return_value = current
+            assert rm.set_retention("rg", "sa", IDLE_RETENTION_DAYS) is True
+            policies.create_or_update.assert_called_once()
 
-    def test_skips_if_recent_blobs(self, rm):
-        with patch("shared.region_manager.StorageManagementClient"):
-            with patch.object(rm, "_has_recent_blobs", return_value=True):
-                assert rm.deprovision_storage_account("rg", "eastus", "sa-name") is False
-
-
-class TestHasRecentBlobs:
-    def test_no_recent_blobs(self, rm):
-        from datetime import datetime, timedelta, timezone
-        mock_keys = MagicMock()
-        mock_keys.keys = [MagicMock(value="key123")]
-        mock_storage = MagicMock()
-        mock_storage.storage_accounts.list_keys.return_value = mock_keys
-
-        old_blob = MagicMock()
-        old_blob.last_modified = datetime.now(timezone.utc) - timedelta(days=30)
-        old_blob.name = "old.json"
-
-        mock_container_client = MagicMock()
-        mock_container_client.list_blobs.return_value = [old_blob]
-
-        with patch("azure.storage.blob.BlobServiceClient") as mock_bs:
-            mock_bs.from_connection_string.return_value.list_containers.return_value = [
-                {"name": "insights-logs-audit"}
-            ]
-            mock_bs.from_connection_string.return_value.get_container_client.return_value = mock_container_client
-            assert rm._has_recent_blobs("rg", "sa-name", mock_storage) is False
-
-    def test_has_recent_blobs(self, rm):
-        from datetime import datetime, timezone
-        mock_keys = MagicMock()
-        mock_keys.keys = [MagicMock(value="key123")]
-        mock_storage = MagicMock()
-        mock_storage.storage_accounts.list_keys.return_value = mock_keys
-
-        recent_blob = MagicMock()
-        recent_blob.last_modified = datetime.now(timezone.utc)
-        recent_blob.name = "recent.json"
-
-        mock_container_client = MagicMock()
-        mock_container_client.list_blobs.return_value = [recent_blob]
-
-        with patch("azure.storage.blob.BlobServiceClient") as mock_bs:
-            mock_bs.from_connection_string.return_value.list_containers.return_value = [
-                {"name": "insights-logs-audit"}
-            ]
-            mock_bs.from_connection_string.return_value.get_container_client.return_value = mock_container_client
-            assert rm._has_recent_blobs("rg", "sa-name", mock_storage) is True
-
-    def test_error_assumes_recent(self, rm):
-        mock_storage = MagicMock()
-        mock_storage.storage_accounts.list_keys.side_effect = Exception("Access denied")
-        assert rm._has_recent_blobs("rg", "sa-name", mock_storage) is True
+    def test_failure_is_reported_not_raised(self, rm):
+        with patch("shared.region_manager.StorageManagementClient") as mock_cls:
+            policies = mock_cls.return_value.management_policies
+            policies.get.side_effect = Exception("no policy yet")
+            policies.create_or_update.side_effect = Exception("not allowed")
+            assert rm.set_retention("rg", "sa", 1) is False
 
 
 class TestReconcileRegions:
-    def test_adds_new_removes_old(self, rm):
+    def test_adds_new_and_idles_unused_without_deleting(self, rm):
         active = {"eastus", "westus"}
         provisioned = {"eastus": "s247diageastusabc", "centralus": "s247diagcentralusabc"}
 
-        with patch.object(rm, "provision_storage_account") as mock_prov:
+        with patch.object(rm, "provision_storage_account") as mock_prov, \
+             patch.object(rm, "set_retention", return_value=True) as keep, \
+             patch("shared.region_manager.StorageManagementClient") as mock_cls:
             mock_prov.return_value = {"storage_account_name": "new", "storage_account_id": "id", "container_name": LOGS_CONTAINER, "region": "westus"}
-            with patch.object(rm, "deprovision_storage_account") as mock_deprov:
-                mock_deprov.return_value = True
-                result = rm.reconcile_regions("rg", active, provisioned, "abc")
-                assert len(result["added"]) == 1
-                assert len(result["removed"]) == 1
-                assert len(result["errors"]) == 0
+            result = rm.reconcile_regions("rg", active, provisioned, "abc")
+        assert len(result["added"]) == 1
+        assert result["idle"] == ["centralus"]
+        assert result["errors"] == []
+        assert sorted(c.args for c in keep.call_args_list) == [
+            ("rg", "s247diagcentralusabc", IDLE_RETENTION_DAYS),
+            ("rg", "s247diageastusabc", 7),       # active again: normal retention back
+        ]
+        mock_cls.return_value.storage_accounts.delete.assert_not_called()
 
     def test_no_changes_needed(self, rm):
-        active = {"eastus"}
-        provisioned = {"eastus": "s247diageastusabc"}
-        result = rm.reconcile_regions("rg", active, provisioned, "abc")
-        assert result == {"added": [], "removed": [], "errors": []}
+        with patch.object(rm, "set_retention", return_value=True):
+            result = rm.reconcile_regions("rg", {"eastus"}, {"eastus": "s247diageastusabc"}, "abc")
+        assert result == {"added": [], "idle": [], "errors": []}
+
+    def test_retention_failure_is_an_error(self, rm):
+        with patch.object(rm, "set_retention", return_value=False):
+            result = rm.reconcile_regions("rg", set(), {"centralus": "s247diagcentralusabc"}, "abc")
+        assert result["idle"] == []
+        assert result["errors"] == [{"region": "centralus", "error": "retention not set"}]
 
 
-class TestApplyLock:
-    def test_applies_lock(self, rm):
-        with patch("shared.region_manager.ManagementLockClient") as mock_lock_cls:
-            # Override the module-level ManagementLockClient
-            import shared.region_manager as rm_mod
-            original = rm_mod.ManagementLockClient
-            rm_mod.ManagementLockClient = mock_lock_cls
-            try:
-                result = rm.apply_lock("rg", "sa-name", "Microsoft.Storage/storageAccounts")
-                assert result is True
-            finally:
-                rm_mod.ManagementLockClient = original
-
-    def test_invalid_resource_type(self, rm):
-        import shared.region_manager as rm_mod
-        original = rm_mod.ManagementLockClient
-        rm_mod.ManagementLockClient = MagicMock()
-        try:
-            assert rm.apply_lock("rg", "sa", "InvalidType") is False
-        finally:
-            rm_mod.ManagementLockClient = original
-
-
-class TestRemoveLock:
-    def test_removes_lock(self, rm):
-        import shared.region_manager as rm_mod
-        original = rm_mod.ManagementLockClient
-        rm_mod.ManagementLockClient = MagicMock()
-        try:
-            result = rm.remove_lock("rg", "lock-name")
-            assert result is True
-        finally:
-            rm_mod.ManagementLockClient = original
-
-    def test_lock_not_found(self, rm):
-        import shared.region_manager as rm_mod
-        original = rm_mod.ManagementLockClient
-        mock_cls = MagicMock()
-        mock_cls.return_value.management_locks.delete_at_resource_group_level.side_effect = Exception("ResourceNotFoundError: not found")
-        rm_mod.ManagementLockClient = mock_cls
-        try:
-            result = rm.remove_lock("rg", "missing-lock")
-            assert result is True
-        finally:
-            rm_mod.ManagementLockClient = original
-
-
-
-def test_storage_lock_is_removed_at_the_scope_it_was_created(rm):
+def test_the_collector_never_deletes_a_storage_account_or_uses_locks():
+    # Its Contributor role cannot change locks, and a deleted name can be taken by anyone.
+    from pathlib import Path
     import shared.region_manager as rm_mod
-    original = rm_mod.ManagementLockClient
-    rm_mod.ManagementLockClient = MagicMock()
-    try:
-        assert rm.remove_lock("rg", "s247-lock-x", resource_name="s247diagx",
-                              resource_type="Microsoft.Storage/storageAccounts")
-        locks = rm_mod.ManagementLockClient.return_value.management_locks
-        locks.delete_at_resource_level.assert_called_once()
-        locks.delete_at_resource_group_level.assert_not_called()
-        assert locks.delete_at_resource_level.call_args.kwargs["resource_name"] == "s247diagx"
-    finally:
-        rm_mod.ManagementLockClient = original
+    source = Path(rm_mod.__file__).read_text()
+    assert "storage_accounts.delete" not in source
+    assert "ManagementLockClient" not in source and "management_locks" not in source
 
 
 class TestStorageNameFallback:
@@ -441,8 +366,7 @@ class TestStorageNameFallback:
             ops.check_name_availability.side_effect = self._taken("s247diageastusabc")
             ops.get_properties.side_effect = ResourceNotFoundError("Not found")
             ops.begin_create.return_value.result.return_value = mock_sa
-            with patch.object(rm, "apply_lock", return_value=True), \
-                 patch.object(rm, "apply_lifecycle_policy", return_value=True):
+            with patch.object(rm, "apply_lifecycle_policy", return_value=True):
                 result = rm.provision_storage_account("rg", "eastus", "abc")
         name = ops.begin_create.call_args.kwargs["account_name"]
         assert name != "s247diageastusabc"
@@ -457,7 +381,6 @@ class TestStorageNameFallback:
         with patch("shared.region_manager.StorageManagementClient") as mock_cls, \
              patch.object(rm, "get_tenant_storage_account", return_value=None), \
              patch.object(rm, "_resource_group_location", return_value="eastus"), \
-             patch.object(rm, "apply_lock", return_value=True), \
              patch.object(rm, "apply_lifecycle_policy", return_value=True):
             ops = mock_cls.return_value.storage_accounts
             ops.check_name_availability.side_effect = self._taken("s247diagtenantabc")

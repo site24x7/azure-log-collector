@@ -5,39 +5,29 @@ import logging
 import azure.functions as func
 
 
-# Whitelisted settings that can be updated from the dashboard.
-# Maps setting key → { "type": "int"|"str"|"bool", "min": N, "max": N }
-# "default" is the value the collector uses when the setting is unset.
+# Whitelisted yes/no settings that can be updated from the dashboard, with
+# the value the collector uses when the setting is unset.
 ALLOWED_SETTINGS = {
-    "SAFE_DELETE_MAX_AGE_DAYS": {"type": "int", "min": 1, "max": 365, "default": 7},
-    "MONITOR_PIPELINE_RESOURCES": {"type": "bool", "default": False},
-    "AUTO_SCAN_ENABLED": {"type": "bool", "default": True},
+    "MONITOR_PIPELINE_RESOURCES": False,
+    "AUTO_SCAN_ENABLED": True,
 }
 
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     """Update a whitelisted app setting.
 
-    PUT /api/settings  body: {"key": "SAFE_DELETE_MAX_AGE_DAYS", "value": 14}
+    PUT /api/settings  body: {"key": "AUTO_SCAN_ENABLED", "value": false}
     GET  /api/settings  → returns current values of all whitelisted settings
     """
     from shared.azure_manager import AzureManager
 
     if req.method == "GET":
         current = {}
-        for key, meta in ALLOWED_SETTINGS.items():
+        for key, default in ALLOWED_SETTINGS.items():
             # Read each setting exactly as the collector does: the default
-            # only when it is unset; an empty yes/no setting counts as off.
+            # only when it is unset; an empty setting counts as off.
             raw = os.environ.get(key)
-            if meta["type"] == "int":
-                try:
-                    current[key] = int(raw) if raw is not None else meta["default"]
-                except (ValueError, TypeError):
-                    current[key] = meta["default"]
-            elif meta["type"] == "bool":
-                current[key] = raw.lower() == "true" if raw is not None else meta["default"]
-            else:
-                current[key] = raw or ""
+            current[key] = raw.lower() == "true" if raw is not None else default
         return func.HttpResponse(
             json.dumps(current, indent=2),
             mimetype="application/json",
@@ -80,40 +70,17 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             status_code=400,
         )
 
-    meta = ALLOWED_SETTINGS[key]
-
-    # Validate type and range
-    # Exact JSON types: no coercion of strings, numbers or containers.
-    if meta["type"] == "int":
-        if isinstance(value, bool) or not isinstance(value, int):
-            return func.HttpResponse(
-                json.dumps({"error": f"'{key}' must be an integer"}),
-                mimetype="application/json",
-                status_code=400,
-            )
-        if "min" in meta and value < meta["min"]:
-            return func.HttpResponse(
-                json.dumps({"error": f"'{key}' must be >= {meta['min']}"}),
-                mimetype="application/json",
-                status_code=400,
-            )
-        if "max" in meta and value > meta["max"]:
-            return func.HttpResponse(
-                json.dumps({"error": f"'{key}' must be <= {meta['max']}"}),
-                mimetype="application/json",
-                status_code=400,
-            )
-    elif meta["type"] == "bool":
-        if not isinstance(value, bool):
-            return func.HttpResponse(
-                json.dumps({"error": f"'{key}' must be true or false"}),
-                mimetype="application/json",
-                status_code=400,
-            )
+    # Exact JSON type: no coercion of strings, numbers or containers.
+    if not isinstance(value, bool):
+        return func.HttpResponse(
+            json.dumps({"error": f"'{key}' must be true or false"}),
+            mimetype="application/json",
+            status_code=400,
+        )
 
     try:
         azure_mgr = AzureManager()
-        str_value = str(value).lower() if meta["type"] == "bool" else str(value)
+        str_value = str(value).lower()
         if not azure_mgr.update_app_setting(key, str_value):
             return func.HttpResponse(
                 json.dumps({"error": f"Failed to update setting '{key}'"}),

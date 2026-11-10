@@ -29,6 +29,12 @@ def main(msg: func.QueueMessage) -> None:
             pass
         return
 
+    if _already_scanned_since(body):
+        # A scan that started after this request covers it: for example the
+        # first scan asked for by both Site24x7 and the collector's own start.
+        logging.info("ScanWorker: A scan started after this request — nothing to do")
+        return
+
     try:
         from shared.debug_logger import log_event
         log_event("info", "ScanWorker",
@@ -81,6 +87,19 @@ def main(msg: func.QueueMessage) -> None:
     finally:
         from shared.registration import register_with_site24x7
         register_with_site24x7()
+
+
+def _already_scanned_since(body: str) -> bool:
+    """True when a scan started after the request was made (running or finished)."""
+    try:
+        from datetime import datetime
+        from shared.config_store import get_scan_state
+        requested = datetime.fromisoformat(json.loads(body)["requested_at"].replace("Z", "+00:00"))
+        state = get_scan_state() or {}
+        started = state.get("scan_started_at") if state.get("in_progress") else state.get("last_scan_started_at")
+        return bool(started) and datetime.fromisoformat(started.replace("Z", "+00:00")) > requested
+    except Exception:
+        return False  # unreadable request or state: scan, as before
 
 
 def _clear_in_progress(error_msg=None):
