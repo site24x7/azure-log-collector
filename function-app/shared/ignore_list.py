@@ -68,7 +68,12 @@ def _get_blob_client():
 
 
 def _with_defaults(ignore_list: Dict) -> Dict:
-    """Fill in missing lists (empty = all) and the tags' include/exclude lists."""
+    """Fill in missing lists (empty = all) and the tags' include/exclude lists.
+
+    Keys of earlier versions (include_ names, resource_ids, ...) are dropped, so a
+    list read back and saved again (the dashboard sends the whole list) is valid."""
+    for key in set(ignore_list) - _ALLOWED_KEYS:
+        del ignore_list[key]
     for key in LIST_KEYS:
         ignore_list.setdefault(key, [])
     tags = ignore_list.get("tags")

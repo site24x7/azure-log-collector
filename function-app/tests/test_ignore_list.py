@@ -71,6 +71,15 @@ class TestWithDefaults:
         result = _with_defaults(data)
         assert result["tags"] == {"include": [], "exclude": ["env=dev"]}
 
+    def test_keys_of_earlier_versions_are_dropped(self):
+        # A list saved by beta1-beta4 and read after an update must save again as it is.
+        data = {"include_locations": ["eastus"], "resource_ids": [], "locations": ["westus"],
+                "tags": {"include": [], "exclude": []}}
+        result = _with_defaults(data)
+        assert set(result) == set(LIST_KEYS) | {"tags"}
+        assert result["locations"] == ["westus"]
+        assert validate_ignore_list(result) == ""
+
 
 # ─── is_ignored ──────────────────────────────────────────────────────────────
 
