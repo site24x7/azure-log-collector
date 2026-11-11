@@ -467,7 +467,7 @@ class AzureManager:
         a record the regional name this collector would use is assumed.
         Returns a summary dict with counts.
         """
-        from shared.storage_names import legacy_regional_storage_name, regional_storage_name
+        from shared.storage_names import legacy_regional_storage_name, regional_storage_name, storage_region
 
         summary: Dict[str, Any] = {"removed": 0, "skipped": 0, "errors": 0, "unresolved": 0,
                                    "details": [], "resolved_ids": []}
@@ -487,10 +487,11 @@ class AzureManager:
                         continue
                 record = (records or {}).get(resource_id) or {}
                 own = record.get("storage_account", "")
-                if suffix and not own and resource.get("location"):
+                region = storage_region(resource.get("location", ""))
+                if suffix and not own and region:
                     try:
-                        own = {regional_storage_name(resource["location"], suffix, seed),
-                               legacy_regional_storage_name(resource["location"], suffix, seed)}
+                        own = {regional_storage_name(region, suffix, seed),
+                               legacy_regional_storage_name(region, suffix, seed)}
                     except ValueError:
                         own = ""
                 legacy = self.remove_legacy_setting_if_own(resource_id, own, raise_errors=True)

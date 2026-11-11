@@ -1,5 +1,6 @@
 """Stable storage names; preserve legacy deployments and avoid suffix truncation."""
 import hashlib
+import os
 import re
 
 
@@ -22,6 +23,18 @@ def regional_storage_name(region: str, suffix: str, seed_region: str = "") -> st
     # Include the entire region and suffix; neither loses entropy at 24 chars.
     digest = hashlib.sha256(f"{suffix}:{region}".encode()).hexdigest()[:16]
     return f"s247diag{digest}"
+
+
+def storage_region(location: str) -> str:
+    """The region whose storage account receives a resource's logs.
+
+    Global resources (Front Door, Traffic Manager, DNS, ...) have no region, and
+    Azure lets them send to a storage account in any region: they use the
+    deployment's region (DIAG_SEED_REGION). Empty when that is not set."""
+    region = (location or "").lower()
+    if region == "global":
+        return re.sub(r"\s", "", os.environ.get("DIAG_SEED_REGION", "").lower())
+    return region
 
 
 def tenant_storage_name(suffix: str) -> str:

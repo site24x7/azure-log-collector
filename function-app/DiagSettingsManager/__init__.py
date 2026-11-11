@@ -119,6 +119,30 @@ def _record_scan_failure(code: str) -> None:
         pass
 
 
+
+def _tenant_storage(region_mgr, resource_group, suffix, hosting_subscription):
+    """The dedicated tenant-log (Entra) storage account: (account, subscription name, unreadable).
+
+    Entra logs are tenant-scoped (no region). The account (tag diag-logs-tenant) is
+    created while at least one Entra log type is enabled, and kept idle (short
+    retention, see region_manager) while none is. When the Entra settings cannot be
+    read, nothing changes: an account in use must never get the idle retention.
+    """
+    from shared.config_store import get_entra_logtype_states
+    try:
+        states = get_entra_logtype_states(strict=True)
+    except Exception as e:
+        logging.error("DiagSettingsManager: Entra log type states unreadable (%s); tenant storage left as it is",
+                      type(e).__name__)
+        return region_mgr.get_tenant_storage_account(resource_group), "", True
+    if not any(state.get("enabled") for state in states.values()):
+        region_mgr.idle_tenant_storage_account(resource_group)
+        return {}, "", False
+    account = region_mgr.ensure_tenant_storage_account(resource_group, suffix)
+    # The portal shows the subscription's name, not its GUID.
+    name = region_mgr.get_subscription_name(hosting_subscription) if account.get("id") else ""
+    return account, name, False
+
 def run_scan():
     """One full scan. A scan that stops records why (last_scan_error) before the error goes on."""
     try:
@@ -134,6 +158,7 @@ def run_scan():
 def _run_scan():
     from shared.azure_manager import AzureManager, LEGACY_SETTING_NAME, collector_setting_name
     from shared.region_manager import RegionManager
+    from shared.storage_names import storage_region
     from shared.ignore_list import load_ignore_list, is_ignored
     from shared.site24x7_client import Site24x7Client
     from shared.config_store import (
@@ -354,7 +379,7 @@ def _run_scan():
 
         prev_config = configured_resources.get(resource_id, {})
         if prev_config and prev_config.get("categories"):
-            sa_name = provisioned_regions.get(location, "")
+            sa_name = provisioned_regions.get(storage_region(location), "")
             # A changed regional account (e.g. a leftover one was chosen before)
             # must not fast-path: rediscover and re-point the setting.
             # A legacy-named setting must not fast-path either: it is renamed below.
@@ -477,7 +502,7 @@ def _run_scan():
                 _skip("no_log_categories", resource_type)
                 continue
 
-            sa_name = provisioned_regions.get(location, "")
+            sa_name = provisioned_regions.get(storage_region(location), "")
             if not sa_name:
                 logging.warning(
                     "DiagSettingsManager: No storage account for region %s, skipping %s",
@@ -538,26 +563,10 @@ def _run_scan():
                f"Phase 4 done: {len(resource_category_map)} mapped, {len(categories_to_create)} to create in {_time.monotonic()-phase_start:.1f}s [total={_elapsed():.0f}s]")
 
     # ── Phase 4d: dedicated tenant-log (Entra) storage account ──
-    # Entra logs are tenant-scoped (no region). The dedicated SA (tag
-    # diag-logs-tenant) is created ONLY while at least one Entra log type is
-    # enabled on the dashboard, and cleaned up here when all are turned off —
-    # so we don't provision idle storage for deployments not using Entra. When
-    # present it's a stable target region reconciliation never touches.
-    from shared.config_store import get_entra_logtype_states
-    _entra_states = get_entra_logtype_states()
-    _any_entra_enabled = any(s.get("enabled") for s in _entra_states.values())
-    entra_target_sub_name = ""
-    if _any_entra_enabled:
-        entra_target_sa = region_mgr.ensure_tenant_storage_account(
-            resource_group, diag_storage_suffix
-        )
-        if entra_target_sa.get("id"):
-            # Resolve the subscription display name (portal shows name, not GUID)
-            entra_target_sub_name = region_mgr.get_subscription_name(subscription_ids[0])
-    else:
-        # No Entra type enabled — keep the dedicated SA, if any, idle
-        region_mgr.idle_tenant_storage_account(resource_group)
-        entra_target_sa = {}
+    entra_target_sa, entra_target_sub_name, entra_unreadable = _tenant_storage(
+        region_mgr, resource_group, diag_storage_suffix, subscription_ids[0])
+    if entra_unreadable:
+        stats["errors"] += 1
 
     # ── Phase 5: Create log types ──
     _update_phase(5, progress=f"{len(categories_to_create)} log types")

@@ -195,7 +195,7 @@ requests                 # HTTP calls to Site24x7
 
 ### 4.1 Why Per-Region Storage?
 
-Azure Diagnostic Settings require the destination Storage Account to be **in the same region** as the resource. The system automatically provisions one Storage Account per active region.
+Azure Diagnostic Settings require the destination Storage Account to be **in the same region** as the resource. The system automatically provisions one Storage Account per active region. Global resources (Front Door, Traffic Manager, DNS, ...) have no region and may send to any region: they use the account in the deployment's region (`DIAG_SEED_REGION`).
 
 ### 4.2 Regional Storage Lifecycle
 

@@ -20,7 +20,7 @@ from azure.identity import DefaultAzureCredential
 from azure.mgmt.storage import StorageManagementClient
 from azure.mgmt.resource import ResourceManagementClient
 from azure.core.exceptions import ResourceNotFoundError
-from shared.storage_names import legacy_regional_storage_name, regional_storage_name, tenant_storage_name
+from shared.storage_names import legacy_regional_storage_name, regional_storage_name, storage_region, tenant_storage_name
 
 logger = logging.getLogger(__name__)
 
@@ -179,12 +179,12 @@ class RegionManager:
         return _storage_account_name(region, suffix)
 
     def get_active_regions(self, resources: List[Dict]) -> Set[str]:
-        """Extract unique regions from a list of resources."""
+        """The regions whose storage accounts the resources send to (global ones: see storage_region)."""
         regions: Set[str] = set()
         for r in resources:
-            location = r.get("location", "")
-            if location:
-                regions.add(location.lower())
+            region = storage_region(r.get("location", ""))
+            if region:
+                regions.add(region)
         logger.info(f"Active regions: {regions}")
         return regions
 

@@ -90,13 +90,17 @@ def main(msg: func.QueueMessage) -> None:
 
 
 def _already_scanned_since(body: str) -> bool:
-    """True when a scan started after the request was made (running or finished)."""
+    """True when a scan that started after the request was made has saved its results.
+
+    A running scan does not count: it may be stopped (an update, a restart, the
+    function timeout), and this request would then be lost. The lock makes the
+    request wait for it instead, and the retry finds its saved results."""
     try:
         from datetime import datetime
         from shared.config_store import get_scan_state
         requested = datetime.fromisoformat(json.loads(body)["requested_at"].replace("Z", "+00:00"))
         state = get_scan_state() or {}
-        started = state.get("scan_started_at") if state.get("in_progress") else state.get("last_scan_started_at")
+        started = state.get("last_scan_started_at")
         return bool(started) and datetime.fromisoformat(started.replace("Z", "+00:00")) > requested
     except Exception:
         return False  # unreadable request or state: scan, as before

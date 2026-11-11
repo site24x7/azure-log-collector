@@ -14,8 +14,12 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Checked once per worker process: a restart, a redeploy or a new instance.
+# Decided once per worker process (a restart, a redeploy or a new instance).
 _checked = False
+
+# host.json functionTimeout: a scan flagged in progress for longer has ended
+# without clearing it (an update or a restart stops a running scan).
+SCAN_TIMEOUT_MINUTES = 10
 
 
 def _minutes_since(timestamp: str) -> Optional[float]:
@@ -29,29 +33,45 @@ def _minutes_since(timestamp: str) -> Optional[float]:
 def startup_scan_reason() -> Optional[str]:
     """Why this worker start needs a scan ("installation", "update", "restart"), or None.
 
-    Only the first call in a worker process can return a reason. Never raises."""
+    Decided once per worker process; while a scan that may still be running
+    holds the flag, or the state cannot be read, the next run asks again.
+    Never raises."""
     global _checked
     if _checked:
         return None
-    _checked = True
     try:
         if os.environ.get("AUTO_SCAN_ENABLED", "true").lower() != "true":
+            _checked = True
             return None
         from shared.config_store import get_scan_state
         from shared.updater import get_local_version
         state = get_scan_state() or {}
-        if state.get("in_progress"):
-            return None
-        if not state.get("last_scan_time"):
-            return "installation"
-        if state.get("collector_version") != get_local_version():
-            return "update"
+        reason = _reason(state, get_local_version())
+    except Exception as e:
+        logger.warning("Startup scan check postponed after %s", type(e).__name__)
+        return None
+    if reason == "running":
+        return None
+    _checked = True
+    return reason
+
+
+def _reason(state: dict, version: str) -> Optional[str]:
+    if not state.get("last_scan_time"):
+        reason = "installation"
+    elif state.get("collector_version") != version:
+        reason = "update"
+    else:
         # A restart: scan unless one finished recently, so a burst of restarts
         # (settings changes, new instances) does not scan again and again.
         min_gap = float(os.environ.get("MIN_SCAN_INTERVAL_MINUTES", "30") or 30)
         age = _minutes_since(state["last_scan_time"])
-        if age is None or age >= min_gap:
-            return "restart"
-    except Exception as e:
-        logger.warning("Startup scan check skipped after %s", type(e).__name__)
-    return None
+        reason = "restart" if age is None or age >= min_gap else None
+    # A scan of this version that may still be running covers a new start; decide
+    # when it ends. An older version's scan never covers an update, and a flag older
+    # than the function timeout is left over from a scan that was stopped.
+    if state.get("in_progress") and reason != "update":
+        started = _minutes_since(state.get("scan_started_at") or "")
+        if started is not None and started < SCAN_TIMEOUT_MINUTES:
+            return "running"
+    return reason

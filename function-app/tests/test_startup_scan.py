@@ -26,7 +26,13 @@ def fresh_worker(monkeypatch):
     ({"last_scan_time": _ago(5)}, "update"),                                             # scanned before versions were recorded
     ({"last_scan_time": _ago(45), "collector_version": "1.1.0-beta4"}, "restart"),
     ({"last_scan_time": _ago(5), "collector_version": "1.1.0-beta4"}, None),             # restart right after a scan
-    ({"last_scan_time": _ago(45), "collector_version": "1.1.0-beta3", "in_progress": True}, None),
+    # An update stopped the old version's scan: its flag never covers the update.
+    ({"last_scan_time": _ago(45), "collector_version": "1.1.0-beta3", "in_progress": True,
+      "scan_started_at": _ago(2)}, "update"),
+    # A scan flag older than the function timeout was left by a stopped scan.
+    ({"last_scan_time": _ago(45), "collector_version": "1.1.0-beta4", "in_progress": True,
+      "scan_started_at": _ago(30)}, "restart"),
+    ({"in_progress": True, "scan_started_at": _ago(30)}, "installation"),
 ])
 def test_reason(state, reason):
     with patch("shared.config_store.get_scan_state", return_value=state), \
@@ -47,9 +53,33 @@ def test_automatic_scan_off_queues_nothing(monkeypatch):
         assert startup_scan.startup_scan_reason() is None
 
 
-def test_unreadable_state_queues_nothing():
+def test_unreadable_state_is_asked_again_on_the_next_run():
     with patch("shared.config_store.get_scan_state", side_effect=RuntimeError("blob")):
         assert startup_scan.startup_scan_reason() is None
+    with patch("shared.config_store.get_scan_state", return_value={}):
+        assert startup_scan.startup_scan_reason() == "installation"
+
+
+@pytest.mark.parametrize("state", [
+    {"in_progress": True, "scan_started_at": _ago(2)},                                       # the first scan
+    {"last_scan_time": _ago(45), "collector_version": "1.1.0-beta4", "in_progress": True,
+     "scan_started_at": _ago(2)},
+])
+def test_a_scan_that_may_be_running_is_waited_for(state):
+    with patch("shared.updater.get_local_version", return_value="1.1.0-beta4"):
+        with patch("shared.config_store.get_scan_state", return_value=state):
+            assert startup_scan.startup_scan_reason() is None
+        # It was stopped: its flag ages past the function timeout, and the next run scans.
+        stopped = dict(state, scan_started_at=_ago(30))
+        with patch("shared.config_store.get_scan_state", return_value=stopped):
+            assert startup_scan.startup_scan_reason() in ("installation", "restart")
+
+
+def test_scan_timeout_matches_the_function_timeout():
+    from pathlib import Path
+    host = json.loads((Path(startup_scan.__file__).parents[1] / "host.json").read_text())
+    hours, minutes, seconds = (int(x) for x in host["functionTimeout"].split(":"))
+    assert startup_scan.SCAN_TIMEOUT_MINUTES == hours * 60 + minutes + (seconds > 0)
 
 
 def test_processor_queues_the_scan_like_scan_now():
@@ -70,10 +100,11 @@ def test_processor_queues_the_scan_like_scan_now():
 
 @pytest.mark.parametrize("state, skipped", [
     ({"last_scan_started_at": _ago(1)}, True),                       # finished scan started after the request
-    ({"in_progress": True, "scan_started_at": _ago(1)}, True),       # running scan started after the request
+    # A running scan may be stopped (update, restart, timeout): the request waits for it.
+    ({"in_progress": True, "scan_started_at": _ago(1)}, False),
     ({"last_scan_started_at": _ago(10)}, False),                     # older scan: the request still needs one
-    ({"in_progress": True, "scan_started_at": _ago(10),
-      "last_scan_started_at": _ago(1)}, False),                      # running scan began before the request
+    ({"in_progress": True, "scan_started_at": _ago(1),
+      "last_scan_started_at": _ago(1)}, True),                       # a later scan saved, another runs now
     ({}, False),
 ])
 def test_worker_drops_a_request_an_earlier_scan_covers(state, skipped):

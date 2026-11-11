@@ -19,6 +19,16 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
   list, is rejected. Keys of earlier versions in saved filters are dropped when
   the filters are read, so filters saved before the update collect everything
   until they are saved again.
+- The scan after an update or a restart is no longer lost when the update or
+  restart stopped a running scan: a scan flag older than the function timeout
+  counts as stopped, and a queued scan request waits for a running scan instead
+  of being dropped while it runs.
+- Global resources (Front Door, Traffic Manager, DNS, ...) send their logs to
+  the storage account in the deployment's region; before, they were skipped
+  ("no storage") because no account can be created in "global".
+- When the Entra ID log type settings cannot be read, the scan leaves the Entra
+  storage account as it is; before, it was given the 1-day retention as if no
+  Entra type were enabled.
 
 ## [1.1.0-beta4] — 2026-11-11
 
