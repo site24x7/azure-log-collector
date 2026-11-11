@@ -230,17 +230,17 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
       <div>
         <label class="ignore-label">Subscriptions</label>
         <div id="ignoredSubs" class="ignore-tags"></div>
-        <select id="selSub" class="ignore-select" onchange="addFromSelect('include_subscriptions','selSub')"><option value="">+ Add subscription…</option></select>
+        <select id="selSub" class="ignore-select" onchange="addFromSelect('subscriptions','selSub')"><option value="">+ Add subscription…</option></select>
       </div>
       <div>
         <label class="ignore-label">Regions</label>
         <div id="ignoredLocs" class="ignore-tags"></div>
-        <select id="selLoc" class="ignore-select" onchange="addFromSelect('include_locations','selLoc')"><option value="">+ Add region…</option></select>
+        <select id="selLoc" class="ignore-select" onchange="addFromSelect('locations','selLoc')"><option value="">+ Add region…</option></select>
       </div>
       <div>
         <label class="ignore-label">Resource Types</label>
         <div id="ignoredTypes" class="ignore-tags"></div>
-        <select id="selType" class="ignore-select" onchange="addFromSelect('include_resource_types','selType')"><option value="">+ Add resource type…</option></select>
+        <select id="selType" class="ignore-select" onchange="addFromSelect('resource_types','selType')"><option value="">+ Add resource type…</option></select>
       </div>
     </div>
 
@@ -1036,19 +1036,19 @@ async function removeDiagSettings() {
 
 // ─── Ignore List ─────────────────────────────────────────────────────────
 
-let _ignoreList = { include_subscriptions: [], include_locations: [], include_resource_types: [], resource_ids: [], tags: {include: [], exclude: []} };
+let _ignoreList = { subscriptions: [], locations: [], resource_types: [], tags: {include: [], exclude: []} };
 let _available = {};
 
 // Include lists (empty = all) and where their choices come from in the collector's answer.
 const IGNORE_UI = {
-  include_subscriptions:  { tagsEl: 'ignoredSubs',  selEl: 'selSub',  source: 'subscriptions' },
-  include_locations:      { tagsEl: 'ignoredLocs',  selEl: 'selLoc',  source: 'locations' },
-  include_resource_types: { tagsEl: 'ignoredTypes', selEl: 'selType', source: 'resource_types' },
+  subscriptions:  { tagsEl: 'ignoredSubs',  selEl: 'selSub',  source: 'subscriptions' },
+  locations:      { tagsEl: 'ignoredLocs',  selEl: 'selLoc',  source: 'locations' },
+  resource_types: { tagsEl: 'ignoredTypes', selEl: 'selType', source: 'resource_types' },
 };
 
 // A subscription by its name when the collector knows it, else its ID.
 function filterLabel(key, v) {
-  const names = (key === 'include_subscriptions' && _available.subscription_names) || {};
+  const names = (key === 'subscriptions' && _available.subscription_names) || {};
   return names[v] || v;
 }
 
@@ -1100,7 +1100,6 @@ async function loadIgnoreList() {
   try {
     const r = await api('ignore-list');
     _ignoreList = r.ignore_list || _ignoreList;
-    if (Array.isArray(_ignoreList.tags)) { _ignoreList.tags = {include: [], exclude: _ignoreList.tags}; }
     if (!_ignoreList.tags) _ignoreList.tags = {include: [], exclude: []};
     _available = r.available || {};
     renderIgnoreList();

@@ -443,7 +443,7 @@ Tag-based resource filtering with include/exclude logic, backed by blob storage.
 
 | Function | Signature | Returns | Description |
 |----------|-----------|---------|-------------|
-| `load_ignore_list` | `()` | `Dict` | Load from blob, auto-migrate legacy flat tags |
+| `load_ignore_list` | `()` | `Dict` | Load from blob, filling in missing lists |
 | `save_ignore_list` | `(ignore_list: Dict)` | `bool` | Save to blob with container creation |
 | `is_ignored` | `(resource: Dict, ignore_list: Dict)` | `bool` | Check if resource matches ignore rules |
 | `get_ignore_list` | `()` | `Dict` | Public getter wrapper |

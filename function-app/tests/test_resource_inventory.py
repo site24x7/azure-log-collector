@@ -74,7 +74,7 @@ def test_ignore_list_answers_from_the_inventory(monkeypatch):
     assert "resource_groups" not in body["available"]
     assert body["available"]["tags"] == ["env=prod"]
     assert body["available"]["subscription_names"] == {"s1": "Production"}
-    assert body["available"]["resource_ids"] == [] and body["available_updated_at"] == "2026-10-22T07:29:06Z"
+    assert "resource_ids" not in body["available"] and body["available_updated_at"] == "2026-10-22T07:29:06Z"
 
 
 def test_ignore_list_before_the_first_scan_has_empty_choices(monkeypatch):

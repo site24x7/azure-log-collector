@@ -100,7 +100,7 @@ Once collecting, every scan (every 6 hours, and on demand) does the following:
 
 **Safeguards**
 - If resource discovery is incomplete (a subscription could not be listed, or a check failed), the scan removes nothing that run: no settings and no storage.
-- A scan that can't read the exclusion list stops.
+- A scan that can't read the resource filters stops.
 
 **Admin actions**
 - They can pause/resume processing through a shared storage flag, without restarting the Function App. Changes to automatic scans, general log type, own-resource collection and storage protection days still update app settings and restart it.
@@ -136,7 +136,7 @@ All 17 HTTP functions use `authLevel: function`. Each needs a valid function or 
 - Request bodies must be JSON objects.
 - On/off values must be real JSON booleans, and numbers must be integers in range.
 - Settings come from a fixed allowlist.
-- Exclusion lists are checked by type and size: at most 1,000 entries of up to 500 characters, with no `null` values.
+- Resource filter lists are checked by type and size: at most 1,000 entries of up to 500 characters, with no `null` values.
 - Log category and Entra category names are checked against known values.
 
 **Dashboard**

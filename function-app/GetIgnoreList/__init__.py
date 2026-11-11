@@ -29,7 +29,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 "subscriptions": inventory.get("subscriptions") or subscription_ids,
                 "subscription_names": inventory.get("subscription_names") or {},
                 "locations": inventory.get("locations", []),
-                "resource_ids": [],
                 "tags": inventory.get("tags", []),
                 "resource_types": inventory.get("resource_types", []),
             },

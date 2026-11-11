@@ -4,7 +4,7 @@ The deployment lists them in SUBSCRIPTION_IDS (the hosting subscription first).
 Any other enabled subscription the collector's managed identity can see is
 monitored too: granting the identity Reader and Monitoring Contributor on a
 new subscription adds it at the next scan, without redeploying. Which of them
-logs are collected from is chosen with the include_subscriptions filter.
+logs are collected from is chosen with the subscriptions filter.
 """
 
 import logging

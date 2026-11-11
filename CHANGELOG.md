@@ -7,6 +7,17 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.1.0-beta5] — unreleased
+
+- Resource filters are include-only, except tags: the saved filters and
+  `/api/ignore-list` use `subscriptions`, `locations` and `resource_types`
+  (empty = all) and `tags` with `include` and `exclude`. The `include_` prefix
+  is dropped, and the exclusion of single resources by ID (`resource_ids`,
+  which no screen could set) is removed.
+- The handling of the exclusion lists of earlier versions and of the old flat
+  tag list is removed; a filter body with any other key, or with tags as a
+  list, is rejected.
+
 ## [1.1.0-beta4] — unreleased
 
 - Dashboard: saving filters says "Filters saved" (it said "Ignore list

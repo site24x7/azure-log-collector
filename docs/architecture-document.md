@@ -591,10 +591,9 @@ Subscriptions, regions and resource types are include lists (empty = all, includ
 
 ```
 Resource → is_ignored()?
-  ├─ Check: resource_id ∈ ignore_list.resource_ids?  → IGNORED
-  ├─ Check: include_subscriptions set and subscription not in it (not the hosting one)?  → IGNORED
-  ├─ Check: include_locations set and location (not global) not in it?  → IGNORED
-  ├─ Check: include_resource_types set and type not in it?  → IGNORED
+  ├─ Check: subscriptions set and subscription not in it (not the hosting one)?  → IGNORED
+  ├─ Check: locations set and location (not global) not in it?  → IGNORED
+  ├─ Check: resource_types set and type not in it?  → IGNORED
   ├─ Check: matches an exclude tag, or include tags set and matches none?  → IGNORED
   └─ Otherwise → NOT IGNORED
 ```
@@ -696,14 +695,17 @@ Triggers an immediate resource discovery and configuration scan.
 ```json
 {
   "ignore_list": {
-    "resource_groups": ["test-rg", "dev-rg"],
+    "subscriptions": [],
     "locations": ["westeurope"],
-    "resource_ids": ["/subscriptions/.../providers/.../myVM"]
+    "resource_types": [],
+    "tags": {"include": ["env=prod"], "exclude": ["temporary"]}
   },
   "available": {
-    "resource_groups": ["prod-rg", "staging-rg", "..."],
+    "subscriptions": ["<subscription-id>", "..."],
+    "subscription_names": {"<subscription-id>": "Production"},
     "locations": ["eastus", "westus", "westeurope", "..."],
-    "resource_ids": []
+    "resource_types": ["Microsoft.Web/sites", "..."],
+    "tags": ["env=prod", "..."]
   }
 }
 ```
@@ -713,9 +715,10 @@ Triggers an immediate resource discovery and configuration scan.
 **Request:**
 ```json
 {
-  "resource_groups": ["test-rg", "dev-rg"],
+  "subscriptions": [],
   "locations": ["westeurope"],
-  "resource_ids": ["/subscriptions/.../providers/.../myVM"]
+  "resource_types": [],
+  "tags": {"include": ["env=prod"], "exclude": ["temporary"]}
 }
 ```
 
@@ -824,7 +827,7 @@ AzureWebJobsStorage
 │   ├── azure-log-types.json                   ← Supported types cache from Site24x7
 │   ├── disabled-logtypes.json                 ← ["AuditEvent", "SignInLogs"]
 │   ├── configured-resources.json              ← {resource_id: {categories, storage, time}}
-│   ├── ignore-list.json                       ← {resource_groups, locations, resource_ids}
+│   ├── ignore-list.json                       ← {subscriptions, locations, resource_types, tags}
 │   └── logtype-configs/                       ← Per-category sourceConfig
 │       ├── S247_AuditEvent.json
 │       ├── S247_SignInLogs.json

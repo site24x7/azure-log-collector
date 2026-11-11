@@ -13,10 +13,9 @@ from shared.ignore_list import (
     get_ignore_list,
     update_ignore_list,
     LIST_KEYS,
-    LegacyFilters,
     _initial_filters,
     validate_ignore_list,
-    _migrate_tags,
+    _with_defaults,
     _tag_matches,
 )
 
@@ -54,28 +53,22 @@ class TestTagMatches:
         assert _tag_matches({"keep": "yes"}, "keep=") is False
 
 
-# ─── _migrate_tags ───────────────────────────────────────────────────────────
+# ─── _with_defaults ──────────────────────────────────────────────────────────
 
 
-class TestMigrateTags:
-    def test_legacy_flat_list(self):
-        data = {"tags": ["env=dev", "temporary"]}
-        result = _migrate_tags(data)
-        assert result["tags"] == {"include": [], "exclude": ["env=dev", "temporary"]}
-
-    def test_already_new_format(self):
-        data = {"tags": {"include": ["env=prod"], "exclude": ["env=dev"]}}
-        result = _migrate_tags(data)
+class TestWithDefaults:
+    def test_filled_lists_unchanged(self):
+        data = {"locations": ["eastus"], "tags": {"include": ["env=prod"], "exclude": ["env=dev"]}}
+        result = _with_defaults(data)
+        assert result["locations"] == ["eastus"]
         assert result["tags"] == {"include": ["env=prod"], "exclude": ["env=dev"]}
 
-    def test_missing_tags(self):
-        data = {}
-        result = _migrate_tags(data)
-        assert result["tags"] == {"include": [], "exclude": []}
+    def test_missing_lists_and_tags(self):
+        assert _with_defaults({}) == {**{key: [] for key in LIST_KEYS}, "tags": {"include": [], "exclude": []}}
 
     def test_dict_missing_keys(self):
         data = {"tags": {"exclude": ["env=dev"]}}
-        result = _migrate_tags(data)
+        result = _with_defaults(data)
         assert result["tags"] == {"include": [], "exclude": ["env=dev"]}
 
 
@@ -84,9 +77,9 @@ class TestMigrateTags:
 
 class TestIsIgnored:
     @pytest.mark.parametrize("key,detail,selected,other", [
-        ("include_subscriptions", "subscription_id", "sub-a", "sub-b"),
-        ("include_locations", "location", "eastus", "westus"),
-        ("include_resource_types", "type", "Microsoft.Web/sites", "Microsoft.KeyVault/vaults"),
+        ("subscriptions", "subscription_id", "sub-a", "sub-b"),
+        ("locations", "location", "eastus", "westus"),
+        ("resource_types", "type", "Microsoft.Web/sites", "Microsoft.KeyVault/vaults"),
     ])
     def test_include_lists(self, key, detail, selected, other):
         assert is_ignored({detail: selected.upper()}, {key: [selected]}) is False
@@ -97,36 +90,30 @@ class TestIsIgnored:
 
     def test_hosting_subscription_always_included(self, monkeypatch):
         monkeypatch.setenv("SUBSCRIPTION_IDS", " HOST , other")
-        filters = {"include_subscriptions": ["selected"]}
+        filters = {"subscriptions": ["selected"]}
         assert is_ignored({"subscription_id": "host"}, filters) is False
         assert is_ignored({"subscription_id": "other"}, filters) is True
-        # Hosting exemption does not bypass an explicit resource exclusion.
-        rid = "/subscriptions/HOST/providers/M/T/r"
-        assert is_ignored({"id": rid}, dict(filters, resource_ids=[rid.lower()])) is True
 
     @pytest.mark.parametrize("location", ["global", "GLOBAL", ""])
     def test_nonregional_resources_pass(self, location):
-        assert is_ignored({"location": location}, {"include_locations": ["eastus"]}) is False
-
-    def test_resource_id_exclusion_is_case_insensitive(self):
-        assert is_ignored({"id": "/SUB/R"}, {"resource_ids": ["/sub/r"]}) is True
+        assert is_ignored({"location": location}, {"locations": ["eastus"]}) is False
 
     def test_subscription_extracted_from_id(self):
         resource = {"id": "/subscriptions/sub-abc/resourceGroups/rg/providers/M/T/R"}
-        assert is_ignored(resource, {"include_subscriptions": ["sub-abc"]}) is False
-        assert is_ignored(resource, {"include_subscriptions": ["sub-other"]}) is True
+        assert is_ignored(resource, {"subscriptions": ["sub-abc"]}) is False
+        assert is_ignored(resource, {"subscriptions": ["sub-other"]}) is True
 
     # ── Exclude tags ──
 
     def test_ignored_by_exclude_tag_key_value(self):
         resource = {"id": "/sub/rg/res1", "location": "eastus", "tags": {"env": "dev"}}
-        ignore = {"include_locations": [], "resource_ids": [], "include_subscriptions": [],
+        ignore = {"locations": [], "subscriptions": [],
                   "tags": {"include": [], "exclude": ["env=dev"]}}
         assert is_ignored(resource, ignore) is True
 
     def test_ignored_by_exclude_tag_key_only(self):
         resource = {"id": "/sub/rg/res1", "location": "eastus", "tags": {"temporary": "yes"}}
-        ignore = {"include_locations": [], "resource_ids": [], "include_subscriptions": [],
+        ignore = {"locations": [], "subscriptions": [],
                   "tags": {"include": [], "exclude": ["temporary"]}}
         assert is_ignored(resource, ignore) is True
 
@@ -188,21 +175,13 @@ class TestIsIgnored:
         ignore = {"tags": {"include": ["env=production"], "exclude": ["temporary"]}}
         assert is_ignored(resource, ignore) is False
 
-    # ── Legacy flat list format ──
-
-    def test_legacy_flat_tags_still_works(self):
-        """Legacy format: tags as flat list treated as exclude-only."""
-        resource = {"id": "/sub/rg/res1", "location": "eastus", "tags": {"env": "dev"}}
-        ignore = {"tags": ["env=dev"]}
-        assert is_ignored(resource, ignore) is True
-
 # ─── load_ignore_list ────────────────────────────────────────────────────────
 
 
 class TestLoadIgnoreList:
     @patch("shared.ignore_list._get_blob_client")
     def test_load_existing(self, mock_get_blob):
-        data = {"include_locations": [], "resource_ids": [],
+        data = {"locations": [],
                 "tags": {"include": ["env=prod"], "exclude": ["env=dev"]}}
         blob_client = MagicMock()
         download = MagicMock()
@@ -212,19 +191,6 @@ class TestLoadIgnoreList:
 
         result = load_ignore_list()
         assert result == {**{key: [] for key in LIST_KEYS}, **data}
-
-    @patch("shared.ignore_list._get_blob_client")
-    def test_load_migrates_legacy_tags(self, mock_get_blob):
-        """Legacy flat tags list is auto-migrated to include/exclude."""
-        data = {"include_locations": [], "resource_ids": [], "tags": ["env=dev"]}
-        blob_client = MagicMock()
-        download = MagicMock()
-        download.readall.return_value = json.dumps(data).encode()
-        blob_client.download_blob.return_value = download
-        mock_get_blob.return_value = blob_client
-
-        result = load_ignore_list()
-        assert result["tags"] == {"include": [], "exclude": ["env=dev"]}
 
     @patch("shared.ignore_list._get_blob_client")
     def test_load_not_found(self, mock_get_blob):
@@ -249,10 +215,10 @@ class TestLoadIgnoreList:
         result2 = load_ignore_list()
         # Mutate the nested tags in result1
         result1["tags"]["exclude"].append("env=test")
-        result1["include_subscriptions"].append("sub-new")
+        result1["subscriptions"].append("sub-new")
         # result2 should be unaffected
         assert result2["tags"]["exclude"] == []
-        assert result2["include_subscriptions"] == []
+        assert result2["subscriptions"] == []
 
 
 # ─── save_ignore_list ────────────────────────────────────────────────────────
@@ -270,12 +236,12 @@ class TestSaveIgnoreList:
         blob = MagicMock()
         container.get_blob_client.return_value = blob
 
-        data = {"include_locations": [], "resource_ids": [], "tags": {"include": [], "exclude": []}}
+        data = {"locations": [], "tags": {"include": [], "exclude": []}}
         assert save_ignore_list(data) is True
         blob.upload_blob.assert_called_once()
 
     def test_save_no_connection(self):
-        assert save_ignore_list({"include_subscriptions": []}) is False
+        assert save_ignore_list({"subscriptions": []}) is False
 
 
 # ─── update_ignore_list ──────────────────────────────────────────────────────
@@ -285,29 +251,20 @@ class TestUpdateIgnoreList:
     @patch("shared.ignore_list.save_ignore_list")
     def test_adds_missing_keys(self, mock_save):
         mock_save.return_value = True
-        data = {"include_subscriptions": ["sub-1"]}
+        data = {"subscriptions": ["sub-1"]}
         assert update_ignore_list(data) is True
         saved = mock_save.call_args[0][0]
-        assert "include_locations" in saved
-        assert "resource_ids" in saved
+        assert set(saved) == set(LIST_KEYS) | {"tags"}
         assert saved["tags"] == {"include": [], "exclude": []}
 
     @patch("shared.ignore_list.save_ignore_list")
     def test_keeps_existing_keys(self, mock_save):
         mock_save.return_value = True
-        data = {"include_subscriptions": ["a"], "include_locations": ["b"], "resource_ids": ["c"],
+        data = {"subscriptions": ["a"], "locations": ["b"], "resource_types": ["c"],
                 "tags": {"include": ["env=prod"], "exclude": ["env=dev"]}}
         update_ignore_list(data)
         saved = mock_save.call_args[0][0]
         assert saved["tags"] == {"include": ["env=prod"], "exclude": ["env=dev"]}
-
-    @patch("shared.ignore_list.save_ignore_list")
-    def test_migrates_legacy_tags(self, mock_save):
-        mock_save.return_value = True
-        data = {"tags": ["env=dev"]}
-        update_ignore_list(data)
-        saved = mock_save.call_args[0][0]
-        assert saved["tags"] == {"include": [], "exclude": ["env=dev"]}
 
 
 # ─── Initial filters from the deployment form ────────────────────────────────
@@ -320,8 +277,8 @@ def _not_found_blob():
 
 
 class TestInitialFilters:
-    FILTERS = {"include_subscriptions": ["sub-test"], "include_locations": ["westeurope"],
-               "include_resource_types": ["Microsoft.KeyVault/vaults"],
+    FILTERS = {"subscriptions": ["sub-test"], "locations": ["westeurope"],
+               "resource_types": ["Microsoft.KeyVault/vaults"],
                "tags": {"include": ["env=prod"], "exclude": ["skip"]}}
 
     @patch("shared.ignore_list._ensure_container")
@@ -333,9 +290,9 @@ class TestInitialFilters:
 
         result = load_ignore_list(strict=True)
 
-        assert result["include_subscriptions"] == ["sub-test"]
+        assert result["subscriptions"] == ["sub-test"]
         assert result["tags"] == {"include": ["env=prod"], "exclude": ["skip"]}
-        assert result["resource_ids"] == []
+        assert set(result) == set(LIST_KEYS) | {"tags"}
         _, kwargs = blob_client.upload_blob.call_args
         assert kwargs == {"overwrite": False}
 
@@ -344,8 +301,8 @@ class TestInitialFilters:
     def test_existing_list_wins(self, mock_get_blob, _container, monkeypatch):
         """A saved list (here: everything cleared in Site24x7) is never replaced by the deployment's filters."""
         monkeypatch.setenv("INITIAL_RESOURCE_FILTERS", json.dumps(self.FILTERS))
-        saved = {"include_locations": [], "resource_ids": [], "include_subscriptions": [],
-                 "tags": {"include": [], "exclude": []}, "include_resource_types": []}
+        saved = {"locations": [], "subscriptions": [],
+                 "tags": {"include": [], "exclude": []}, "resource_types": []}
         blob_client = MagicMock()
         download = MagicMock()
         download.readall.return_value = json.dumps(saved).encode()
@@ -360,8 +317,8 @@ class TestInitialFilters:
     def test_another_worker_saved_first(self, mock_get_blob, _container, monkeypatch):
         from azure.core.exceptions import ResourceExistsError
         monkeypatch.setenv("INITIAL_RESOURCE_FILTERS", json.dumps(self.FILTERS))
-        winner = {"include_subscriptions": ["other"], "include_locations": [], "resource_ids": [],
-                  "tags": {"include": [], "exclude": []}, "include_resource_types": []}
+        winner = {"subscriptions": ["other"], "locations": [],
+                  "tags": {"include": [], "exclude": []}, "resource_types": []}
         download = MagicMock()
         download.readall.return_value = json.dumps(winner).encode()
         blob_client = MagicMock()
@@ -377,13 +334,13 @@ class TestInitialFilters:
         blob_client = _not_found_blob()
         mock_get_blob.return_value = blob_client
 
-        assert load_ignore_list(strict=True)["include_subscriptions"] == []
+        assert load_ignore_list(strict=True)["subscriptions"] == []
         blob_client.upload_blob.assert_not_called()
 
     @patch("shared.ignore_list._get_blob_client")
     def test_malformed_filters_stop_scans(self, mock_get_blob, monkeypatch):
         """Scans never fall back to collecting everything."""
-        monkeypatch.setenv("INITIAL_RESOURCE_FILTERS", json.dumps({"include_subscriptions": "rg-test"}))
+        monkeypatch.setenv("INITIAL_RESOURCE_FILTERS", json.dumps({"subscriptions": "rg-test"}))
         mock_get_blob.return_value = _not_found_blob()
 
         with pytest.raises(IgnoreListUnavailable):
@@ -407,46 +364,34 @@ class TestMissingContainer:
     def test_new_collector_without_config_container_saves_the_filters(self, mock_get_blob, _container, monkeypatch):
         """A new collector has no config container yet: that is 'nothing saved', not a read failure."""
         from azure.core.exceptions import ResourceNotFoundError
-        monkeypatch.setenv("INITIAL_RESOURCE_FILTERS", json.dumps({"include_subscriptions": ["sub-test"]}))
+        monkeypatch.setenv("INITIAL_RESOURCE_FILTERS", json.dumps({"subscriptions": ["sub-test"]}))
         blob_client = MagicMock()
         blob_client.download_blob.side_effect = ResourceNotFoundError("The specified container does not exist.")
         mock_get_blob.return_value = blob_client
 
-        assert load_ignore_list(strict=True)["include_subscriptions"] == ["sub-test"]
+        assert load_ignore_list(strict=True)["subscriptions"] == ["sub-test"]
         blob_client.upload_blob.assert_called_once()
 
 
-LEGACY_KEYS = ("subscriptions", "resource_groups", "locations", "resource_types")
+# Earlier exclusion lists, single-resource exclusion and the include_ names are gone.
+REMOVED_KEYS = ("resource_groups", "resource_ids", "include_subscriptions",
+                "include_locations", "include_resource_types")
 
 
-@pytest.mark.parametrize("key", LEGACY_KEYS)
-def test_empty_legacy_key_is_dropped_on_load(key):
-    blob = MagicMock()
-    blob.download_blob.return_value.readall.return_value = json.dumps(
-        {key: [], "include_locations": ["eastus"], "tags": ["skip"]})
-    with patch("shared.ignore_list._get_blob_client", return_value=blob):
-        result = load_ignore_list(strict=True)
-    assert key not in result
-    assert result["include_locations"] == ["eastus"]
-    assert set(result) == set(LIST_KEYS) | {"tags"}
-    assert result["tags"] == {"include": [], "exclude": ["skip"]}
-
-
-@pytest.mark.parametrize("key", LEGACY_KEYS)
-def test_nonempty_legacy_key_stops_scans_but_dashboard_returns_empty(key):
-    blob = MagicMock()
-    blob.download_blob.return_value.readall.return_value = json.dumps({key: ["old-rule"]})
-    with patch("shared.ignore_list._get_blob_client", return_value=blob):
-        with pytest.raises(IgnoreListUnavailable, match="legacy exclusion filters") as error:
-            load_ignore_list(strict=True)
-        assert isinstance(error.value.__cause__, LegacyFilters)
-        assert load_ignore_list() == {**{k: [] for k in LIST_KEYS}, "tags": {"include": [], "exclude": []}}
-    blob.upload_blob.assert_not_called()
-
-
-@pytest.mark.parametrize("key", LEGACY_KEYS)
-def test_validator_rejects_legacy_keys_even_when_empty(key):
+@pytest.mark.parametrize("key", REMOVED_KEYS)
+def test_validator_rejects_removed_keys(key):
     assert "Unknown keys" in validate_ignore_list({key: []})
+
+
+@pytest.mark.parametrize("key", REMOVED_KEYS)
+def test_deployment_filters_with_removed_keys_are_rejected(key, monkeypatch):
+    monkeypatch.setenv("INITIAL_RESOURCE_FILTERS", json.dumps({key: []}))
+    with pytest.raises(ValueError, match="Unknown keys"):
+        _initial_filters()
+
+
+def test_validator_rejects_a_flat_tag_list():
+    assert "must be an object" in validate_ignore_list({"tags": ["env=dev"]})
 
 
 @pytest.mark.parametrize("key", LIST_KEYS)
@@ -454,27 +399,5 @@ def test_validator_accepts_current_list_keys(key):
     assert validate_ignore_list({key: ["value"]}) == ""
 
 
-@pytest.mark.parametrize("key", LEGACY_KEYS)
-def test_seed_drops_empty_legacy_keys_before_validation(key, monkeypatch):
-    monkeypatch.setenv("INITIAL_RESOURCE_FILTERS", json.dumps({key: [], "include_locations": ["eastus"]}))
-    result = _initial_filters()
-    assert key not in result
-    assert result["include_locations"] == ["eastus"]
-
-
-@pytest.mark.parametrize("key", LEGACY_KEYS)
-def test_seed_nonempty_legacy_keys_raise_legacy_filters(key, monkeypatch):
-    monkeypatch.setenv("INITIAL_RESOURCE_FILTERS", json.dumps({key: ["old-rule"]}))
-    with pytest.raises(LegacyFilters):
-        _initial_filters()
-
-
-@pytest.mark.parametrize("key", LEGACY_KEYS)
-def test_legacy_seed_failure_is_strict_or_empty(key, monkeypatch):
-    monkeypatch.setenv("INITIAL_RESOURCE_FILTERS", json.dumps({key: ["old-rule"]}))
-    blob = _not_found_blob()
-    with patch("shared.ignore_list._get_blob_client", return_value=blob):
-        with pytest.raises(IgnoreListUnavailable):
-            load_ignore_list(strict=True)
-        assert load_ignore_list() == {**{k: [] for k in LIST_KEYS}, "tags": {"include": [], "exclude": []}}
-    blob.upload_blob.assert_not_called()
+def test_list_keys_are_include_lists_only():
+    assert LIST_KEYS == ("subscriptions", "locations", "resource_types")

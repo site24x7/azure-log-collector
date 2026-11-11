@@ -6,8 +6,8 @@ import azure.functions as func
 
 # Rules that can be checked from a resource ID alone; the rest (locations,
 # resource types, tags) need the resource's details, which only a scan reads.
-_ID_RULES = ("resource_ids", "include_subscriptions")
-_DETAIL_RULES = ("include_locations", "include_resource_types", "tags")
+_ID_RULES = ("subscriptions",)
+_DETAIL_RULES = ("locations", "resource_types", "tags")
 
 
 def main(req: func.HttpRequest, scanQueue: func.Out[str]) -> func.HttpResponse:
@@ -85,7 +85,7 @@ def main(req: func.HttpRequest, scanQueue: func.Out[str]) -> func.HttpResponse:
         scan_running = bool((get_scan_state() or {}).get("in_progress"))
         if scan_running or previous is None or any(
                 _normalized(key, previous.get(key)) != _normalized(key, updated.get(key))
-                for key in _DETAIL_RULES + ("include_subscriptions",)):
+                for key in _DETAIL_RULES + ("subscriptions",)):
             scanQueue.set(json.dumps({
                 "requested_at": datetime.now(timezone.utc).isoformat(),
                 "source": "ignore-list",
@@ -123,10 +123,8 @@ def main(req: func.HttpRequest, scanQueue: func.Out[str]) -> func.HttpResponse:
 def _normalized(key, value):
     """Compare rule lists regardless of order, with the same case rules as the
     filter: everything matches case-insensitively, tag names and values too
-    (Azure tag names are case-insensitive). Legacy flat tags are exclude rules."""
+    (Azure tag names are case-insensitive)."""
     if key == "tags":
-        if isinstance(value, list):
-            value = {"include": [], "exclude": value}
         value = value if isinstance(value, dict) else {}
         return {k: sorted(str(v).lower() for v in (value.get(k) or [])) for k in ("include", "exclude")}
     if isinstance(value, list):
