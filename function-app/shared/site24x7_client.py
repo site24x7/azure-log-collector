@@ -511,7 +511,8 @@ class Site24x7Client:
         if not categories:
             return []
 
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from concurrent.futures import as_completed
+        from shared.log_context import thread_pool
 
         results = []
         errors = []
@@ -538,7 +539,7 @@ class Site24x7Client:
             logger.warning("Skipping category '%s' — no config returned", category)
             return {"category": None, "sourceConfig": None, "error": error_detail}
 
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        with thread_pool(5) as executor:
             futures = {executor.submit(_create_one, cat): cat for cat in categories}
             for future in as_completed(futures):
                 category = futures[future]

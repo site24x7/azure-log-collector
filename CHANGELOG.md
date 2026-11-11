@@ -7,6 +7,14 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.1.0-beta6] — 2026-11-11
+
+- Log lines written while a scan works on resources in parallel (setting up
+  diagnostic settings, finding log categories, creating log types) now reach
+  Application Insights. Before, the Functions worker dropped them, so a
+  resource that could not be configured showed only "create_diagnostic_setting
+  returned False", without the reason.
+
 ## [1.1.0-beta5] — 2026-11-11
 
 - Resource filters are include-only, except tags: the saved filters and

@@ -413,7 +413,8 @@ def _run_scan():
                f"{stats['already_configured']} already configured [{_elapsed():.0f}s]")
 
     # ── Phase 4b: Parallel category discovery with timeouts ──
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import as_completed
+    from shared.log_context import thread_pool
 
     def _discover_type(resource_type, sample_id):
         """Discover diagnostic categories for a resource type."""
@@ -425,7 +426,7 @@ def _run_scan():
                           resource_type, e)
             return resource_type, []
 
-    with ThreadPoolExecutor(max_workers=10) as cat_executor:
+    with thread_pool(10) as cat_executor:
         futures = {
             cat_executor.submit(_discover_type, rtype, sample_id): rtype
             for rtype, sample_id in types_needing_discovery.items()
@@ -706,7 +707,7 @@ def _run_scan():
                 _log_event("info", "DiagSettingsManager",
                            f"Phase 5b: refreshing {len(existing_configs)} existing logtype configs")
 
-                from concurrent.futures import ThreadPoolExecutor, as_completed
+                from concurrent.futures import as_completed
 
                 # Fields we compare (skip apiKey/uploadDomain — those are ours)
                 _COMPARE_FIELDS = ("logType", "jsonPath", "dateField", "dateFormat",
@@ -740,7 +741,7 @@ def _run_scan():
                         return (cat_name, fresh)
                     return None
 
-                with ThreadPoolExecutor(max_workers=5) as executor:
+                with thread_pool(5) as executor:
                     futures = {
                         executor.submit(_refresh_one, k, v): k
                         for k, v in existing_configs.items()
@@ -827,7 +828,7 @@ def _run_scan():
                        and configured_resources[rid].get("storage_account", info.get("sa_name")) == info.get("sa_name")
                        and configured_resources[rid].get("setting_name", LEGACY_SETTING_NAME) == setting_name}
 
-    # Use ThreadPoolExecutor for parallel diagnostic settings creation
+    # Parallel diagnostic settings creation
     def _restore_legacy(resource_id, storage_account_id, categories):
         """The rename failed after the old setting was removed: put it back so logs keep flowing."""
         if not azure_mgr.create_diagnostic_setting(resource_id=resource_id, storage_account_id=storage_account_id,
@@ -937,7 +938,7 @@ def _run_scan():
 
     from concurrent.futures import wait, FIRST_COMPLETED
 
-    executor = ThreadPoolExecutor(max_workers=10)
+    executor = thread_pool(10)
     remaining_futures = {
         executor.submit(_configure_one_resource, rid, info): rid
         for rid, info in resources_to_configure.items()
@@ -1168,7 +1169,9 @@ def _completed_scan_age_minutes():
         return None
 
 
-def main(timer: func.TimerRequest) -> None:
+def main(timer: func.TimerRequest, context: func.Context = None) -> None:
+    from shared.log_context import bind
+    bind(context)
     if timer.past_due:
         logging.warning("DiagSettingsManager: Timer is past due")
     auto_scan = os.environ.get("AUTO_SCAN_ENABLED", "true").lower() == "true"

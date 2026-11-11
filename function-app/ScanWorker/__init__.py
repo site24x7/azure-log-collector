@@ -10,10 +10,12 @@ import azure.functions as func
 MAX_ATTEMPTS = 5
 
 
-def main(msg: func.QueueMessage) -> None:
+def main(msg: func.QueueMessage, context: func.Context = None) -> None:
     """Queue-triggered worker that runs the full resource scan.
     Decoupled from the HTTP trigger to avoid the 230s gateway timeout.
     The function timeout (host.json) is 10 minutes."""
+    from shared.log_context import bind
+    bind(context)
     body = msg.get_body().decode("utf-8")
     dequeue_count = msg.dequeue_count
     logging.info("ScanWorker: Picked up scan request (attempt %d): %s", dequeue_count, body)

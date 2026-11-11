@@ -5,7 +5,9 @@ from datetime import datetime, timezone
 import azure.functions as func
 
 
-def main(req: func.HttpRequest) -> func.HttpResponse:
+def main(req: func.HttpRequest, context: func.Context = None) -> func.HttpResponse:
+    from shared.log_context import bind
+    bind(context)
     """Provision (or un-provision) a single tenant-scoped Entra ID log type on
     the Site24x7 side.
 
