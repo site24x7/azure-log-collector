@@ -120,6 +120,16 @@ def _record_scan_failure(code: str) -> None:
 
 
 
+
+def _scan_record(scan_record, complete):
+    """When the scan started and with which version. Only a scan that went through
+    every resource records its start (last_scan_started_at): that is what tells
+    ScanWorker an earlier request is covered. A scan cut short by its time budget
+    leaves those requests to run again."""
+    if complete:
+        return scan_record
+    return {key: value for key, value in scan_record.items() if key != "last_scan_started_at"}
+
 def _tenant_storage(region_mgr, resource_group, suffix, hosting_subscription):
     """The dedicated tenant-log (Entra) storage account: (account, subscription name, unreadable).
 
@@ -806,7 +816,7 @@ def _run_scan():
             "s247_reachable": s247_reachable,
             "in_progress": False,
             "time_budget_exhausted": True,
-            **scan_record,
+            **_scan_record(scan_record, complete=False),
         })
         return {"time_budget_exhausted": True, **stats}
 
@@ -1082,7 +1092,7 @@ def _run_scan():
         "last_full_reconcile": (scan_time if reconcile_due and reconcile_complete
                                 else last_reconcile),
         "in_progress": False,
-        **scan_record,
+        **_scan_record(scan_record, complete=not timed_out),
     }
     # The scan state blob is the record of the last scan. Never write an app
     # setting here: every app-setting change restarts the Function App, and

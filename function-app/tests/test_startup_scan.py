@@ -125,5 +125,53 @@ def test_every_scan_state_records_its_start_and_version():
     from pathlib import Path
     import DiagSettingsManager
     source = Path(DiagSettingsManager.__file__).read_text()
-    assert source.count("**scan_record") == source.count("save_scan_state({") + source.count("save_scan_state(scan_state)")
+    assert source.count("**_scan_record(scan_record, complete=") == \
+        source.count("save_scan_state({") + source.count("save_scan_state(scan_state)")
     assert '"collector_version": get_local_version()' in source
+
+
+def test_only_a_complete_scan_covers_earlier_requests():
+    import DiagSettingsManager
+    record = {"last_scan_started_at": _ago(1), "collector_version": "1.1.0-beta5"}
+    assert DiagSettingsManager._scan_record(record, complete=True) == record
+    partial = DiagSettingsManager._scan_record(record, complete=False)
+    assert partial == {"collector_version": "1.1.0-beta5"}
+    # A request made before the cut-short scan still waits for a complete one.
+    import ScanWorker
+    body = json.dumps({"requested_at": _ago(5)})
+    with patch("shared.config_store.get_scan_state", return_value=partial):
+        assert ScanWorker._already_scanned_since(body) is False
+
+
+def test_startup_reads_the_scan_state_strictly():
+    with patch("shared.config_store.get_scan_state", side_effect=ValueError("corrupt")) as read:
+        assert startup_scan.startup_scan_reason() is None
+    assert read.call_args.kwargs == {"strict": True}
+    assert startup_scan._checked is False                          # asked again on the next run
+
+
+def test_strict_scan_state_read_raises_instead_of_reading_as_never_scanned():
+    from shared import config_store
+    with patch("shared.config_store._read_blob", return_value="not json"):
+        assert config_store.get_scan_state() == {}
+        with pytest.raises(ValueError):
+            config_store.get_scan_state(strict=True)
+    with patch("shared.config_store._read_blob", return_value="[1, 2]"):
+        with pytest.raises(ValueError):
+            config_store.get_scan_state(strict=True)
+    with patch("shared.config_store._read_blob", return_value=None):
+        assert config_store.get_scan_state(strict=True) == {}     # missing: never scanned
+
+
+def test_a_failed_queue_write_is_retried_on_the_next_run():
+    import BlobLogProcessor
+    queue = MagicMock()
+    queue.set.side_effect = [RuntimeError("queue"), None]
+    with patch("shared.config_store.get_scan_state", return_value={}), \
+         patch("shared.registration.sync_registration"), \
+         patch("shared.updater.confirm_running_version"), \
+         patch("shared.config_store.get_processing_enabled", return_value=False):
+        BlobLogProcessor.main(MagicMock(past_due=False), queue)
+        BlobLogProcessor.main(MagicMock(past_due=False), queue)
+    assert queue.set.call_count == 2
+    assert startup_scan._checked is True

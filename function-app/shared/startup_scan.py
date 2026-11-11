@@ -45,7 +45,8 @@ def startup_scan_reason() -> Optional[str]:
             return None
         from shared.config_store import get_scan_state
         from shared.updater import get_local_version
-        state = get_scan_state() or {}
+        # Strict: an unreadable state must not read as "never scanned".
+        state = get_scan_state(strict=True)
         reason = _reason(state, get_local_version())
     except Exception as e:
         logger.warning("Startup scan check postponed after %s", type(e).__name__)
@@ -54,6 +55,12 @@ def startup_scan_reason() -> Optional[str]:
         return None
     _checked = True
     return reason
+
+
+def postpone() -> None:
+    """The scan request could not be queued: decide again on the next run."""
+    global _checked
+    _checked = False
 
 
 def _reason(state: dict, version: str) -> Optional[str]:

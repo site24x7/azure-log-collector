@@ -22,7 +22,9 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 - The scan after an update or a restart is no longer lost when the update or
   restart stopped a running scan: a scan flag older than the function timeout
   counts as stopped, and a queued scan request waits for a running scan instead
-  of being dropped while it runs.
+  of being dropped while it runs. A scan cut short by its time budget no longer
+  counts as covering earlier requests, and an unreadable scan state or a failed
+  queue write is retried on the next run instead of being taken as decided.
 - Global resources (Front Door, Traffic Manager, DNS, ...) send their logs to
   the storage account in the deployment's region; before, they were skipped
   ("no storage") because no account can be created in "global".

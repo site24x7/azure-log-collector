@@ -737,12 +737,20 @@ def get_resource_inventory() -> Optional[Dict]:
         return None
 
 
-def get_scan_state() -> Dict:
-    """Load scan state from blob storage."""
-    raw = _read_blob(SCAN_STATE_BLOB)
+def get_scan_state(strict: bool = False) -> Dict:
+    """Load scan state from blob storage.
+
+    With ``strict``, a read failure or a malformed state raises instead of
+    returning ``{}`` (which reads as "never scanned"); only a missing blob is ``{}``."""
+    raw = _read_blob(SCAN_STATE_BLOB, strict=True) if strict else _read_blob(SCAN_STATE_BLOB)
     if raw:
         try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
+            state = json.loads(raw)
+            if not isinstance(state, dict):
+                raise ValueError("Scan state is not an object")
+            return state
+        except ValueError:
+            if strict:
+                raise
             logger.error("Failed to parse scan state blob")
     return {}

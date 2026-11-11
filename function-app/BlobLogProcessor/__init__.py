@@ -69,13 +69,17 @@ def main(timer: func.TimerRequest, scanQueue: func.Out[str] = None) -> None:
     # Scan after an installation, an update or a restart: the first run of each
     # worker queues one, like Scan now (shared/startup_scan.py).
     try:
-        from shared.startup_scan import startup_scan_reason
-        reason = startup_scan_reason()
+        from shared import startup_scan
+        reason = startup_scan.startup_scan_reason()
         if reason and scanQueue is not None:
-            scanQueue.set(json.dumps({
-                "requested_at": datetime.now(timezone.utc).isoformat(),
-                "source": reason,
-            }))
+            try:
+                scanQueue.set(json.dumps({
+                    "requested_at": datetime.now(timezone.utc).isoformat(),
+                    "source": reason,
+                }))
+            except Exception:
+                startup_scan.postpone()
+                raise
             logger.info("BlobLogProcessor: Scan queued after %s", reason)
     except Exception as e:
         logger.warning("BlobLogProcessor: startup scan request failed: %s", type(e).__name__)
