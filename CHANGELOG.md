@@ -7,6 +7,13 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.1.0-beta7] — 2026-11-11
+
+- Log lines written by scan worker threads now reach Application Insights on
+  Python 3.13 as well. That worker tells which run wrote a line from a context
+  variable, which the beta6 fix did not pass to the threads; each task now runs
+  in a copy of the calling run's context.
+
 ## [1.1.0-beta6] — 2026-11-11
 
 - Log lines written while a scan works on resources in parallel (setting up

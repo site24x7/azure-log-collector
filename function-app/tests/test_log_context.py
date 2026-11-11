@@ -1,5 +1,6 @@
 """Worker threads carry the run's invocation id, so their log lines reach Application Insights."""
 
+import contextvars
 import threading
 from types import SimpleNamespace
 
@@ -41,6 +42,21 @@ def test_a_later_run_on_the_same_thread_uses_its_own_id(monkeypatch):
     context.thread_local_storage.invocation_id = "run-3"   # the worker sets this for each run
     with log_context.thread_pool(1) as pool:
         assert pool.submit(lambda: context.thread_local_storage.invocation_id).result() == "run-3"
+
+
+def test_pool_tasks_see_the_run_context_variable(monkeypatch):
+    # Python 3.13 workers tell the run from a ContextVar, which plain pool threads do not inherit.
+    monkeypatch.setattr(log_context, "_storage", None)
+    run_id = contextvars.ContextVar("invocation_id", default=None)
+    token = run_id.set("run-4")
+    try:
+        with log_context.thread_pool(3) as pool:
+            assert set(pool.map(lambda _: run_id.get(), range(6))) == {"run-4"}
+            # Nested pools keep it too.
+            inner = pool.submit(lambda: log_context.thread_pool(1).submit(run_id.get).result())
+            assert inner.result() == "run-4"
+    finally:
+        run_id.reset(token)
 
 
 def test_without_a_context_pools_still_work(monkeypatch):
