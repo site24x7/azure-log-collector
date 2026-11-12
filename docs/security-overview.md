@@ -104,7 +104,7 @@ Once collecting, every scan (every 6 hours, and on demand) does the following:
 
 **Admin actions**
 - They can pause/resume processing through a shared storage flag, without restarting the Function App. Changes to automatic scans, general log type, own-resource collection and storage protection days still update app settings and restart it.
-- They can switch log collection off (`PUT /api/collection`). Forwarding stops at once; a queued job then removes this collector's diagnostic settings from every resource and deletes the log containers of its storage accounts, which stay in place, idle (the resource group lock forbids deleting them, and a released storage name can be taken by anyone). No scan sets anything up while collection is off. Switching it on resumes forwarding and runs a scan. Neither needs an app-setting change or a restart.
+- They can switch log collection off (`PUT /api/collection`). Forwarding stops at once; a queued job then removes this collector's diagnostic settings from every resource and empties its log storage accounts (every container, and the processing checkpoints for them), sweeping them again every 30 minutes for a day to catch logs Azure Monitor still writes. The accounts stay in place, empty (the resource group lock forbids deleting them, and a released storage name can be taken by anyone). No scan sets anything up while collection is off. Switching it on resumes forwarding and runs a scan. Neither needs an app-setting change or a restart.
 
 ---
 

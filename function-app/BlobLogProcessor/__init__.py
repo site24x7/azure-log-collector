@@ -106,6 +106,9 @@ def main(timer: func.TimerRequest, scanQueue: func.Out[str] = None) -> None:
         return
     if not processing_enabled:
         logger.warning("BlobLogProcessor: Processing is DISABLED — skipping")
+        # Log collection switched off: keep its storage empty of late writes.
+        from shared.collection import sweep_if_due
+        sweep_if_due()
         return
 
     try:

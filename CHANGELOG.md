@@ -7,6 +7,16 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.1.0-beta9] — 2026-11-13
+
+- Switching log collection off empties the collector's log storage accounts
+  completely: every container is deleted (not only the `insights-logs-*`
+  ones), with the processing checkpoints that pointed into them. Logs Azure
+  Monitor still writes after the settings are removed are swept every 30
+  minutes for a day. Only this collector's regional and tenant accounts are
+  touched, never the Function App's own storage. A storage failure makes the
+  switch-off report "partial", so it can be retried.
+
 ## [1.1.0-beta8] — 2026-11-13
 
 - Log Collection switch (`PUT /api/collection`). Off stops forwarding at once,

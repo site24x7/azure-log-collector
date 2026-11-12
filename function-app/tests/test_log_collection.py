@@ -122,8 +122,7 @@ def test_stop_records_a_partial_removal():
          patch("shared.azure_manager.AzureManager", return_value=mgr), \
          patch("shared.config_store.get_configured_resources", return_value={}), \
          patch("shared.config_store.unmark_resource_configured", return_value=True), \
-         patch("shared.region_manager.RegionManager"), \
-         patch("shared.collection._clear_storage", return_value={"accounts": 2, "containers_cleared": 4, "storage_errors": 0}), \
+         patch("shared.collection._clear_all", return_value={"accounts": 2, "containers_cleared": 4, "storage_errors": 0}), \
          patch("shared.debug_logger.log_event"), patch("shared.debug_logger.log_audit"):
         outcome = collection.stop_collection()
     assert outcome["state"] == "partial" and outcome["removed"] == 3 and outcome["errors"] == 1
@@ -211,3 +210,89 @@ def test_missing_checkpoints_are_empty():
 ])
 def test_conflicts_are_told_by_status_not_by_digits(error, conflict):
     assert config_store.is_conflict(error) is conflict
+
+
+# ---------------------------------------------------------------- emptying the storage
+
+
+def _account(name, purpose, owner="s247-diag-func-x"):
+    acct = MagicMock()
+    acct.name = name
+    acct.primary_location = "eastus"
+    acct.tags = {"managed-by": "s247-diag-logs", "purpose": purpose, "s247-collector": owner}
+    return acct
+
+
+def test_switching_off_empties_every_container_of_the_collectors_accounts_only(monkeypatch):
+    monkeypatch.setenv("WEBSITE_SITE_NAME", "s247-diag-func-x")
+    storage = MagicMock()
+    storage.storage_accounts.list_by_resource_group.return_value = [
+        _account("s247diageastusx", "diag-logs-regional"),
+        _account("s247diagtenantx", "diag-logs-tenant"),
+        _account("s247diagx", "function-app-runtime"),            # the app's own storage: untouched
+        _account("s247diageastusy", "diag-logs-regional", owner="s247-diag-func-y"),  # another collector's
+    ]
+    service = MagicMock()
+    service.list_containers.return_value = [{"name": "insights-logs"}, {"name": "insights-logs-auditevent"},
+                                            {"name": "insights-activity-logs"}]
+    region_mgr = MagicMock()
+    region_mgr.set_retention.return_value = True
+    with patch("azure.mgmt.storage.StorageManagementClient", return_value=storage), \
+         patch("azure.storage.blob.BlobServiceClient", return_value=service), \
+         patch("shared.collection._drop_checkpoints", return_value=True) as dropped:
+        counts = collection._clear_storage(region_mgr, "rg")
+    assert counts == {"accounts": 2, "containers_cleared": 6, "storage_errors": 0}
+    dropped.assert_called_once_with(["s247diageastusx", "s247diagtenantx"])
+
+
+def test_checkpoints_of_emptied_accounts_are_dropped(monkeypatch):
+    import BlobLogProcessor as blp
+    monkeypatch.setenv("AzureWebJobsStorage", "UseDevelopmentStorage=true")
+    checkpoints = {"s247diageastusx/insights-logs-a/b.json": {}, "other/insights-logs-a/c.json": {}}
+    blob = MagicMock()
+    service = MagicMock()
+    service.get_container_client.return_value.get_blob_client.return_value = blob
+    with patch.object(blp, "_load_checkpoints_with_etag", return_value=(checkpoints, "etag-1")), \
+         patch("azure.storage.blob.BlobServiceClient.from_connection_string", return_value=service):
+        assert collection._drop_checkpoints(["s247diageastusx"]) is True
+    assert json.loads(blob.upload_blob.call_args.args[0]) == {"other/insights-logs-a/c.json": {}}
+
+
+def _sweep(state, now):
+    from datetime import datetime
+    saved = []
+    with patch("shared.config_store.get_collection_state", return_value=state), \
+         patch("shared.config_store.update_collection_state", side_effect=lambda p: saved.append(p) or p), \
+         patch("shared.collection._clear_all", return_value={"accounts": 1, "containers_cleared": 2, "storage_errors": 0}) as clear:
+        result = collection.sweep_if_due(datetime.fromisoformat(now))
+    return result, clear, saved
+
+
+@pytest.mark.parametrize("state, now, due", [
+    ({"enabled": False, "stop": {"state": "done", "finished_at": "2026-11-13T10:00:00+00:00"}}, "2026-11-13T10:40:00+00:00", True),
+    ({"enabled": False, "stop": {"state": "done", "finished_at": "2026-11-13T10:00:00+00:00"}}, "2026-11-13T10:10:00+00:00", False),
+    ({"enabled": False, "stop": {"state": "done", "finished_at": "2026-11-13T10:00:00+00:00",
+                                 "swept_at": "2026-11-13T10:40:00+00:00"}}, "2026-11-13T10:50:00+00:00", False),
+    ({"enabled": False, "stop": {"state": "done", "finished_at": "2026-11-12T08:00:00+00:00"}}, "2026-11-13T10:00:00+00:00", False),
+    ({"enabled": False, "stop": {"state": "running", "started_at": "2026-11-13T10:00:00+00:00"}}, "2026-11-13T11:00:00+00:00", False),
+    ({"enabled": True}, "2026-11-13T11:00:00+00:00", False),
+])
+def test_late_logs_are_swept_while_collection_is_off(state, now, due):
+    result, clear, saved = _sweep(state, now)
+    assert clear.called is due and (result is not None) is due
+    if due:
+        assert saved[0]["stop"]["swept_at"] == now  # claimed before sweeping
+
+
+def test_a_storage_failure_makes_the_stop_partial():
+    mgr = MagicMock()
+    mgr.remove_all_diagnostic_settings.return_value = {"removed": 2, "skipped": 0, "errors": 0, "unresolved": 0,
+                                                       "resolved_ids": ["a", "b"], "details": []}
+    with patch("shared.config_store.update_collection_state", side_effect=lambda p: p), \
+         patch("shared.subscriptions.monitored_subscriptions", return_value=([SUB], {}, None)), \
+         patch("shared.azure_manager.AzureManager", return_value=mgr), \
+         patch("shared.config_store.get_configured_resources", return_value={}), \
+         patch("shared.config_store.unmark_resource_configured", return_value=True), \
+         patch("shared.collection._clear_all", return_value={"accounts": 1, "containers_cleared": 0, "storage_errors": 1}), \
+         patch("shared.debug_logger.log_event"), patch("shared.debug_logger.log_audit"):
+        assert collection.stop_collection()["state"] == "partial"
