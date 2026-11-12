@@ -48,7 +48,7 @@ def _save_early_scan_state(all_resources, active_resources, ignored_count):
 
 def _refresh_supported_types(client):
     """Fetch the current server catalog each scan; retain cached data on outage."""
-    from shared.config_store import get_supported_log_types, save_supported_log_types
+    from shared.config_store import get_supported_log_types, save_supported_log_types, normalize_category
     cached = get_supported_log_types(force_refresh=True)
     try:
         result = client.get_supported_log_types()
@@ -64,7 +64,7 @@ def _refresh_supported_types(client):
         for entry in entries:
             logtype = entry["logtype"]
             for category in entry.get("log_categories", []):
-                normalized = category.replace("-", "").replace("_", "").replace(" ", "").lower()
+                normalized = normalize_category(category)
                 existing = types_map.get(normalized)
                 if not existing or (existing.get("logtype") == normalized
                                     and logtype != normalized):
@@ -153,10 +153,13 @@ def _tenant_storage(region_mgr, resource_group, suffix, hosting_subscription):
     name = region_mgr.get_subscription_name(hosting_subscription) if account.get("id") else ""
     return account, name, False
 
-def run_scan():
-    """One full scan. A scan that stops records why (last_scan_error) before the error goes on."""
+def run_scan(full_reconcile: bool = False):
+    """One full scan. A scan that stops records why (last_scan_error) before the error goes on.
+
+    ``full_reconcile``: check every tracked setting in Azure now (Scan now does),
+    not only once a day."""
     try:
-        result = _run_scan()
+        result = _run_scan(full_reconcile)
     except Exception as e:
         _record_scan_failure(_scan_failure_code(e))
         raise
@@ -165,7 +168,7 @@ def run_scan():
     return result
 
 
-def _run_scan():
+def _run_scan(full_reconcile: bool = False):
     from shared.azure_manager import AzureManager, LEGACY_SETTING_NAME, collector_setting_name
     from shared.region_manager import RegionManager
     from shared.storage_names import storage_region
@@ -186,6 +189,7 @@ def _run_scan():
         clear_cache,
         get_resource_inventory,
         save_resource_inventory,
+        normalize_category,
     )
 
     """Core scan logic: discover resources, create log types in Site24x7,
@@ -364,46 +368,72 @@ def _run_scan():
     from shared.config_store import get_scan_state
     last_reconcile = (get_scan_state() or {}).get("last_full_reconcile", "")
     try:
-        reconcile_due = (datetime.now(timezone.utc) - datetime.fromisoformat(last_reconcile)
-                         > timedelta(hours=FULL_RECONCILE_HOURS))
+        reconcile_due = full_reconcile or (
+            datetime.now(timezone.utc) - datetime.fromisoformat(last_reconcile)
+            > timedelta(hours=FULL_RECONCILE_HOURS))
     except (TypeError, ValueError):
         reconcile_due = True
     reconcile_complete = True
+    # Tracked resources whose setting is missing or differs in Azure (deleted or
+    # changed by hand): written again in phase 6, never fast-pathed there.
+    drifted = set()
 
     def _matches_azure(resource_id, prev_config, sa_name):
-        """The tracked setting still exists in Azure as recorded."""
-        nonlocal reconcile_complete
+        """(matches, checked): the tracked setting still exists in Azure as recorded.
+        A failed lookup is unknown, not a mismatch: the record is trusted this time."""
         try:
             actual = azure_mgr.get_diagnostic_setting(resource_id, setting_name, raise_errors=True)
         except Exception:
-            reconcile_complete = False
-            return True   # unknown: keep trusting the record this time
-        return bool(actual) and \
-            (actual.get("storage_account_id") or "").lower().endswith("/" + sa_name.lower()) and \
-            set(actual.get("categories") or []) == set(prev_config.get("categories") or [])
+            return True, False
+        return (bool(actual)
+                and (actual.get("storage_account_id") or "").lower().endswith("/" + sa_name.lower())
+                and set(actual.get("categories") or []) == set(prev_config.get("categories") or [])), True
 
+    # Resources that may fast-path: tracked with categories, same storage and setting name.
+    fast_candidates = []
+    for resource in active_resources:
+        resource_id = resource.get("id", "")
+        prev_config = configured_resources.get(resource_id, {})
+        if not (prev_config and prev_config.get("categories")):
+            continue
+        sa_name = provisioned_regions.get(storage_region(resource.get("location", "")), "")
+        # A changed regional account (e.g. a leftover one was chosen before)
+        # must not fast-path: rediscover and re-point the setting.
+        # A legacy-named setting must not fast-path either: it is renamed below.
+        if sa_name and prev_config.get("storage_account", sa_name) == sa_name and \
+                prev_config.get("setting_name", LEGACY_SETTING_NAME) == setting_name:
+            fast_candidates.append((resource_id, prev_config, sa_name))
+
+    if reconcile_due and fast_candidates:
+        from shared.log_context import thread_pool as _pool
+        with _pool(10) as check_pool:
+            checks = list(check_pool.map(lambda c: (c[0], _matches_azure(*c)), fast_candidates))
+        for resource_id, (matches, checked) in checks:
+            if not checked:
+                reconcile_complete = False
+            elif not matches:
+                drifted.add(resource_id)
+        if drifted:
+            logging.warning("DiagSettingsManager: %d tracked settings are missing or changed in Azure; "
+                            "they are written again", len(drifted))
+            _log_event("warning", "DiagSettingsManager",
+                       f"{len(drifted)} diagnostic settings were missing or changed in Azure; writing them again")
+
+    fast_ids = {c[0] for c in fast_candidates if c[0] not in drifted}
     for resource in active_resources:
         resource_id = resource.get("id", "")
         location = resource.get("location", "")
         resource_type = resource.get("type", "")
-
-        prev_config = configured_resources.get(resource_id, {})
-        if prev_config and prev_config.get("categories"):
-            sa_name = provisioned_regions.get(storage_region(location), "")
-            # A changed regional account (e.g. a leftover one was chosen before)
-            # must not fast-path: rediscover and re-point the setting.
-            # A legacy-named setting must not fast-path either: it is renamed below.
-            if sa_name and prev_config.get("storage_account", sa_name) == sa_name and \
-                    prev_config.get("setting_name", LEGACY_SETTING_NAME) == setting_name and \
-                    (not reconcile_due or _matches_azure(resource_id, prev_config, sa_name)):
-                resource_category_map[resource_id] = {
-                    "categories": prev_config["categories"],
-                    "effective_categories": prev_config["categories"],
-                    "location": location,
-                    "sa_name": sa_name,
-                }
-                stats["already_configured"] += 1
-                continue
+        if resource_id in fast_ids:
+            prev_config = configured_resources[resource_id]
+            resource_category_map[resource_id] = {
+                "categories": prev_config["categories"],
+                "effective_categories": prev_config["categories"],
+                "location": location,
+                "sa_name": provisioned_regions.get(storage_region(location), ""),
+            }
+            stats["already_configured"] += 1
+            continue
 
         if resource_type not in types_needing_discovery:
             types_needing_discovery[resource_type] = resource_id
@@ -472,7 +502,7 @@ def _run_scan():
     _cat_names = {}
     for rtype, cats in _category_cache_by_type.items():
         for cat in cats:
-            cat_norm = cat.replace("-", "").replace("_", "").lower()
+            cat_norm = normalize_category(cat)
             _cat_rt_map.setdefault(cat_norm, set()).add(rtype)
             _cat_names.setdefault(cat_norm, cat)
     # Also include categories from already-configured resources
@@ -482,7 +512,7 @@ def _run_scan():
             segs = parts[-1].split("/")
             rtype = f"{segs[0]}/{segs[1]}" if len(segs) >= 2 else segs[0]
             for cat in info.get("categories", []):
-                cat_norm = cat.replace("-", "").replace("_", "").lower()
+                cat_norm = normalize_category(cat)
                 _cat_rt_map.setdefault(cat_norm, set()).add(rtype)
                 _cat_names.setdefault(cat_norm, cat)
     # Deduplicate resource types by case (keep longest variant per lowercase key)
@@ -529,7 +559,7 @@ def _run_scan():
 
             effective_categories = []
             for category in desired_categories:
-                cat_normalized = category.replace("-", "").replace("_", "").replace(" ", "").lower()
+                cat_normalized = normalize_category(category)
                 if get_logtype_config(cat_normalized):
                     effective_categories.append(category)
                     stats["specific"] += 1
@@ -549,7 +579,7 @@ def _run_scan():
             }
 
             for category in desired_categories:
-                cat_normalized = category.replace("-", "").replace("_", "").replace(" ", "").lower()
+                cat_normalized = normalize_category(category)
                 existing_config = get_logtype_config(cat_normalized)
                 if not existing_config:
                     if supported_types and cat_normalized in supported_types:
@@ -654,7 +684,7 @@ def _run_scan():
                             # Also save for all log_categories sub-categories
                             if supported_types and cat_name in supported_types:
                                 for sub_cat in supported_types[cat_name].get("log_categories", []):
-                                    sub_normalized = sub_cat.replace("-", "").replace("_", "").lower()
+                                    sub_normalized = normalize_category(sub_cat)
                                     if sub_normalized != cat_name:
                                         save_logtype_config(sub_normalized, source_config)
                                         logging.info(
@@ -721,7 +751,7 @@ def _run_scan():
                     # and pollutes the error log on every scan.
                     if not supported_types:
                         return None
-                    normalized = cat_name.replace("-", "").replace("_", "").replace(" ", "").lower()
+                    normalized = normalize_category(cat_name)
                     info = supported_types.get(normalized, {})
                     display = info.get("display_name", "")
                     return [display] if display else None
@@ -782,7 +812,7 @@ def _run_scan():
         for resource_id, info in resource_category_map.items():
             effective = []
             for category in info["categories"]:
-                cat_normalized = category.replace("-", "").replace("_", "").replace(" ", "").lower()
+                cat_normalized = normalize_category(category)
                 if get_logtype_config(cat_normalized) or general_config_available:
                     effective.append(category)
             info["effective_categories"] = effective
@@ -823,7 +853,7 @@ def _run_scan():
 
     # Resources already fast-pathed above (already_configured) should be skipped
     fast_pathed_ids = {rid for rid, info in resource_category_map.items()
-                       if rid in configured_resources
+                       if rid in configured_resources and rid not in drifted
                        and set(info.get("effective_categories", [])) == set(configured_resources[rid].get("categories", []))
                        and configured_resources[rid].get("storage_account", info.get("sa_name")) == info.get("sa_name")
                        and configured_resources[rid].get("setting_name", LEGACY_SETTING_NAME) == setting_name}
@@ -834,6 +864,33 @@ def _run_scan():
         if not azure_mgr.create_diagnostic_setting(resource_id=resource_id, storage_account_id=storage_account_id,
                                                    categories=categories, setting_name=LEGACY_SETTING_NAME):
             logging.error("DiagSettingsManager: could not restore the old setting on %s", resource_id)
+
+    def _effective_for(categories):
+        """Of a resource's own categories, those that are on and have somewhere to go."""
+        return [c for c in categories if not is_log_type_disabled(c)
+                and (get_logtype_config(normalize_category(c)) or general_config_available)]
+
+    def _create(resource_id, storage_account_id, categories):
+        """Write the setting; the categories written, or None when it failed.
+
+        The categories come from one sample resource per type, and resources of
+        one type can differ (a web app has no FunctionAppLogs, a function app
+        has). When Azure refuses them, the resource's own categories are tried."""
+        if azure_mgr.create_diagnostic_setting(resource_id=resource_id, storage_account_id=storage_account_id,
+                                               categories=categories):
+            return categories
+        try:
+            own = _effective_for(azure_mgr.get_diagnostic_categories(resource_id) or [])
+        except Exception:
+            return None
+        if not own or set(own) == set(categories):
+            return None
+        logging.info("DiagSettingsManager: %s takes %d of the %d categories of its type; writing those",
+                     resource_id, len(own), len(categories))
+        if azure_mgr.create_diagnostic_setting(resource_id=resource_id, storage_account_id=storage_account_id,
+                                               categories=own):
+            return own
+        return None
 
     def _configure_one_resource(resource_id, info):
         """Configure diagnostic setting for a single resource.
@@ -865,34 +922,27 @@ def _run_scan():
             if resource_id in configured_resources:
                 same_storage = prev_config.get("storage_account", info["sa_name"]) == info["sa_name"]
                 same_name = prev_config.get("setting_name", LEGACY_SETTING_NAME) == setting_name
-                if new_categories == prev_categories and same_storage and same_name:
+                if new_categories == prev_categories and same_storage and same_name \
+                        and resource_id not in drifted:
                     return "already_configured", None, None
                 legacy = azure_mgr.remove_legacy_setting_if_own(resource_id, info["sa_name"])
                 if legacy is False:
                     return "error", "could not remove the old s247-diag-logs setting", None
-                success = azure_mgr.create_diagnostic_setting(
-                    resource_id=resource_id,
-                    storage_account_id=storage_account_id,
-                    categories=effective,
-                )
-                if not success and legacy:
+                written = _create(resource_id, storage_account_id, effective)
+                if not written and legacy:
                     _restore_legacy(resource_id, storage_account_id, list(prev_categories) or effective)
-                if success:
-                    return "updated", None, ("mark", resource_id, effective, info["sa_name"])
+                if written:
+                    return "updated", None, ("mark", resource_id, written, info["sa_name"])
                 return "error", "create_diagnostic_setting returned False", None
             else:
                 legacy = azure_mgr.remove_legacy_setting_if_own(resource_id, info["sa_name"])
                 if legacy is False:
                     return "error", "could not remove the old s247-diag-logs setting", None
-                success = azure_mgr.create_diagnostic_setting(
-                    resource_id=resource_id,
-                    storage_account_id=storage_account_id,
-                    categories=effective,
-                )
-                if not success and legacy:
+                written = _create(resource_id, storage_account_id, effective)
+                if not written and legacy:
                     _restore_legacy(resource_id, storage_account_id, effective)
-                if success:
-                    return "configured", None, ("mark", resource_id, effective, info["sa_name"])
+                if written:
+                    return "configured", None, ("mark", resource_id, written, info["sa_name"])
                 return "error", "create_diagnostic_setting returned False", None
         except Exception as e:
             return "error", str(e), None
@@ -1174,6 +1224,13 @@ def main(timer: func.TimerRequest, context: func.Context = None) -> None:
     bind(context)
     if timer.past_due:
         logging.warning("DiagSettingsManager: Timer is past due")
+    from shared.config_store import collection_enabled
+    if not collection_enabled():
+        # Log collection is switched off in Site24x7: nothing is set up again.
+        logging.info("DiagSettingsManager: Log collection is off — skipping scheduled scan")
+        from shared.registration import register_with_site24x7
+        register_with_site24x7()
+        return
     auto_scan = os.environ.get("AUTO_SCAN_ENABLED", "true").lower() == "true"
     if not auto_scan:
         logging.info("DiagSettingsManager: Auto-scan is DISABLED — skipping scheduled scan")

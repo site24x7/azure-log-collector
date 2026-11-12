@@ -43,8 +43,12 @@ def startup_scan_reason() -> Optional[str]:
         if os.environ.get("AUTO_SCAN_ENABLED", "true").lower() != "true":
             _checked = True
             return None
-        from shared.config_store import get_scan_state
+        from shared.config_store import get_collection_state, get_scan_state
         from shared.updater import get_local_version
+        if get_collection_state(strict=True).get("enabled") is not True:
+            # Switched off in Site24x7; switching it on queues its own scan.
+            _checked = True
+            return None
         # Strict: an unreadable state must not read as "never scanned".
         state = get_scan_state(strict=True)
         reason = _reason(state, get_local_version())

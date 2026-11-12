@@ -274,7 +274,7 @@ def test_portal_form_matches_the_template():
     # Computed outputs: the subscriptions that pass the access check, and the tag tables' rows.
     assert set(fields) | (set(filters) & form_params) == form_params - {'monitoredSubscriptionIds', 'includeTagRows', 'excludeTagRows'}
     assert 'collectFrom' not in filters
-    assert filters['otherSubscriptions']['label'] == 'Other subscriptions'
+    assert filters['otherSubscriptions']['label'] == 'Additional Subscriptions'
     assert 'excludeSubscriptions' not in filters
     assert 'excludeResourceGroups' not in filters
     assert fields['resourceGroupName']['label'] == 'Resource group name (optional)'
@@ -352,7 +352,7 @@ def test_portal_lists_only_subscriptions_the_user_can_grant_access_in():
     assert scope['checkIds']['visible'] is False
     assert scope['checkIds']['defaultValue'] == 'Automatic'
     assert 'Retry' not in scope['checkIds']['constraints']['allowedValues']  # one option only
-    assert 'do not have enough permissions' in scope['notListed']['options']['text']
+    assert 'listed only if you can grant access' in scope['notListed']['options']['text']
     for index in range(10):
         path = elements[f'check{index}']['request']['path']
         assert '.subscriptions.checkIds' in path

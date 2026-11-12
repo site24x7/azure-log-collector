@@ -133,7 +133,7 @@ az monitor app-insights query -g s247-diag-logs-rg --app <app-insights-name> \
 | `"Category discovery failed"` | Specific resource type has API issues | Transient — will retry next scan |
 | `"All log type creation(s) failed"` | Site24x7 API unreachable during scan | Check S247 connectivity (Device Key, Base URL) |
 
-**Force a fresh scan**: Use the Dashboard → Controls → "Trigger Scan" button.
+**Force a fresh scan**: use **Scan now** on the collector's page in Site24x7. It also checks every tracked diagnostic setting in Azure and writes again any that was deleted or changed.
 
 ---
 

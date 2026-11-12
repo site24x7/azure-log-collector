@@ -46,7 +46,7 @@ The Site24x7 addresses come from the `SITE24X7_BASE_URL` app setting. The upload
 | Regional storage account keys | Read at run time through ARM `listKeys` (Contributor on the collector's resource group), held in memory only | Reading the buffered log blobs |
 | Site24x7 Device Key | App setting `SITE24X7_API_KEY` (encrypted at rest by Azure) | Authenticating to Site24x7. It is not stored with the saved log type configurations, and the collector never writes it to its logs. (On the Site24x7 side, a request with an unknown Device Key is logged by Site24x7's own log-collection service; that is outside this collector.) |
 | Function App host keys | Azure-managed | Authorize every HTTP endpoint (section 7). Used by you, for example to open the dashboard. **Never sent to Site24x7.** |
-| `site24x7` function key | Azure-managed; created by the collector on the 17 functions Site24x7 calls or opens for its admins (including the dashboard) | **Sent to Site24x7** at registration (section 6). It does not open the dashboard, debug data or health endpoint. |
+| `site24x7` function key | Azure-managed; created by the collector on the 18 functions Site24x7 calls or opens for its admins (including the dashboard) | **Sent to Site24x7** at registration (section 6). It does not open the dashboard, debug data or health endpoint. |
 
 **Rotation**
 - **Device Key:** update `SITE24X7_API_KEY`. Uploads always use the current setting.
@@ -104,7 +104,7 @@ Once collecting, every scan (every 6 hours, and on demand) does the following:
 
 **Admin actions**
 - They can pause/resume processing through a shared storage flag, without restarting the Function App. Changes to automatic scans, general log type, own-resource collection and storage protection days still update app settings and restart it.
-- They can remove all of this collector's diagnostic settings. This also turns automatic scans off first.
+- They can switch log collection off (`PUT /api/collection`). Forwarding stops at once; a queued job then removes this collector's diagnostic settings from every resource and deletes the log containers of its storage accounts, which stay in place, idle (the resource group lock forbids deleting them, and a released storage name can be taken by anyone). No scan sets anything up while collection is off. Switching it on resumes forwarding and runs a scan. Neither needs an app-setting change or a restart.
 
 ---
 
@@ -113,7 +113,7 @@ Once collecting, every scan (every 6 hours, and on demand) does the following:
 The collector registers with Site24x7 after every scan, on restart, when its key changes (see Operational freshness and connectivity). It sends:
 - its Function App name, address, resource ID, subscription, resource group and region;
 - its version and a status summary;
-- the **`site24x7` function key**. This is a dedicated key, not a host key, and the collector creates it on just these 17 functions: status, scan, processing, ignore-list (get and put), disabled-logtypes (get and post), entra-logtypes, general-logtype (get and put), settings, configured-resources, check-update, remove-diagnostic-settings, and the dashboard with the debug and health functions its page uses. Site24x7 admins open the dashboard from Site24x7 (Troubleshooting → Open Collector Dashboard): Site24x7 builds the dashboard address with this key when the admin clicks, opens it in a new tab without a referrer, and audits it. The dashboard removes the key from the address bar and history at once (below), so it stays only in that tab. Revoke it with `SITE24X7_KEY_EXCLUDE=*`, or rotate it by deleting the `site24x7` key on those functions (the collector creates a new one at its next registration).
+- the **`site24x7` function key**. This is a dedicated key, not a host key, and the collector creates it on just these 18 functions: status, scan, processing, collection, ignore-list (get and put), disabled-logtypes (get and post), entra-logtypes, general-logtype (get and put), settings, configured-resources, check-update, remove-diagnostic-settings, and the dashboard with the debug and health functions its page uses. Site24x7 admins open the dashboard from Site24x7 (Troubleshooting → Open Collector Dashboard): Site24x7 builds the dashboard address with this key when the admin clicks, opens it in a new tab without a referrer, and audits it. The dashboard removes the key from the address bar and history at once (below), so it stays only in that tab. Revoke it with `SITE24X7_KEY_EXCLUDE=*`, or rotate it by deleting the `site24x7` key on those functions (the collector creates a new one at its next registration).
 
 Site24x7 stores the key encrypted. With it, Site24x7 admins can run those actions from the Site24x7 page. Each action is:
 - available to Site24x7 Super Admins and Admins only;
@@ -130,7 +130,7 @@ The resource group lock forbids deleting keys, so the collector revokes a functi
 
 ## 7. HTTP endpoints
 
-All 17 HTTP functions use `authLevel: function`. Each needs a valid function or host key, and there is no anonymous endpoint (including `/api/health`). They are: dashboard, status, health, debug, scan, processing, settings, ignore-list (get and put), disabled-logtypes (get and post), general-logtype (get and put), entra-logtypes, configured-resources, check-update, remove-diagnostic-settings.
+All 18 HTTP functions use `authLevel: function`. Each needs a valid function or host key, and there is no anonymous endpoint (including `/api/health`). They are: dashboard, status, health, debug, scan, processing, settings, ignore-list (get and put), disabled-logtypes (get and post), general-logtype (get and put), entra-logtypes, configured-resources, check-update, remove-diagnostic-settings.
 
 **Input checks**
 - Request bodies must be JSON objects.
@@ -155,8 +155,8 @@ All 17 HTTP functions use `authLevel: function`. Each needs a valid function or 
   - The collector never deletes blobs.
   - The lifecycle rule deletes them after `BLOB_RETENTION_DAYS`, whether or not they were sent.
   - If Site24x7 can't be reached for longer than that, the oldest logs are lost.
-- **Retries:** an upload that fails for a reason a retry can fix (Site24x7 unreachable, timeout, HTTP 408 / 429 / 5xx, or the Device Key refused with 401 / 403) is retried on the next run, every 2 minutes, while the logs are still kept.
-  - Records Site24x7 refuses for good (HTTP 400 / 404 / 415 / 422, or a single record still too large after splitting on 413) are dropped and counted, not retried.
+- **Retries:** an upload that fails for a reason a retry can fix (Site24x7 unreachable, timeout, HTTP 408 / 429 / 5xx, or the Device Key refused) is retried on the next run, every 2 minutes, while the logs are still kept. The Device Key counts as refused on 401 / 403, and on a 400 when Site24x7's API refuses the key too (the upload service answers 400 to an unknown key, for example after the key was rotated).
+  - Records Site24x7 refuses for good (HTTP 400 with a valid Device Key, 404 / 415 / 422, or a single record still too large after splitting on 413) are dropped and counted, not retried.
   - Delivery is at least once: a run that stops between an upload and saving its checkpoint, or a block range whose records cannot be split at block boundaries, can send some records again.
 - **What is sent:** only the fields the Site24x7 log type defines are taken from each record.
   - Masking, hashing and derived fields from the log type configuration are applied before sending.
@@ -246,7 +246,7 @@ AutoUpdater records each run as an event; the new version confirms the update on
 | Can it change my resources? | It manages diagnostic settings on resources in the monitored subscriptions (only its own, as described in section 3). It creates storage accounts in its own resource group (it never deletes them), and writes its own app settings. It does nothing until an admin starts collecting (section 4). |
 | Can it change permissions? | No. It has no role-assignment rights. |
 | What if the GitHub repository were compromised? | An attacker would need to publish a release that passes the update gates (section 9) and wait for the age gate. You can turn updates off (`SKIP_AUTO_UPDATE=true`) or point `UPDATE_CHECK_URL` at your own fork. |
-| What if Site24x7 were compromised? | With the Device Key, an attacker could send logs into your Site24x7 account. With the stored `site24x7` key (section 6), they could call those 17 endpoints, for example change settings, remove diagnostic settings, or open the dashboard and its (redacted) debug data. Revoke it with `SITE24X7_KEY_EXCLUDE=*`. They cannot reach your other Azure resources: the collector's identity is limited as described in section 3. |
+| What if Site24x7 were compromised? | With the Device Key, an attacker could send logs into your Site24x7 account. With the stored `site24x7` key (section 6), they could call those 18 endpoints, for example change settings, switch log collection off, or open the dashboard and its (redacted) debug data. Revoke it with `SITE24X7_KEY_EXCLUDE=*`. They cannot reach your other Azure resources: the collector's identity is limited as described in section 3. |
 | Can I check what is deployed? | Each release zip is built by GitHub Actions from a tagged commit, with its SHA-256 in `version.json`. Compare the running package with the tag. |
 
 ## Operational freshness and connectivity

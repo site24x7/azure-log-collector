@@ -82,7 +82,7 @@ preflight_checks() {
     STORAGE="${STORAGE_ACCOUNT_NAME:-s247diag${unique_suffix}}"
     REGION="${FUNCTION_APP_REGION:-eastus}"
     TIMER="${TIMER_SCHEDULE:-0 0 */6 * * *}"
-    GENERAL_LOGTYPE="${GENERAL_LOGTYPE_ENABLED:-true}"
+    GENERAL_LOGTYPE="${GENERAL_LOGTYPE_ENABLED:-false}"
 
     log_info "Resource Group:    ${RG}"
     log_info "Function App:      ${FUNC_APP}"
@@ -583,11 +583,6 @@ verify() {
         log_error "Function App ${FUNC_APP}: ${func_state}"
     fi
 
-    local web_url
-    web_url=$(az storage account show \
-        --name "$STORAGE" \
-        --resource-group "$RG" \
-        --query "primaryEndpoints.web" -o tsv 2>/dev/null || echo "N/A")
     local func_url
     func_url="https://$(az functionapp show --name "$FUNC_APP" --resource-group "$RG" --query "defaultHostName || properties.defaultHostName" -o tsv 2>/dev/null)"
 
@@ -600,17 +595,14 @@ verify() {
     echo -e "  Subscriptions:    ${#SUBS[@]}"
     echo ""
     echo -e "  ${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "  ${BOLD}Web Dashboard:${NC}  ${web_url}?api=${func_url}"
     echo -e "  ${BOLD}Function App:${NC}   ${func_url}"
     echo -e "  ${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
-    echo -e "  ${BOLD}Auth:${NC}           Function Keys (pass ?code=<key> or x-functions-key header)"
-    echo -e "  ${BOLD}Access:${NC}         Contributor role on ${RG} required"
+    echo -e "  ${BOLD}Auth:${NC}           Function keys (x-functions-key header)"
     echo ""
-    echo -e "  ${YELLOW}Next step:${NC} Open the Function App URL above in your browser"
-    echo -e "            Log in with your Azure AD account"
-    echo -e "            Go to ${BOLD}Manual Scan${NC} and click ${BOLD}Trigger Scan${NC}"
-    echo -e "            This will discover your resources and configure log streaming."
+    echo -e "  ${YELLOW}Next step:${NC} The collector scans your resources on its first run and starts"
+    echo -e "            collecting. Follow it in Site24x7 (AppLogs > Azure Diagnostic Logs), or open"
+    echo -e "            ${func_url}/api/dashboard with the host key named default."
     echo ""
     log_info "To tear down all resources: bash ${SCRIPT_DIR}/teardown.sh"
 }

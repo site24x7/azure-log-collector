@@ -74,7 +74,7 @@ SITE24X7_FUNCTIONS = (
     "GetIgnoreList", "UpdateIgnoreList", "GetDisabledLogTypes", "UpdateDisabledLogTypes",
     "UpdateEntraLogTypes", "GetGeneralLogType", "UpdateGeneralLogType", "UpdateSettings",
     "GetConfiguredResources", "CheckUpdate", "RemoveDiagSettings",
-    "Dashboard", "GetDebugInfo", "HealthCheck",
+    "Dashboard", "GetDebugInfo", "HealthCheck", "LogCollection",
 )
 SITE24X7_KEY_NAME = "site24x7"
 
@@ -109,10 +109,9 @@ def get_function_key(resource_id: str) -> Optional[str]:
 
     token = DefaultAzureCredential().get_token(f"{_ARM}/.default").token
     wanted = site24x7_functions()
-    for function in SITE24X7_FUNCTIONS:
-        if function not in wanted:
-            _revoke(resource_id, function, token)
     if not wanted:
+        for function in SITE24X7_FUNCTIONS:
+            _revoke(resource_id, function, token, None)
         return None
     values = {}
     for function in wanted:
@@ -137,15 +136,21 @@ def get_function_key(resource_id: str) -> Optional[str]:
                         {"stage": "setKey", "function": function, "http_status": resp.status_code})
                 return None
         logger.info("Registration: Site24x7 function key set on %d functions", len(wanted))
+    for function in SITE24X7_FUNCTIONS:
+        if function not in wanted:
+            _revoke(resource_id, function, token, key)
     return key
 
 
-def _revoke(resource_id: str, function: str, token: str) -> None:
+def _revoke(resource_id: str, function: str, token: str, current: Optional[str]) -> None:
     """Take Site24x7's key away from one function: overwrite it with a random
-    value nobody holds (a delete is refused while the resource group is locked)."""
+    value nobody holds (a delete is refused while the resource group is locked).
+    Only while it still holds Site24x7's current key (``current``; None: any
+    value), so an already revoked function is not rewritten on every check."""
     resp = _arm("POST", f"{resource_id}/functions/{function}/listkeys", token)
     keys = resp.json() if resp.ok else {}
-    if isinstance(keys, dict) and keys.get(SITE24X7_KEY_NAME):
+    value = keys.get(SITE24X7_KEY_NAME) if isinstance(keys, dict) else None
+    if value and (current is None or value == current):
         _arm("PUT", f"{resource_id}/functions/{function}/keys/{SITE24X7_KEY_NAME}", token,
              {"properties": {"name": SITE24X7_KEY_NAME, "value": secrets.token_urlsafe(40)}})
 
@@ -166,7 +171,8 @@ def build_status_summary(include_names: bool = True) -> Dict:
         "ignored_resources": scan.get("ignored_resources", 0),
         "scan_errors": len(errors) if isinstance(errors, list) else errors,
         "s247_reachable": scan.get("s247_reachable"),
-        "processing_enabled": get_processing_enabled(),
+        "processing_enabled": _processing_enabled(get_processing_enabled),
+        "collection_enabled": _collection_enabled(),
         "auto_scan_enabled": os.environ.get("AUTO_SCAN_ENABLED", "true").lower() == "true",
         "last_processing_time": runs[0].get("timestamp", "") if runs else "",
         "recent_uploaded": sum(int(r.get("uploaded", 0) or 0) for r in runs),
@@ -227,6 +233,22 @@ def build_status_summary(include_names: bool = True) -> Dict:
     if include_names:
         _add_subscription_names(summary, _subscription_names(summary["subscription_ids"]))
     return summary
+
+
+def _processing_enabled(read) -> Optional[bool]:
+    """The pause flag, or None when it cannot be read (the report still goes out)."""
+    try:
+        return read()
+    except Exception:
+        return None
+
+
+def _collection_enabled() -> Optional[bool]:
+    try:
+        from shared.config_store import get_collection_state
+        return get_collection_state(strict=True).get("enabled") is True
+    except Exception:
+        return None
 
 
 def safe_scan_errors(errors):

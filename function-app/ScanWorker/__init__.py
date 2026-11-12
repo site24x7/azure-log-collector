@@ -11,36 +11,47 @@ MAX_ATTEMPTS = 5
 
 
 def main(msg: func.QueueMessage, context: func.Context = None) -> None:
-    """Queue-triggered worker that runs the full resource scan.
-    Decoupled from the HTTP trigger to avoid the 230s gateway timeout.
-    The function timeout (host.json) is 10 minutes."""
+    """Queue-triggered worker that runs the full resource scan, or switches log
+    collection off (shared/collection.py). Decoupled from the HTTP trigger to
+    avoid the 230s gateway timeout. The function timeout (host.json) is 10 minutes."""
     from shared.log_context import bind
     bind(context)
+    from shared import collection
     body = msg.get_body().decode("utf-8")
     dequeue_count = msg.dequeue_count
-    logging.info("ScanWorker: Picked up scan request (attempt %d): %s", dequeue_count, body)
+    stop = collection.is_stop_request(body)
+    logging.info("ScanWorker: Picked up %s request (attempt %d): %s",
+                 "stop-collection" if stop else "scan", dequeue_count, body)
 
     if dequeue_count > MAX_ATTEMPTS:
+        # The lock is not cleared here: it may belong to a scan that is running
+        # now; a stale one expires on its own (try_acquire_scan_lock).
         logging.warning("ScanWorker: Message retried %d times — giving up", dequeue_count)
-        _clear_in_progress()
+        if stop:
+            collection.mark_stop_abandoned()
         try:
             from shared.debug_logger import log_event
             log_event("warning", "ScanWorker",
-                      f"Scan abandoned after {dequeue_count} attempts (likely timing out)")
+                      f"Request abandoned after {dequeue_count} attempts (likely timing out)")
         except Exception:
             pass
         return
 
-    if _already_scanned_since(body):
-        # A scan that started after this request covers it: for example the
-        # first scan asked for by both Site24x7 and the collector's own start.
-        logging.info("ScanWorker: A scan started after this request — nothing to do")
-        return
+    if not stop:
+        from shared.config_store import collection_enabled
+        if not collection_enabled():
+            logging.info("ScanWorker: Log collection is off — scan request dropped")
+            return
+        if _already_scanned_since(body):
+            # A scan that started after this request covers it: for example the
+            # first scan asked for by both Site24x7 and the collector's own start.
+            logging.info("ScanWorker: A scan started after this request — nothing to do")
+            return
 
     try:
         from shared.debug_logger import log_event
         log_event("info", "ScanWorker",
-                  f"Scan starting (attempt {dequeue_count})")
+                  f"{'Stopping log collection' if stop else 'Scan starting'} (attempt {dequeue_count})")
     except Exception:
         pass
 
@@ -60,15 +71,25 @@ def main(msg: func.QueueMessage, context: func.Context = None) -> None:
         try:
             from shared.debug_logger import log_event
             log_event("info", "ScanWorker",
-                      f"On-demand scan waits for a running scan (attempt {dequeue_count})")
+                      f"Request waits for a running scan (attempt {dequeue_count})")
         except Exception:
             pass
         raise RuntimeError("Scan lock busy; the queue retries this request")
 
+    if stop:
+        try:
+            collection.stop_collection()
+        finally:
+            _clear_in_progress()
+            from shared.registration import register_with_site24x7
+            register_with_site24x7()
+        return
+
     try:
         from DiagSettingsManager import run_scan
 
-        result = run_scan()
+        # Scan now (and switching collection on) checks every tracked setting in Azure.
+        result = run_scan(full_reconcile=_source(body) in ("dashboard", collection.START_SOURCE))
 
         logging.info(
             "ScanWorker: Scan complete — configured=%s, errors=%s",
@@ -89,6 +110,13 @@ def main(msg: func.QueueMessage, context: func.Context = None) -> None:
     finally:
         from shared.registration import register_with_site24x7
         register_with_site24x7()
+
+
+def _source(body: str) -> str:
+    try:
+        return str(json.loads(body).get("source", ""))
+    except Exception:
+        return ""
 
 
 def _already_scanned_since(body: str) -> bool:

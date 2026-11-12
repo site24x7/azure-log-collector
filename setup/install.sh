@@ -207,12 +207,15 @@ configure() {
 
     local config_file="${PROJECT_DIR}/setup/config.env"
 
-    # Ask for optional Site24x7 token
+    # The Site24x7 Device Key (Admin > Developer > Device Key); setup.sh needs it
     echo ""
-    echo -e "${CYAN}Enter your Site24x7 API token (press Enter to skip for now):${NC}"
-    read -rsp "  Token: " s247_token
+    echo -e "${CYAN}Enter your Site24x7 Device Key (input is hidden):${NC}"
+    read -rsp "  Device Key: " s247_token
     echo ""
-    s247_token="${s247_token:-your-token-here}"
+    if [[ -z "$s247_token" ]]; then
+        log_error "A Site24x7 Device Key is required."
+        exit 1
+    fi
 
     # Ask for Site24x7 data center
     echo ""
@@ -256,7 +259,7 @@ FUNCTION_APP_NAME=""
 STORAGE_ACCOUNT_NAME=""
 FUNCTION_APP_REGION="${region}"
 TIMER_SCHEDULE="0 0 */6 * * *"
-GENERAL_LOGTYPE_ENABLED="true"
+GENERAL_LOGTYPE_ENABLED="false"
 UPDATE_CHECK_URL=""
 EOF
 
@@ -264,7 +267,7 @@ EOF
     echo ""
     echo -e "  ${BOLD}Subscriptions:${NC}  ${SELECTED_SUB_IDS}"
     echo -e "  ${BOLD}Region:${NC}         ${region}"
-    echo -e "  ${BOLD}Site24x7:${NC}       $([ "$s247_token" = "your-token-here" ] && echo "stub mode" || echo "configured") (${s247_domain})"
+    echo -e "  ${BOLD}Site24x7:${NC}       Device Key set (${s247_domain})"
     echo ""
 }
 

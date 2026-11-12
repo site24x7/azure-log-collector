@@ -47,12 +47,39 @@ def client(monkeypatch):
 
 @pytest.mark.parametrize("code", [400, 404, 413, 415, 422])
 def test_refused_payload_does_not_trip_the_breaker(client, code):
-    with patch("shared.site24x7_client._KEYED_OPENER.open", side_effect=_http_error(code)):
+    # Site24x7's API accepts the Device Key: the payload itself was refused.
+    with patch("shared.site24x7_client._KEYED_OPENER.open", side_effect=_http_error(code)), \
+            patch.object(client, "device_key_refused", return_value=False):
         assert client.post_logs(CONFIG, EVENTS) is False
     assert client.last_rejected == code
     assert client.last_upload_status == "rejected" and client.last_upload_http_status == code
     client.circuit_breaker.record_failure.assert_not_called()
     assert client.upload_refused is False
+
+
+def test_400_for_a_refused_device_key_is_retried_and_flagged(client):
+    # The upload server answers 400 to an unknown Device Key (rotated key, reset account).
+    with patch("shared.site24x7_client._KEYED_OPENER.open", side_effect=_http_error(400)), \
+            patch.object(client, "device_key_refused", return_value=True):
+        assert client.post_logs(CONFIG, EVENTS) is False
+    assert client.last_rejected == 0                     # retried, not dropped
+    assert client.upload_refused is True
+    assert client.last_upload_status == "refused" and client.last_upload_http_status == 400
+    client.circuit_breaker.record_failure.assert_called_once()
+
+
+def test_device_key_check_is_asked_once_per_client(client):
+    with patch.object(client, "_make_s247_request", return_value={"status": "success"}) as ask:
+        assert client.device_key_refused() is False
+        assert client.device_key_refused() is False
+    assert ask.call_count == 1
+
+
+@pytest.mark.parametrize("answer", [None, {"status": "error"}])
+def test_device_key_check_without_a_success_counts_as_refused(client, answer):
+    # Unknown is retried: dropping good logs is worse than one more run.
+    with patch.object(client, "_make_s247_request", return_value=answer):
+        assert client.device_key_refused() is True
 
 
 @pytest.mark.parametrize("code", [401, 403])

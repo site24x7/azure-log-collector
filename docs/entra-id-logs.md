@@ -22,16 +22,16 @@ pipeline as everything else — no ongoing manual work.
 
 | Step | Who |
 |------|-----|
-| Create the Site24x7 log types for Entra categories | **Collector** (per-category toggle on the Platform Logs tab) |
+| Create the Site24x7 log types for Entra categories | **Collector** (turned on per category in Site24x7, on the collector's Log Types tab) |
 | Expose a target storage account to send Entra logs to | **Collector** (shown in the dashboard) |
 | Create the Entra ID diagnostic setting pointed at that account | **You** (tenant admin, one-time, manual) |
 | Poll the storage account and forward logs to Site24x7 AppLogs | **Collector** (automatic) |
 
-## Step 1 — Provision the log types (dashboard)
+## Step 1 — Provision the log types (Site24x7)
 
-Open the dashboard's **Platform Logs** tab (Entra ID section) and toggle on each log type you want to
-collect. Toggling one on **creates that log type in Site24x7 immediately** and
-the row shows the result:
+In Site24x7, open the collector's **Log Types** tab, choose **Microsoft Entra ID** and select each
+log type you want to collect, then save. Turning one on **creates that log type in Site24x7
+immediately**; the collector dashboard's **Platform Logs** tab shows the result:
 
 - **✓ Ready to receive** — the log type and collector config are saved. This does
   not confirm that Azure is sending logs; verify actual ingestion in AppLogs.

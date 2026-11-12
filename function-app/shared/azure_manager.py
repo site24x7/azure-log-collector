@@ -475,16 +475,15 @@ class AzureManager:
         seed = os.environ.get("DIAG_SEED_REGION", "")
         all_resources = self.get_all_resources(subscription_ids)
 
-        for resource in all_resources:
+        def _remove_one(resource):
+            """(status, resource_id, message): removed, skipped (none of ours) or error."""
             resource_id = resource.get("id", "")
             try:
                 removed = False
                 if self.get_diagnostic_setting(resource_id, raise_errors=True):
                     removed = self.delete_diagnostic_setting(resource_id)
                     if not removed:
-                        summary["errors"] += 1
-                        summary["details"].append({"id": resource_id, "status": "error"})
-                        continue
+                        return "error", resource_id, None
                 record = (records or {}).get(resource_id) or {}
                 own = record.get("storage_account", "")
                 region = storage_region(resource.get("location", ""))
@@ -496,20 +495,30 @@ class AzureManager:
                         own = ""
                 legacy = self.remove_legacy_setting_if_own(resource_id, own, raise_errors=True)
                 if legacy is False:
-                    summary["errors"] += 1
-                    summary["details"].append({"id": resource_id, "status": "error"})
-                    continue
-                removed = removed or bool(legacy)
-                # Removed now or confirmed absent: its tracking record can go.
-                summary["resolved_ids"].append(resource_id)
-                if removed:
-                    summary["removed"] += 1
-                    summary["details"].append({"id": resource_id, "status": "removed"})
-                else:
-                    summary["skipped"] += 1
+                    return "error", resource_id, None
+                return ("removed" if removed or legacy else "skipped"), resource_id, None
             except Exception as e:
+                return "error", resource_id, str(e)
+
+        # Independent per resource; ARM calls dominate, so they run in parallel.
+        from shared.log_context import thread_pool
+        with thread_pool(10) as pool:
+            outcomes = list(pool.map(_remove_one, all_resources))
+        for status, resource_id, message in outcomes:
+            if status == "error":
                 summary["errors"] += 1
-                summary["details"].append({"id": resource_id, "status": "error", "message": str(e)})
+                detail = {"id": resource_id, "status": "error"}
+                if message:
+                    detail["message"] = message
+                summary["details"].append(detail)
+                continue
+            # Removed now or confirmed absent: its tracking record can go.
+            summary["resolved_ids"].append(resource_id)
+            if status == "removed":
+                summary["removed"] += 1
+                summary["details"].append({"id": resource_id, "status": "removed"})
+            else:
+                summary["skipped"] += 1
 
         # Tracked resources the discovery did not return (deleted, or discovery
         # was incomplete): their setting state is unknown, keep their records.

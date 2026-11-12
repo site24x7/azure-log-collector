@@ -15,7 +15,7 @@ Azure Resources ──► Storage Accounts (per region) ──► Function App �
 
 - **Storage Account per region** — Diagnostic settings stream logs to a storage account in the same region
 - **Function App** — BlobLogProcessor polls every 2 min, parses logs, forwards to Site24x7
-- **Web Dashboard** — Monitor status, manage filters, trigger scans, debug issues
+- **Web Dashboard** — Read-only status, filters, resources and debug data (settings are changed in Site24x7)
 
 ---
 
@@ -158,13 +158,12 @@ https://<FUNCTION_APP_NAME>.azurewebsites.net/api/dashboard?code=<FUNCTION_KEY>
 | Tab | What it shows |
 |-----|---------------|
 | **Overview** | Subscriptions, regions, last scan details, errors |
-| **Filters** | Include lists (subscriptions, regions, resource types), include/exclude tags + log type toggles |
+| **Filters** | Include lists (subscriptions, regions, resource types), include/exclude tags, and which log types are on |
 | **Resources** | All configured resources with categories and storage accounts |
 | **Debug** | System health, config validation, recent events, processing runs |
 
-**Controls** (always visible):
-- Toggle log processing, auto-scan, general log type, pipeline monitoring
-- Trigger manual scan, check for updates, remove all diagnostic settings
+The dashboard is read-only. Scans, updates, filters, log types and the Log Collection switch are
+changed from the collector's page in Site24x7 (AppLogs > Azure Diagnostic Logs).
 
 ---
 

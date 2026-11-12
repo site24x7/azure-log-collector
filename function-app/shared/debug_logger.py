@@ -470,9 +470,8 @@ def log_audit(action: str, component: str, details: dict = None,
                     )
                 break  # success
             except Exception as conflict:
-                msg = str(conflict)
-                if ("ConditionNotMet" in msg or "BlobAlreadyExists" in msg
-                        or "412" in msg or "409" in msg) and _attempt < 2:
+                from shared.config_store import is_conflict
+                if is_conflict(conflict) and _attempt < 2:
                     continue  # retry on ETag mismatch
                 raise
     except Exception as e:

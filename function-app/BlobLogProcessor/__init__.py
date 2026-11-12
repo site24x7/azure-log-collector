@@ -188,7 +188,12 @@ def _process_all_regions():
                 len(regional_accounts), len(all_configs))
 
     main_conn_str = os.environ.get("AzureWebJobsStorage", "")
-    checkpoints = _load_checkpoints(main_conn_str)
+    try:
+        checkpoints = _load_checkpoints(main_conn_str)
+    except CheckpointsUnavailable as e:
+        # Reading on without them would send every stored log again.
+        logger.error("BlobLogProcessor: checkpoints unreadable (%s) — skipping this run", e)
+        return
 
     client = Site24x7Client()
     total_stats = {
@@ -875,10 +880,19 @@ def _load_checkpoints(conn_str: str) -> dict:
     return data
 
 
+class CheckpointsUnavailable(RuntimeError):
+    """The checkpoints exist but could not be read; empty ones would resend everything."""
+
+
 def _load_checkpoints_with_etag(conn_str: str):
-    """Load checkpoints and return (dict, etag). Creates container if missing."""
+    """Load checkpoints and return (dict, etag). Creates container if missing.
+
+    Only missing checkpoints (a new collector) are empty. A failed read raises
+    CheckpointsUnavailable; corrupt content is logged and read as empty (else
+    processing would stop for good)."""
     if not conn_str:
         return {}, None
+    from azure.core.exceptions import ResourceNotFoundError
     try:
         blob_service = BlobServiceClient.from_connection_string(conn_str)
         container_client = blob_service.get_container_client(CHECKPOINT_CONTAINER)
@@ -888,12 +902,17 @@ def _load_checkpoints_with_etag(conn_str: str):
             pass
         stream = container_client.download_blob(CHECKPOINT_BLOB)
         etag = getattr(stream.properties, "etag", None)
-        data = json.loads(stream.readall())
-        if not isinstance(data, dict):
-            return {}, etag
-        return data, etag
-    except Exception:
+        raw = stream.readall()
+    except ResourceNotFoundError:
         return {}, None
+    except Exception as e:
+        raise CheckpointsUnavailable(type(e).__name__) from e
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        logger.error("BlobLogProcessor: checkpoint blob is corrupt — starting from empty checkpoints")
+        return {}, etag
+    return (data if isinstance(data, dict) else {}), etag
 
 
 def _save_checkpoints(conn_str: str, checkpoints: dict) -> None:
@@ -936,9 +955,8 @@ def _save_checkpoints(conn_str: str, checkpoints: dict) -> None:
                     )
                 return
             except Exception as e:
-                msg = str(e)
-                if ("ConditionNotMet" in msg or "BlobAlreadyExists" in msg
-                        or "412" in msg or "409" in msg):
+                from shared.config_store import is_conflict
+                if is_conflict(e):
                     existing, etag = _load_checkpoints_with_etag(conn_str)
                     merged = _gc_checkpoints(_merge_checkpoints(existing, local))
                     time.sleep(0.05 * (attempt + 1))

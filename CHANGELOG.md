@@ -7,6 +7,43 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.1.0-beta8] — 2026-11-13
+
+- Log Collection switch (`PUT /api/collection`). Off stops forwarding at once,
+  then a queued job removes this collector's diagnostic settings from every
+  resource and deletes the logs held in its storage accounts; the accounts stay,
+  idle. No scan sets anything up while it is off. On resumes forwarding and
+  runs a scan. No app-setting change, so no restart.
+- A diagnostic setting deleted or changed in Azure is written again. The daily
+  check found such settings but the scan then skipped them as already
+  configured. Scan now also runs the check, which is now parallel.
+- An upload answered HTTP 400 is retried, not dropped, when Site24x7 also
+  refuses the Device Key: the upload service answers 400 to an unknown key, so
+  a rotated key or a reset account lost every log until now. The status then
+  says the Device Key is refused.
+- A resource that refuses the log categories of its resource type (a web app
+  has no FunctionAppLogs, a function app has) gets a setting with its own
+  categories instead of an error.
+- Log categories match in any spelling: turning off `kube-audit` and similar
+  categories with hyphens now removes them from diagnostic settings too, not
+  only from forwarding.
+- When the processing checkpoints cannot be read, the run is skipped instead of
+  sending every stored log again.
+- `/api/configured-resources` takes `page`, `per_page` and `type`, and always
+  returns the count per resource type.
+- The collector dashboard is read-only; everything is changed in Site24x7. It
+  now shows the blob count of each processing run and the level of each
+  configuration issue.
+- Conflicting storage writes are told by their status code, not by digits in
+  the error text. A collector whose processing flag cannot be read still
+  reports to Site24x7. A queued request that is given up no longer clears
+  another scan's lock. Functions taken out of Site24x7's key are no longer
+  rewritten on every key check.
+- Deployment form: the filters step is "Configuration (optional)", with
+  "Additional Subscriptions" and simpler text. Setup scripts: the Device Key is
+  required, the general log type is off by default, and the closing hints match
+  the product.
+
 ## [1.1.0-beta7] — 2026-11-11
 
 - Log lines written by scan worker threads now reach Application Insights on

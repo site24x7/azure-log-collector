@@ -28,6 +28,8 @@ CATEGORY_NAMES_BLOB = "category-names.json"
 SCAN_STATE_BLOB = "scan-state.json"
 ENTRA_STATE_BLOB = "entra-logtypes.json"
 PROCESSING_CONTROL_BLOB = "processing-control.json"
+# Log collection on/off (Site24x7's Log Collection switch), and the progress of switching it off.
+COLLECTION_CONTROL_BLOB = "collection-control.json"
 # Filter choices (resource groups, regions, types, tags) seen by the last scan.
 RESOURCE_INVENTORY_BLOB = "resource-inventory.json"
 INVENTORY_MAX_VALUES = 5000
@@ -134,6 +136,17 @@ def _write_blob(blob_path: str, data: str) -> bool:
         return False
 
 
+def is_conflict(error: Exception) -> bool:
+    """A conditional write lost the race (412 precondition failed, or 409 blob exists).
+
+    Decided by the HTTP status and error code, never by digits in the message
+    (request IDs and timestamps contain "409" and "412" too)."""
+    if getattr(error, "status_code", None) in (409, 412):
+        return True
+    code = str(getattr(error, "error_code", "") or "")
+    return code in ("ConditionNotMet", "BlobAlreadyExists")
+
+
 def _write_blob_conditional(
     blob_path: str, data: str, etag: Optional[str]
 ) -> Tuple[bool, bool]:
@@ -168,13 +181,7 @@ def _write_blob_conditional(
             )
         return True, False
     except Exception as e:
-        msg = str(e)
-        if (
-            "ConditionNotMet" in msg
-            or "BlobAlreadyExists" in msg
-            or "412" in msg
-            or "409" in msg
-        ):
+        if is_conflict(e):
             return False, True
         logger.error("Conditional write failed for %s: %s", blob_path, e)
         return False, False
@@ -289,16 +296,19 @@ def is_supported_log_type(category: str) -> bool:
     supported = get_supported_log_types()
     if not supported:
         return False
-    normalized = category.replace("-", "").replace("_", "").replace(" ", "").lower()
-    return normalized in supported
+    return normalize_category(category) in supported
 
 
 # ─── Log Type Configs (sourceConfig per category) ────────────────────────────
 
 
-def _normalize_category(category: str) -> str:
-    """Normalize category name to lowercase for consistent blob naming."""
-    return category.replace("-", "").replace("_", "").replace(" ", "").lower()
+def normalize_category(category: str) -> str:
+    """The one spelling of a log category used everywhere: lower case, without
+    hyphens, underscores or spaces (kube-audit, KubeAudit and kube_audit are one)."""
+    return str(category or "").replace("-", "").replace("_", "").replace(" ", "").lower()
+
+
+_normalize_category = normalize_category
 
 
 def get_logtype_config(category: str, force_refresh: bool = False, strict: bool = False) -> Optional[Dict]:
@@ -414,7 +424,7 @@ def disable_log_type(category: str) -> bool:
 
     def mutate(current):
         disabled = current if isinstance(current, list) else []
-        if category.lower() in [d.lower() for d in disabled]:
+        if normalize_category(category) in [normalize_category(d) for d in disabled]:
             noop.append(True)
             return None  # already present — abort write
         return disabled + [category]
@@ -432,7 +442,7 @@ def enable_log_type(category: str) -> bool:
 
     def mutate(current):
         disabled = current if isinstance(current, list) else []
-        updated = [d for d in disabled if d.lower() != category.lower()]
+        updated = [d for d in disabled if normalize_category(d) != normalize_category(category)]
         if len(updated) == len(disabled):
             noop.append(True)
             return None  # not present — abort
@@ -445,9 +455,10 @@ def enable_log_type(category: str) -> bool:
 
 
 def is_log_type_disabled(category: str) -> bool:
-    """Check if a category is disabled."""
+    """Check if a category is disabled, whatever its spelling (Azure's name, or
+    the normalized key Site24x7 and the processor use)."""
     disabled = get_disabled_log_types()
-    return category.lower() in [d.lower() for d in disabled]
+    return normalize_category(category) in {normalize_category(d) for d in disabled}
 
 
 # ─── Entra ID per-category provisioning state ───────────────────────────────
@@ -627,6 +638,50 @@ def get_processing_enabled() -> bool:
     if not isinstance(state, dict) or not isinstance(state.get("enabled"), bool):
         raise ValueError("Invalid processing control")
     return state["enabled"]
+
+
+def get_collection_state(strict: bool = False) -> Dict:
+    """Whether log collection is on, and how far switching it off got.
+
+    ``{"enabled": bool, "stop": {"state": "pending"|"running"|"done"|"failed", ...}}``.
+    A missing blob is "on" (every collector starts collecting). With ``strict`` an
+    unreadable or corrupt state raises: a scan must not set up settings the
+    customer switched off."""
+    if not os.environ.get("AzureWebJobsStorage"):
+        return {"enabled": True}  # not on Azure (local runs, tests): as the pause flag
+    raw = _read_blob(COLLECTION_CONTROL_BLOB, strict=True) if strict else _read_blob(COLLECTION_CONTROL_BLOB)
+    if raw is None:
+        return {"enabled": True}
+    try:
+        state = json.loads(raw)
+        if not isinstance(state, dict) or not isinstance(state.get("enabled"), bool):
+            raise ValueError("Invalid collection control")
+        return state
+    except ValueError:
+        if strict:
+            raise
+        logger.error("Corrupt JSON in %s", COLLECTION_CONTROL_BLOB)
+        return {"enabled": True}
+
+
+def collection_enabled() -> bool:
+    """Log collection is on. Unreadable counts as off for anything that would set
+    up diagnostic settings (raise-free: callers skip their work then)."""
+    try:
+        return get_collection_state(strict=True).get("enabled") is True
+    except Exception as e:
+        logger.warning("Collection state unreadable (%s); treated as off for now", type(e).__name__)
+        return False
+
+
+def update_collection_state(patch: Dict) -> Optional[Dict]:
+    """Merge ``patch`` into the collection state (concurrency-safe RMW)."""
+    def mutate(current):
+        state = dict(current) if isinstance(current, dict) else {"enabled": True}
+        state.update(patch)
+        return state
+
+    return _rmw_blob(COLLECTION_CONTROL_BLOB, mutate, default={"enabled": True}, strict=True)
 
 
 def save_processing_enabled(enabled: bool) -> bool:

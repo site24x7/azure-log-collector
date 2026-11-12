@@ -124,16 +124,14 @@ def main(req: func.HttpRequest, scanQueue: func.Out[str]) -> func.HttpResponse:
             try:
                 azure_mgr = AzureManager()
                 configured = get_configured_resources()
-                target_normalized = {
-                    cat.replace("-", "_").replace(" ", "").lower()
-                    for cat in targets
-                }
+                from shared.config_store import normalize_category
+                target_normalized = {normalize_category(cat) for cat in targets}
 
                 for resource_id, info in configured.items():
                     cats = info.get("categories", [])
                     remaining = [
                         c for c in cats
-                        if c.replace("-", "_").replace(" ", "").lower() not in target_normalized
+                        if normalize_category(c) not in target_normalized
                     ]
                     if not cats or remaining:
                         continue

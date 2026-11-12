@@ -142,30 +142,13 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
   </div>
 
   <div class="card">
-    <h2>Controls</h2>
-    <div class="toggle-row">
-      <span>Log Processing <i class="info-tip">i<span class="tip-text">Enable or disable the BlobLogProcessor. When disabled, logs accumulate in storage but are not forwarded to Site24x7.</span></i></span>
-      <button class="toggle" id="processingToggle" onclick="toggleProcessing()"></button>
-    </div>
-    <div class="toggle-row">
-      <span>Auto Scan <i class="info-tip">i<span class="tip-text">When enabled, the resource scan runs automatically every 6 hours. Disabled automatically when "Remove All" is used. Manual "Trigger Scan" always works regardless of this setting.</span></i></span>
-      <button class="toggle" id="autoScanToggle" onclick="toggleAutoScan()"></button>
-    </div>
-    <div class="toggle-row">
-      <span>General Log Type <i class="info-tip">i<span class="tip-text">When enabled, log categories without a specific Site24x7 log type config are forwarded using the general fallback log type.</span></i></span>
-      <button class="toggle" id="logTypeToggle" onclick="toggleLogType()"></button>
-    </div>
-    <div class="toggle-row">
-      <span>Monitor Pipeline Resources <i class="info-tip">i<span class="tip-text">When enabled, diagnostic settings are created on the pipeline's own resources (function app, storage accounts in the pipeline resource group). Disable to prevent self-referential log loops that can generate oversized blobs.</span></i></span>
-      <button class="toggle" id="pipelineToggle" onclick="togglePipelineMonitoring()"></button>
-    </div>
-    <div class="btn-group">
-      <button class="btn btn-primary" id="scanBtn" onclick="triggerScan()">&#9654; Trigger Scan <i class="info-tip">i<span class="tip-text">Manually trigger a full resource scan. Discovers Azure resources, creates Site24x7 log types, and configures/reconciles diagnostic settings.</span></i></button>
-      <button class="btn btn-primary" id="updateBtn" onclick="checkUpdate()">
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M8 2v8m0 0l-3-3m3 3l3-3M3 13h10"/></svg>Check Update <i class="info-tip">i<span class="tip-text">Check if a newer version is available in the GitHub repository. If found, shows release notes and asks for confirmation before deploying.</span></i>
-      </button>
-      <button class="btn btn-danger" id="removeBtn" onclick="removeDiagSettings()">&#10005; Remove All <i class="info-tip">i<span class="tip-text">Remove this collector&#39;s diagnostic settings from every monitored resource (other collectors&#39; settings are kept). Does NOT delete storage accounts or log type configs. This action cannot be undone.</span></i></button>
-    </div>
+    <h2>Settings</h2>
+    <p class="stat-label" style="margin-bottom:6px">This page is read-only. Change the collector from its page in Site24x7 (AppLogs &gt; Azure Diagnostic Logs).</p>
+    <div class="toggle-row"><span>Log Collection</span><span class="badge" id="collectionValue">—</span></div>
+    <div class="toggle-row"><span>Log Forwarding</span><span class="badge" id="processingValue">—</span></div>
+    <div class="toggle-row"><span>Auto Scan</span><span class="badge" id="autoScanValue">—</span></div>
+    <div class="toggle-row"><span>General Log Type</span><span class="badge" id="logTypeValue">—</span></div>
+    <div class="toggle-row"><span>Collector's Own Resources</span><span class="badge" id="pipelineValue">—</span></div>
   </div>
 </div>
 
@@ -230,17 +213,14 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
       <div>
         <label class="ignore-label">Subscriptions</label>
         <div id="ignoredSubs" class="ignore-tags"></div>
-        <select id="selSub" class="ignore-select" onchange="addFromSelect('subscriptions','selSub')"><option value="">+ Add subscription…</option></select>
       </div>
       <div>
         <label class="ignore-label">Regions</label>
         <div id="ignoredLocs" class="ignore-tags"></div>
-        <select id="selLoc" class="ignore-select" onchange="addFromSelect('locations','selLoc')"><option value="">+ Add region…</option></select>
       </div>
       <div>
         <label class="ignore-label">Resource Types</label>
         <div id="ignoredTypes" class="ignore-tags"></div>
-        <select id="selType" class="ignore-select" onchange="addFromSelect('resource_types','selType')"><option value="">+ Add resource type…</option></select>
       </div>
     </div>
 
@@ -255,28 +235,18 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
         <div>
           <label class="ignore-label" style="color:var(--green)">&#10003; Include Tags <span style="font-weight:normal;color:var(--muted)">(allow-list)</span></label>
           <div id="includeTagsList" class="ignore-tags"></div>
-          <select id="selIncludeTag" class="ignore-select" onchange="addTag('include','selIncludeTag')"><option value="">+ Add include tag…</option></select>
-          <div style="display:flex;gap:6px;margin-top:6px">
-            <input id="addIncludeTagCustom" class="ignore-input" placeholder="Custom: key=value or key" />
-            <button class="btn btn-primary btn-sm" onclick="addCustomTagTo('include','addIncludeTagCustom')">Add</button>
-          </div>
         </div>
         <div>
           <label class="ignore-label" style="color:var(--red)">&#10005; Exclude Tags <span style="font-weight:normal;color:var(--muted)">(block-list)</span></label>
           <div id="excludeTagsList" class="ignore-tags"></div>
-          <select id="selExcludeTag" class="ignore-select" onchange="addTag('exclude','selExcludeTag')"><option value="">+ Add exclude tag…</option></select>
-          <div style="display:flex;gap:6px;margin-top:6px">
-            <input id="addExcludeTagCustom" class="ignore-input" placeholder="Custom: key=value or key" />
-            <button class="btn btn-primary btn-sm" onclick="addCustomTagTo('exclude','addExcludeTagCustom')">Add</button>
-          </div>
         </div>
       </div>
     </div>
   </div>
 
   <div class="card">
-    <h2>Log Type Filters <i class="info-tip">i<span class="tip-text">Toggle which Azure log categories are collected. Disabled categories are excluded from diagnostic settings on the next scan. Only categories with a Site24x7 log type config or general fallback are forwarded.</span></i> <span id="logtypeLoading" style="display:none"><span class="spinner"></span></span></h2>
-    <p style="font-size:12px;color:var(--muted);margin-bottom:8px">Toggle which Azure log categories are collected. Disabled categories will not have diagnostic settings created.</p>
+    <h2>Log Type Filters <i class="info-tip">i<span class="tip-text">Which Azure log categories are collected; change them in Site24x7. Categories that are off are left out of the diagnostic settings on the next scan.</span></i> <span id="logtypeLoading" style="display:none"><span class="spinner"></span></span></h2>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:8px">Which Azure log categories are collected. Change them in Site24x7, on the collector's Log Types tab.</p>
     <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;flex-wrap:wrap">
       <input type="text" id="logtypeSearch" placeholder="Search by category, S247 type, resource…" oninput="renderLogTypes()" style="flex:1;min-width:180px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);font-size:13px">
       <select id="logtypeStatusFilter" onchange="renderLogTypes()" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);font-size:13px">
@@ -288,10 +258,6 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
         <option value="">All Resource Types</option>
       </select>
       <span id="logtypeMatchCount" style="font-size:12px;color:var(--muted)"></span>
-    </div>
-    <div style="display:flex;gap:6px;margin-bottom:12px">
-      <button class="btn btn-primary" style="font-size:11px;padding:4px 10px" onclick="bulkToggleLogTypes(true)">Enable Filtered</button>
-      <button class="btn btn-danger" style="font-size:11px;padding:4px 10px" onclick="bulkToggleLogTypes(false)">Disable Filtered</button>
     </div>
     <div id="logtypeList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px">
       <span class="stat-label">Loading…</span>
@@ -343,9 +309,9 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
   <div class="card" style="margin-bottom:16px">
     <h2>Step 1 — Choose log types to collect</h2>
     <p style="font-size:12px;color:var(--muted);margin-bottom:10px">
-      Toggling one on creates that log type in Site24x7 now; the status shows whether it
-      succeeded. Categories not yet available in Site24x7 are marked <em>Not supported yet</em>
-      and can't be toggled — they become available automatically once added.
+      Turn log types on or off in Site24x7, on the collector's Log Types tab (Microsoft Entra ID).
+      The status shows whether each was created. Categories not yet available in Site24x7 are
+      marked <em>Not supported yet</em>.
     </p>
     <div id="entraLogTypeList" style="display:flex;flex-direction:column;gap:6px">
       <span class="stat-label">Loading…</span>
@@ -404,7 +370,6 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
         <button class="btn btn-primary btn-sm" id="btnTestS247" onclick="loadDebugInfo(true)">🔌 Test S247 Connectivity</button>
         <button class="btn btn-primary btn-sm" id="btnExportDebug" onclick="exportDebugBundle()">📥 Export Debug Bundle</button>
         <button class="btn btn-primary btn-sm" id="btnExportLog" onclick="exportDebugBundle('log')" title="Readable log with keys and tokens removed — safe to send to Site24x7 support">📄 Download Log File</button>
-        <button class="btn btn-danger btn-sm" id="btnClearEvents" onclick="clearDebugEvents()">🗑 Clear Events</button>
       </div>
       <div id="debugS247Status" style="margin-top:10px"><span class="stat-label" style="font-size:11px">Run "Test S247 Connectivity" to check</span></div>
       <span id="debugS247Badge" style="display:none"></span>
@@ -559,9 +524,7 @@ function renderEntraLogTypes(logtypes) {
   if (!logtypes.length) { el.innerHTML = '<span class="stat-label">No categories defined.</span>'; return; }
   el.innerHTML = logtypes.map(lt => {
     const unsupported = lt.supported === false;
-    const toggle = unsupported
-      ? `<button class="toggle" disabled style="opacity:.4;cursor:not-allowed"></button>`
-      : `<button class="toggle ${lt.enabled ? 'on' : ''}" onclick="toggleEntraLogType(${jsArg(lt.normalized)}, ${!!lt.enabled})"></button>`;
+    const toggle = '';
     return `
     <div class="toggle-row" style="padding:6px 10px;background:var(--bg);border-radius:6px;border:1px solid var(--border);${unsupported ? 'opacity:.65' : ''}">
       <div style="min-width:0">
@@ -577,26 +540,6 @@ function renderEntraLogTypes(logtypes) {
   }).join('');
 }
 
-async function toggleEntraLogType(normalized, currentlyEnabled) {
-  const action = currentlyEnabled ? 'disable' : 'enable';
-  try {
-    const r = await api('entra-logtypes', {
-      method: 'POST',
-      body: JSON.stringify({ action, category: normalized }),
-    });
-    if (action === 'enable') {
-      showToast(r.status === 'created'
-        ? `${normalized}: created in Site24x7`
-        : `${normalized}: create failed — ${r.message || 'see status'}`,
-        r.status === 'created' ? 'success' : 'warning');
-    } else {
-      showToast(`${normalized}: removed`);
-    }
-    await loadStatus();  // refresh rows from server state
-  } catch (e) {
-    showToast('Failed to update Entra log type: ' + (e.message || e), 'error');
-  }
-}
 function fmtTime(iso) {
   if (!iso) return '?';
   return new Date(iso).toLocaleString(undefined, {
@@ -668,15 +611,6 @@ async function loadStatus() {
     if (inProgress) { _statusPollTimer = setTimeout(loadStatus, 4000); }
     else if (!document.hidden) { _statusPollTimer = setTimeout(loadStatus, 15000); }
 
-    // Reflect scan-in-progress state on the trigger button
-    const scanBtn = document.getElementById('scanBtn');
-    if (inProgress && !scanBtn._userTriggered) {
-      scanBtn.innerHTML = '&#8987; Scanning\u2026';
-      scanBtn.disabled = true;
-    } else if (!inProgress && !scanBtn._userTriggered) {
-      scanBtn.innerHTML = '&#9654; Trigger Scan <i class="info-tip">i<span class="tip-text">Manually trigger a full resource scan. Discovers Azure resources, creates Site24x7 log types, and configures/reconciles diagnostic settings.</span></i>';
-      scanBtn.disabled = false;
-    }
     document.getElementById('totalRes').textContent = s.resources?.total ?? '—';
     document.getElementById('configRes').textContent = s.resources?.active ?? '—';
     document.getElementById('diagConfigRes').textContent = s.configured_resources_count ?? '—';
@@ -701,14 +635,11 @@ async function loadStatus() {
       s247b.style.display = 'none';
     }
 
-    const pt = document.getElementById('processingToggle');
-    pt.classList.toggle('on', s.processing_enabled);
-    const ast = document.getElementById('autoScanToggle');
-    ast.classList.toggle('on', s.auto_scan_enabled);
-    const lt = document.getElementById('logTypeToggle');
-    lt.classList.toggle('on', s.general_logtype_enabled);
-    const plt = document.getElementById('pipelineToggle');
-    plt.classList.toggle('on', s.monitor_pipeline_resources);
+    showOnOff('collectionValue', s.collection ? s.collection.enabled : undefined);
+    showOnOff('processingValue', s.processing_enabled);
+    showOnOff('autoScanValue', s.auto_scan_enabled);
+    showOnOff('logTypeValue', s.general_logtype_enabled);
+    showOnOff('pipelineValue', s.monitor_pipeline_resources);
 
     // Entra ID tab — always visible.
     const entra = s.entra || {};
@@ -823,6 +754,13 @@ async function loadStatus() {
   }
 }
 
+function showOnOff(id, value) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = value === true ? 'On' : value === false ? 'Off' : '—';
+  el.className = 'badge ' + (value === true ? 'badge-green' : value === false ? 'badge-yellow' : '');
+}
+
 // Set by loadStatus; loadHealth runs in parallel and must not overwrite it.
 let _s247Problem = null;
 
@@ -867,171 +805,10 @@ async function loadVersion() {
       vb.textContent += '  ➜  v' + r.remote_version + ' available';
       vb.style.background = 'rgba(234,179,8,.15)';
       vb.style.color = 'var(--yellow)';
-      vb.style.cursor = 'pointer';
-      vb.title = (r.release_notes || 'Click Check Update to upgrade');
-      vb.onclick = checkUpdate;
+      vb.title = 'Install it from the collector page in Site24x7';
     }
     return r;
   } catch (e) { return null; /* version check is optional */ }
-}
-
-// After an update the app restarts; keep checking until the new version answers.
-function refreshVersionAfterUpdate(expected, attempt = 0) {
-  setTimeout(async () => {
-    const r = await loadVersion();
-    if ((!r || r.local_version !== expected) && attempt < 20) {
-      refreshVersionAfterUpdate(expected, attempt + 1);
-    }
-  }, 15000);
-}
-
-// ─── Controls ────────────────────────────────────────────────────────────
-
-async function toggleProcessing() {
-  const toggle = document.getElementById('processingToggle');
-  const newState = !toggle.classList.contains('on');
-  try {
-    await api('processing', { method: 'PUT', body: JSON.stringify({enabled: newState}) });
-    toggle.classList.toggle('on', newState);
-    showToast(`Processing ${newState ? 'enabled' : 'disabled'}`);
-  } catch (e) { showToast('Failed to toggle processing', 'error'); }
-}
-
-async function toggleAutoScan() {
-  const toggle = document.getElementById('autoScanToggle');
-  const newState = !toggle.classList.contains('on');
-  try {
-    await api('settings', { method: 'PUT', body: JSON.stringify({key: 'AUTO_SCAN_ENABLED', value: newState}) });
-    toggle.classList.toggle('on', newState);
-    showToast(`Auto scan ${newState ? 'enabled' : 'disabled'}. ${newState ? 'Scans will resume on schedule.' : 'Manual "Trigger Scan" still works.'}`);
-  } catch (e) { showToast('Failed to toggle auto scan', 'error'); }
-}
-
-async function toggleLogType() {
-  const toggle = document.getElementById('logTypeToggle');
-  const newState = !toggle.classList.contains('on');
-  try {
-    await api('general-logtype', { method: 'PUT', body: JSON.stringify({enabled: newState}) });
-    toggle.classList.toggle('on', newState);
-    showToast(`General log type ${newState ? 'enabled' : 'disabled'}`);
-  } catch (e) { showToast('Failed to toggle log type', 'error'); }
-}
-
-async function togglePipelineMonitoring() {
-  const toggle = document.getElementById('pipelineToggle');
-  const newState = !toggle.classList.contains('on');
-  try {
-    await api('settings', { method: 'PUT', body: JSON.stringify({key: 'MONITOR_PIPELINE_RESOURCES', value: newState}) });
-    toggle.classList.toggle('on', newState);
-    showToast(`Pipeline resource monitoring ${newState ? 'enabled' : 'disabled'}. Takes effect on next scan.`);
-  } catch (e) { showToast('Failed to toggle pipeline monitoring', 'error'); }
-}
-
-async function triggerScan() {
-  setLoading('scanBtn', true);
-  const scanBtn = document.getElementById('scanBtn');
-  const origText = scanBtn.innerHTML;
-  scanBtn._userTriggered = true;
-  try {
-    const r = await fetch(`${BASE}/api/scan`, { method: 'POST', headers: KEY_HEADERS });
-    if (r.status === 401) { showAuthHelp(); }
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok || data.error) {
-      showToast('Scan error: ' + (data.error || ('HTTP ' + r.status)), 'error');
-      setLoading('scanBtn', false);
-      scanBtn._userTriggered = false;
-      return;
-    }
-    showToast('Scan queued — waiting for results...');
-    // Record current last_scan_time to detect when it changes
-    const statusBefore = await api('status').catch(() => ({}));
-    const prevScanTime = statusBefore.last_scan_time || '';
-    let polls = 0;
-    scanBtn.innerHTML = '&#8987; Scanning...';
-    scanBtn.disabled = true;
-    const pollId = setInterval(async () => {
-      polls++;
-      const s = await api('status').catch(() => ({}));
-      await loadStatus();
-      const newTime = s.last_scan_time || '';
-      const inProgress = s.scan_in_progress;
-      if (newTime && newTime !== prevScanTime && !inProgress) {
-        clearInterval(pollId);
-        scanBtn.innerHTML = origText;
-        scanBtn.disabled = false;
-        scanBtn._userTriggered = false;
-        setLoading('scanBtn', false);
-        showToast('Scan complete!');
-      } else if (polls >= 40) {
-        clearInterval(pollId);
-        scanBtn.innerHTML = origText;
-        scanBtn.disabled = false;
-        scanBtn._userTriggered = false;
-        setLoading('scanBtn', false);
-        showToast('Scan may still be running — check status later', 'warning');
-      }
-    }, 15000);
-  } catch (e) {
-    showToast('Failed to trigger scan: ' + (e.message||e), 'error');
-    scanBtn.innerHTML = origText;
-    scanBtn.disabled = false;
-    scanBtn._userTriggered = false;
-    setLoading('scanBtn', false);
-  }
-}
-
-// One update check/apply at a time: repeated clicks used to start parallel updates.
-let updateInFlight = false;
-
-async function checkUpdate() {
-  if (updateInFlight) return;
-  updateInFlight = true;
-  setLoading('updateBtn', true);
-  try {
-    const r = await api('check-update');
-    if (r.update_available) {
-      const notes = r.release_notes ? '\\n\\nRelease notes:\\n' + r.release_notes : '';
-      if (confirm('Update available: v' + r.local_version + ' \\u27a1 v' + r.remote_version + notes + '\\n\\nApply update now? The function app will restart.')) {
-        showToast('Applying update — this may take a few minutes...');
-        try {
-          const apply = await api('check-update?apply=1', { method: 'POST' });
-          if (apply.action === 'deployed') {
-            showToast(`Installing v${apply.remote_version}. The app restarts in a few minutes.`);
-            refreshVersionAfterUpdate(apply.remote_version);
-          } else {
-            // Refusals (too new, pinned, disabled, pre-release) explain themselves in message.
-            const err = apply.deploy_result?.error || apply.error || apply.message || ('not applied: ' + (apply.action || 'unknown'));
-            showToast('Update not applied: ' + err, 'error');
-          }
-        } catch (e) { showToast('Update apply failed', 'error'); }
-      }
-    } else {
-      showToast(`Up to date (v${r.local_version})`);
-    }
-  } catch (e) { showToast('Update check failed', 'error'); }
-  setLoading('updateBtn', false);
-  updateInFlight = false;
-}
-
-async function removeDiagSettings() {
-  if (!confirm('Remove ALL diagnostic settings from all monitored resources?\\n\\nAuto-scan will be disabled to prevent recreation.\\nYou can re-enable it or use "Trigger Scan" manually.')) return;
-  setLoading('removeBtn', true);
-  try {
-    const r = await api('remove-diagnostic-settings', { method: 'POST' });
-    const incomplete = (r.errors || 0) > 0 || (r.unresolved || 0) > 0 || r.tracking_cleared === false;
-    const msg = `Removed ${r.removed || 0} diagnostic settings` +
-      (r.errors ? `, ${r.errors} failed` : '') +
-      (r.unresolved ? `, ${r.unresolved} tracked resources not found (check them in Azure)` : '') +
-      (r.skipped ? `, ${r.skipped} had none` : '') +
-      (r.auto_scan_disabled ? '. Auto-scan disabled.' : '') +
-      (incomplete ? ' Not everything was removed; run it again.' : '');
-    showToast(msg, incomplete ? 'error' : 'info');
-    setTimeout(loadStatus, 2000);
-  } catch (e) {
-    showToast(String(e.message).includes('409')
-      ? 'A resource scan is running. Try again when it finishes.' : 'Removal failed', 'error');
-  }
-  setLoading('removeBtn', false);
 }
 
 // ─── Ignore List ─────────────────────────────────────────────────────────
@@ -1060,15 +837,9 @@ function renderIgnoreList() {
       el.innerHTML = '<span style="font-size:12px;color:var(--muted)">All</span>';
     } else {
       el.innerHTML = items.map(v =>
-        `<span class="ignore-tag"><span title="${escAttr(v)}">${escAttr(filterLabel(key, v))}</span><button onclick="removeIgnoreItem(${jsArg(key)}, ${jsArg(v)})">&times;</button></span>`
+        `<span class="ignore-tag"><span title="${escAttr(v)}">${escAttr(filterLabel(key, v))}</span></span>`
       ).join('');
     }
-    const sel = document.getElementById(ui.selEl);
-    const avail = (_available[ui.source] || []).filter(v => !(items || []).includes(v));
-    const firstOpt = sel.querySelector('option');
-    sel.innerHTML = '';
-    sel.appendChild(firstOpt || Object.assign(document.createElement('option'), {value:'', textContent:'+ Add…'}));
-    avail.forEach(v => { const opt = document.createElement('option'); opt.value = v; opt.textContent = filterLabel(key, v); sel.appendChild(opt); });
   }
   renderTagSection('include', 'includeTagsList', 'selIncludeTag');
   renderTagSection('exclude', 'excludeTagsList', 'selExcludeTag');
@@ -1082,16 +853,9 @@ function renderTagSection(mode, tagsElId, selElId) {
   } else {
     const color = mode === 'include' ? 'var(--green)' : 'var(--red)';
     el.innerHTML = tags.map(v =>
-      `<span class="ignore-tag" style="border-color:${color}40;color:${color};background:${color}18"><span title="${escAttr(v)}">${escAttr(v)}</span><button onclick="removeTag(${jsArg(mode)}, ${jsArg(v)})">&times;</button></span>`
+      `<span class="ignore-tag" style="border-color:${color}40;color:${color};background:${color}18"><span title="${escAttr(v)}">${escAttr(v)}</span></span>`
     ).join('');
   }
-  const sel = document.getElementById(selElId);
-  const allSelected = [...((_ignoreList.tags && _ignoreList.tags.include) || []), ...((_ignoreList.tags && _ignoreList.tags.exclude) || [])];
-  const avail = (_available.tags || []).filter(v => !allSelected.includes(v));
-  const firstOpt = sel.querySelector('option');
-  sel.innerHTML = '';
-  sel.appendChild(firstOpt || Object.assign(document.createElement('option'), {value:'', textContent:'+ Add…'}));
-  avail.forEach(v => { const opt = document.createElement('option'); opt.value = v; opt.textContent = v; sel.appendChild(opt); });
 }
 
 async function loadIgnoreList() {
@@ -1105,59 +869,6 @@ async function loadIgnoreList() {
     renderIgnoreList();
   } catch (e) { console.error('Failed to load ignore list:', e); }
   finally { spinner.style.display = 'none'; }
-}
-
-async function saveIgnoreList() {
-  try {
-    const r = await api('ignore-list', { method: 'PUT', body: JSON.stringify(_ignoreList) });
-    if ((r.diag_settings_not_removed || 0) > 0) {
-      showToast(`Filters saved. ${r.diag_settings_not_removed} diagnostic settings could not be removed; the next scan tries again.`, 'error');
-    } else if (r.scan_queued) {
-      showToast('Filters saved. A scan has started to apply them.');
-    } else {
-      showToast('Filters saved');
-    }
-    loadStatus();
-  } catch (e) { showToast('Could not save the filters. Try again.', 'error'); }
-}
-
-function addFromSelect(key, selId) {
-  const sel = document.getElementById(selId);
-  const val = sel.value; if (!val) return;
-  if (!_ignoreList[key]) _ignoreList[key] = [];
-  if (!_ignoreList[key].includes(val)) { _ignoreList[key].push(val); renderIgnoreList(); saveIgnoreList(); }
-  sel.value = '';
-}
-
-function addTag(mode, selId) {
-  const sel = document.getElementById(selId);
-  const val = sel.value; if (!val) return;
-  if (!_ignoreList.tags) _ignoreList.tags = {include: [], exclude: []};
-  if (!_ignoreList.tags[mode]) _ignoreList.tags[mode] = [];
-  if (!_ignoreList.tags[mode].includes(val)) { _ignoreList.tags[mode].push(val); renderIgnoreList(); saveIgnoreList(); }
-  sel.value = '';
-}
-
-function addCustomTagTo(mode, inputId) {
-  const input = document.getElementById(inputId);
-  const val = input.value.trim(); if (!val) return;
-  if (!_ignoreList.tags) _ignoreList.tags = {include: [], exclude: []};
-  if (!_ignoreList.tags[mode]) _ignoreList.tags[mode] = [];
-  if (_ignoreList.tags[mode].includes(val)) { showToast('Already in list', 'error'); return; }
-  _ignoreList.tags[mode].push(val); input.value = '';
-  renderIgnoreList(); saveIgnoreList();
-}
-
-function removeTag(mode, val) {
-  if (_ignoreList.tags && _ignoreList.tags[mode]) {
-    _ignoreList.tags[mode] = _ignoreList.tags[mode].filter(v => v !== val);
-    renderIgnoreList(); saveIgnoreList();
-  }
-}
-
-function removeIgnoreItem(key, val) {
-  _ignoreList[key] = (_ignoreList[key] || []).filter(v => v !== val);
-  renderIgnoreList(); saveIgnoreList();
 }
 
 // ─── Disabled Log Types ──────────────────────────────────────────────────
@@ -1221,7 +932,6 @@ function renderLogTypes() {
 
   el.innerHTML = _filteredLogTypes.map(t => {
     const isDisabled = t.disabled;
-    const toggleCls = isDisabled ? '' : 'on';
     const hasResources = (t.resource_types || []).length > 0;
     const s247Tag = t.s247_logtype !== t.category_key
       ? `<span style="display:inline-block;font-size:10px;padding:1px 6px;border-radius:4px;background:rgba(56,189,248,.12);color:var(--accent);vertical-align:middle" title="${escAttr('S247 Log Type: ' + t.s247_display_name)}">S247: ${esc(t.s247_display_name)}</span>`
@@ -1236,38 +946,12 @@ function renderLogTypes() {
         ${t.category.toLowerCase() !== t.category_key ? `<div style="font-size:11px;color:var(--muted);font-family:monospace">${esc(t.category_key)}</div>` : ''}
         ${rtypes}
       </div>
-      <button class="toggle ${toggleCls}" onclick="toggleLogTypeCategory(${jsArg(t.category_key)}, ${!!isDisabled})"></button>
+      <span class="badge ${isDisabled ? 'badge-yellow' : 'badge-green'}">${isDisabled ? 'Off' : 'On'}</span>
     </div>`;
   }).join('');
 }
 
 let _filteredLogTypes = [];
-
-async function bulkToggleLogTypes(enable) {
-  const targets = _filteredLogTypes.filter(t => enable ? t.disabled : !t.disabled);
-  if (!targets.length) {
-    showToast(`No ${enable ? 'disabled' : 'enabled'} types in current filter`, 'warning');
-    return;
-  }
-  if (!confirm(`${enable ? 'Enable' : 'Disable'} ${targets.length} log type(s)?`)) return;
-  try {
-    await api('disabled-logtypes', {
-      method: 'POST',
-      body: JSON.stringify({action: enable ? 'enable' : 'disable', categories: targets.map(t => t.category_key)})
-    });
-    showToast(`${targets.length} log type(s) ${enable ? 'enabled' : 'disabled'}`);
-    await loadDisabledLogTypes();
-  } catch (e) { showToast(`Bulk ${enable ? 'enable' : 'disable'} failed`, 'error'); }
-}
-
-async function toggleLogTypeCategory(category, currentlyDisabled) {
-  const action = currentlyDisabled ? 'enable' : 'disable';
-  try {
-    await api('disabled-logtypes', { method: 'POST', body: JSON.stringify({action, category}) });
-    showToast(`${category} ${action}d`);
-    await loadDisabledLogTypes();
-  } catch (e) { showToast(`Failed to ${action} ${category}`, 'error'); }
-}
 
 // ─── Configured Resources ────────────────────────────────────────────────
 
@@ -1371,7 +1055,7 @@ function renderDebugConfigIssues() {
     return;
   }
   el.innerHTML = issues.map(i =>
-    `<div class="config-issue sev-${esc(i.severity||'warning')}">${esc(i.message)}</div>`
+    `<div class="config-issue sev-${esc(i.level||i.severity||'warning')}">${esc(i.message)}</div>`
   ).join('');
 }
 
@@ -1453,7 +1137,7 @@ function renderDebugRuns() {
     return `<div class="debug-run ${hasErr ? 'run-error' : ''}">
       <div><strong>${esc(t)}</strong></div>
       <div style="color:var(--muted);font-size:11px;margin-top:2px">
-        Blobs: ${r.blobs_found||r.blobs_processed||0} | Records: ${r.processed||r.total_records||0} | Uploaded: ${r.uploaded||0} | Retrying: ${r.retrying||0} | Dropped: ${r.dropped||r.errors||0}
+        Blobs: ${r.blobs_seen||r.blobs_found||0} | Records: ${r.processed||r.total_records||0} | Uploaded: ${r.uploaded||0} | Retrying: ${r.retrying||0} | Dropped: ${r.dropped||r.errors||0}
         ${r.duration_s ? ' | ' + r.duration_s.toFixed(1) + 's' : ''}
       </div>
       ${errDetail}
@@ -1501,22 +1185,6 @@ async function exportDebugBundle(format) {
     showToast('Export failed: ' + e.message, 'error');
   } finally {
     setLoading(btn, false);
-  }
-}
-
-async function clearDebugEvents() {
-  if (!confirm('Clear all debug events? This cannot be undone.')) return;
-  setLoading('btnClearEvents', true);
-  try {
-    await api('debug?clear=1', { method: 'POST' });
-    _debugData = null;
-    _debugLoaded = false;
-    loadDebugInfo(false);
-    showToast('Debug events cleared');
-  } catch (e) {
-    showToast('Failed to clear: ' + e.message, 'error');
-  } finally {
-    setLoading('btnClearEvents', false);
   }
 }
 

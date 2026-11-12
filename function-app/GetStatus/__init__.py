@@ -98,6 +98,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             "subscription_ids": subscription_ids,
             "general_logtype_enabled": general_enabled,
             "processing_enabled": processing_enabled,
+            "collection": _collection_state(),
             "update_state": _update_state(),
             "monitor_pipeline_resources": monitor_pipeline,
             "auto_scan_enabled": auto_scan,
@@ -226,6 +227,21 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             mimetype="application/json",
             status_code=500,
         )
+
+
+def _collection_state() -> dict:
+    """The Log Collection switch and, after switching it off, how the removal went."""
+    try:
+        from shared.config_store import get_collection_state
+        state = get_collection_state(strict=True)
+    except Exception:
+        return {}
+    out = {"enabled": state.get("enabled") is True, "changed_at": str(state.get("changed_at") or "")}
+    stop = state.get("stop")
+    if isinstance(stop, dict):
+        out["stop"] = {k: stop[k] for k in ("state", "removed", "errors", "unresolved", "containers_cleared",
+                                             "requested_at", "started_at", "finished_at") if k in stop}
+    return out
 
 
 def _update_state() -> dict:

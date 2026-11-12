@@ -154,14 +154,14 @@
     "steps": [
       {
         "name": "filters",
-        "label": "Resource filters",
+        "label": "Configuration (optional)",
         "elements": [
           {
             "name": "intro",
             "type": "Microsoft.Common.TextBlock",
             "visible": true,
             "options": {
-              "text": "Optional. Choose what to collect logs from; by default everything is included. Collection starts automatically after deployment."
+              "text": "Everything on this page is optional. Leave it as it is to collect logs from every resource in the subscription, or narrow down what is collected. Collection starts right after deployment, and you can change these choices later in Site24x7."
             }
           },
           {
@@ -206,14 +206,14 @@
                 "type": "Microsoft.Common.TextBlock",
                 "visible": true,
                 "options": {
-                  "text": "[concat('Logs are collected from ', coalesce(first(map(filter(coalesce(steps('filters').subsApi.value, parse('[]')), (sub) => equals(sub.subscriptionId, subscription().subscriptionId)), (sub) => sub.displayName)), 'the subscription chosen on Basics'), ', the subscription chosen on Basics. It hosts the collector and is always included.')]"
+                  "text": "[concat('Logs are collected from ', coalesce(first(map(filter(coalesce(steps('filters').subsApi.value, parse('[]')), (sub) => equals(sub.subscriptionId, subscription().subscriptionId)), (sub) => sub.displayName)), 'the subscription chosen on Basics'), '. The collector runs in this subscription, so its logs are always collected.')]"
                 }
               },
               {
                 "name": "otherSubscriptions",
                 "type": "Microsoft.Common.DropDown",
-                "label": "Other subscriptions",
-                "toolTip": "Other active subscriptions where you can grant access. Logs are collected from the selected ones; the collector receives Reader and Monitoring Contributor access in each of them.",
+                "label": "Additional Subscriptions",
+                "toolTip": "Collect logs from these subscriptions too. The collector gets read access and permission to create diagnostic settings in each one you select.",
                 "placeholder": "None",
                 "multiselect": true,
                 "filter": true,
@@ -242,7 +242,7 @@
                 "type": "Microsoft.Common.TextBlock",
                 "visible": "[greater(length(filter(filter(coalesce(steps('filters').subsApi.value, parse('[]')), (sub) => equals(sub.state, 'Enabled')), (sub) => not(equals(sub.subscriptionId, subscription().subscriptionId)))), 0)]",
                 "options": {
-                  "text": "If a subscription is not listed, you do not have enough permissions in it: Owner, or Contributor and User Access Administrator, is needed."
+                  "text": "A subscription is listed only if you can grant access in it (Owner, or Contributor and User Access Administrator)."
                 }
               }
             ],
@@ -338,7 +338,7 @@
                 "type": "Microsoft.Common.TextBlock",
                 "visible": true,
                 "options": {
-                  "text": "Keep Select all to collect from every region and resource type, including ones added later. Narrow a list to collect only from what is selected."
+                  "text": "With everything selected, logs are collected from every region and resource type, including ones added later. Clear some to collect only from the ones still selected."
                 }
               },
               {
@@ -615,7 +615,7 @@
             "type": "Microsoft.Common.TextBlock",
             "visible": true,
             "options": {
-              "text": "You can change all these filters later in the Site24x7 console, in the collector's Resource Filters tab."
+              "text": "You can change all of this later in Site24x7, on the collector's Configurations tab."
             }
           }
         ]

@@ -135,6 +135,7 @@ function-app/
 | **UpdateSettings** | HTTP GET/PUT | Update function app settings |
 | **TriggerScan** | HTTP POST | Manually trigger a DiagSettings scan |
 | **RemoveDiagSettings** | HTTP POST | Remove all diagnostic settings |
+| **LogCollection** | HTTP PUT | Switch log collection on or off (`/api/collection`); off removes every setting and clears the stored logs in a queued job |
 | **StopProcessing** | HTTP PUT | Disable log processing |
 | **HealthCheck** | HTTP GET | Health probe endpoint |
 | **CheckUpdate** | HTTP GET/POST | Check for available updates |
@@ -1084,8 +1085,8 @@ Used by `post_logs()` — when the circuit is open, log uploads are silently ski
 |---|---|---|
 | HTTP 200 | success | sent |
 | Connection error, timeout, HTTP 408 / 429 / 5xx, any other 2xx | failure | kept, retried next run |
-| HTTP 401 / 403 (Device Key refused) | failure | kept, retried; status `upload_refused` |
-| HTTP 400 / 404 / 415 / 422 (payload refused) | success (Site24x7 answered) | dropped and recorded; the next batch goes on |
+| HTTP 401 / 403, or 400 while Site24x7's API refuses the Device Key (Device Key refused) | failure | kept, retried; status `upload_refused` |
+| HTTP 400 (Device Key accepted) / 404 / 415 / 422 (payload refused) | success (Site24x7 answered) | dropped and recorded; the next batch goes on |
 | HTTP 413 (too large) | success | batch split in halves; a single record still refused is dropped |
 | Broken log-type configuration (decode / regex) | not touched | kept, retried; only that blob waits |
 | Less than 5 s left in the run | not touched | kept, retried next run |

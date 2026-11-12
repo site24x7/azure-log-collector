@@ -38,7 +38,8 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _KEYED_OPENER = urllib.request.build_opener(_NoRedirect())
 
 # Site24x7 refused the payload itself; resending the same records cannot succeed.
-# 413 is split by the caller first; 401/403 (Device Key) are retried, as every upload fails alike.
+# 413 is split by the caller first; 401/403 (Device Key) are retried, as every upload fails alike,
+# and so is a 400 when Site24x7's API refuses the Device Key too (device_key_refused).
 REJECTED_UPLOAD_STATUSES = frozenset({400, 404, 413, 415, 422})
 # A log upload never waits longer than this, nor past the run's deadline.
 UPLOAD_TIMEOUT_SEC = 120
@@ -147,9 +148,8 @@ class CircuitBreaker:
                     self._etag = (resp or {}).get("etag") if isinstance(resp, dict) else None
                     return
                 except Exception as e:
-                    msg = str(e)
-                    if ("ConditionNotMet" in msg or "BlobAlreadyExists" in msg
-                            or "412" in msg or "409" in msg):
+                    from shared.config_store import is_conflict
+                    if is_conflict(e):
                         # Merge with remote state before retry.
                         try:
                             stream = blob_client.download_blob()
@@ -729,17 +729,22 @@ class Site24x7Client:
             gzipped = gzip.compress(json.dumps(parsed_lines).encode())
             _send_logs_to_s247(config, gzipped, log_size, timeout)
         except urllib.error.HTTPError as e:
-            self.last_upload_status = "refused" if e.code in (401, 403) else "failed"
+            # The upload server answers 400, not 401, to an unknown Device Key (a
+            # rotated key, a reset account, another data centre). Dropping those
+            # batches as malformed would lose every log; they are retried instead.
+            key_refused = e.code in (401, 403) or (e.code == 400 and self.device_key_refused())
+            self.last_upload_status = "refused" if key_refused else "failed"
             self.last_upload_http_status = e.code
-            if e.code in REJECTED_UPLOAD_STATUSES:
+            if key_refused:
+                self.upload_refused = True
+                self.circuit_breaker.record_failure()
+            elif e.code in REJECTED_UPLOAD_STATUSES:
                 self.last_upload_status = "rejected"
                 # Site24x7 answered and refused this payload: it is reachable, so the
                 # breaker is not tripped, and the caller drops (or splits) the batch.
                 self.last_rejected = e.code
                 self.circuit_breaker.record_success()
             else:
-                if e.code in (401, 403):
-                    self.upload_refused = True
                 self.circuit_breaker.record_failure()
             self._report_upload_failure(e, len(log_events), f"HTTP {e.code}")
             return False
@@ -754,6 +759,22 @@ class Site24x7Client:
         self.last_upload_http_status = 200
         logger.info("Uploaded %d log records to Site24x7", len(parsed_lines))
         return True
+
+    # Checked once per client (one processing run): whether Site24x7 refuses this Device Key.
+    _key_check: Optional[bool] = None
+
+    def device_key_refused(self) -> bool:
+        """Whether Site24x7's API refuses the Device Key. Asked when an upload
+        answers 400, which the upload server also sends for an unknown key. True
+        when the key is refused, and also when the answer is unknown (no answer):
+        retrying a good batch costs a run, dropping it loses it."""
+        if self._key_check is None:
+            result = self._make_s247_request("/applog/azure/logtype_supported")
+            accepted = bool(result) and str(result.get("status", "")).upper() == "SUCCESS"
+            self._key_check = not accepted
+            if self._key_check:
+                logger.error("Site24x7 refuses the Device Key (or cannot be asked); uploads are retried")
+        return self._key_check
 
     def _report_upload_failure(self, error: Exception, record_count: int, cause: str) -> None:
         logger.error("Failed to post logs to Site24x7 (%s): %s", cause, error)
