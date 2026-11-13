@@ -46,7 +46,7 @@ The Site24x7 addresses come from the `SITE24X7_BASE_URL` app setting. The upload
 | Regional storage account keys | Read at run time through ARM `listKeys` (Contributor on the collector's resource group), held in memory only | Reading the buffered log blobs |
 | Site24x7 Device Key | App setting `SITE24X7_API_KEY` (encrypted at rest by Azure) | Authenticating to Site24x7. It is not stored with the saved log type configurations, and the collector never writes it to its logs. (On the Site24x7 side, a request with an unknown Device Key is logged by Site24x7's own log-collection service; that is outside this collector.) |
 | Function App host keys | Azure-managed | Authorize every HTTP endpoint (section 7). Used by you, for example to open the dashboard. **Never sent to Site24x7.** |
-| `site24x7` function key | Azure-managed; created by the collector on the 18 functions Site24x7 calls or opens for its admins (including the dashboard) | **Sent to Site24x7** at registration (section 6). It does not open the dashboard, debug data or health endpoint. |
+| `site24x7` function key | Azure-managed; created by the collector on the 19 functions Site24x7 calls or opens for its admins (including the dashboard) | **Sent to Site24x7** at registration (section 6). It does not open the dashboard, debug data or health endpoint. |
 
 **Rotation**
 - **Device Key:** update `SITE24X7_API_KEY`. Uploads always use the current setting.
@@ -64,13 +64,16 @@ The deployment template writes no key to its outputs. `dashboardUrl` is the addr
 |---|---|---|
 | Reader | Each monitored subscription | List resources and their log categories |
 | Monitoring Contributor | Each monitored subscription | Create, update and delete diagnostic settings |
-| Contributor | The collector's own resource group (`s247-diag-logs-<suffix>-rg`, or `s247-diag-logs-rg`) | Regional storage accounts, the Function App's own app settings, its function keys (the `site24x7` key) and code deployment (self-update) |
+| Contributor | The collector's own resource group (`s247-diag-logs-<suffix>-rg`, or `s247-diag-logs-rg`) | Regional storage accounts, the Function App's own app settings, its function keys (the `site24x7` key) and code deployment (self-update); deleting the group itself (Delete Collector) |
+| Locks Contributor (built-in: read, create and delete locks, nothing else) | The collector's own resource group | Removing its own lock (`s247-lock-*`) before Delete Collector deletes the group |
 
 It has no Owner role and no `Microsoft.Authorization/roleAssignments` write. Its Contributor role covers its own resource group only.
 
 Monitoring Contributor covers diagnostic settings on every resource in the subscription, so a compromised collector could change or remove diagnostic settings it did not create. The collector itself only touches settings named for this collector (`s247-diag-logs-<suffix>`). It removes the older shared name `s247-diag-logs` only when that setting sends to this collector's own storage account.
 
-**Locks:** the resource group gets a CanNotDelete lock at deployment. The collector cannot change locks (its Contributor role has no lock rights) and never deletes a storage account (section 5).
+**Locks:** the resource group gets a CanNotDelete lock at deployment. The collector removes locks only for Delete Collector, and only its own (named `s247-lock-*`), with the Locks Contributor role on its own group; it cannot grant roles. Otherwise it never deletes a storage account (section 5).
+
+**Delete Collector** (`POST /api/delete-collector`, the Function App's name typed as confirmation): a queued job switches log collection off, removes every diagnostic setting of this collector and empties its storage. It stops if any setting remains. It then checks that the resource group holds only this collector's resources (and the alert rules Application Insights creates); if it finds anything else, for example the customer's own resources in a group chosen on the deployment form, nothing is deleted and the resources are reported. Then it removes its own locks (a lock of any other name stops it), reports "deleting" to Site24x7 and starts deleting the group. Left for an admin: the Reader and Monitoring Contributor grants on the monitored subscriptions (shown as "Identity not found" once the identity is gone), the subscription-level deployment record, and any Entra ID diagnostic setting a tenant admin created.
 
 **Ownership:** each storage account carries an `s247-collector` tag naming its collector. A collector only reads, adopts or changes its own accounts, even when several share a resource group. It never overwrites or deletes a diagnostic setting with its name that sends somewhere other than its own resource group.
 
@@ -113,7 +116,7 @@ Once collecting, every scan (every 6 hours, and on demand) does the following:
 The collector registers with Site24x7 after every scan, on restart, when its key changes (see Operational freshness and connectivity). It sends:
 - its Function App name, address, resource ID, subscription, resource group and region;
 - its version and a status summary;
-- the **`site24x7` function key**. This is a dedicated key, not a host key, and the collector creates it on just these 18 functions: status, scan, processing, collection, ignore-list (get and put), disabled-logtypes (get and post), entra-logtypes, general-logtype (get and put), settings, configured-resources, check-update, remove-diagnostic-settings, and the dashboard with the debug and health functions its page uses. Site24x7 admins open the dashboard from Site24x7 (Troubleshooting → Open Collector Dashboard): Site24x7 builds the dashboard address with this key when the admin clicks, opens it in a new tab without a referrer, and audits it. The dashboard removes the key from the address bar and history at once (below), so it stays only in that tab. Revoke it with `SITE24X7_KEY_EXCLUDE=*`, or rotate it by deleting the `site24x7` key on those functions (the collector creates a new one at its next registration).
+- the **`site24x7` function key**. This is a dedicated key, not a host key, and the collector creates it on just these 19 functions: status, scan, processing, collection, delete-collector, ignore-list (get and put), disabled-logtypes (get and post), entra-logtypes, general-logtype (get and put), settings, configured-resources, check-update, remove-diagnostic-settings, and the dashboard with the debug and health functions its page uses. Site24x7 admins open the dashboard from Site24x7 (Troubleshooting → Open Collector Dashboard): Site24x7 builds the dashboard address with this key when the admin clicks, opens it in a new tab without a referrer, and audits it. The dashboard removes the key from the address bar and history at once (below), so it stays only in that tab. Revoke it with `SITE24X7_KEY_EXCLUDE=*`, or rotate it by deleting the `site24x7` key on those functions (the collector creates a new one at its next registration).
 
 Site24x7 stores the key encrypted. With it, Site24x7 admins can run those actions from the Site24x7 page. Each action is:
 - available to Site24x7 Super Admins and Admins only;
@@ -130,7 +133,7 @@ The resource group lock forbids deleting keys, so the collector revokes a functi
 
 ## 7. HTTP endpoints
 
-All 18 HTTP functions use `authLevel: function`. Each needs a valid function or host key, and there is no anonymous endpoint (including `/api/health`). They are: dashboard, status, health, debug, scan, processing, settings, ignore-list (get and put), disabled-logtypes (get and post), general-logtype (get and put), entra-logtypes, configured-resources, check-update, remove-diagnostic-settings.
+All 19 HTTP functions use `authLevel: function`. Each needs a valid function or host key, and there is no anonymous endpoint (including `/api/health`). They are: dashboard, status, health, debug, scan, processing, settings, ignore-list (get and put), disabled-logtypes (get and post), general-logtype (get and put), entra-logtypes, configured-resources, check-update, remove-diagnostic-settings.
 
 **Input checks**
 - Request bodies must be JSON objects.
@@ -246,7 +249,7 @@ AutoUpdater records each run as an event; the new version confirms the update on
 | Can it change my resources? | It manages diagnostic settings on resources in the monitored subscriptions (only its own, as described in section 3). It creates storage accounts in its own resource group (it never deletes them), and writes its own app settings. It does nothing until an admin starts collecting (section 4). |
 | Can it change permissions? | No. It has no role-assignment rights. |
 | What if the GitHub repository were compromised? | An attacker would need to publish a release that passes the update gates (section 9) and wait for the age gate. You can turn updates off (`SKIP_AUTO_UPDATE=true`) or point `UPDATE_CHECK_URL` at your own fork. |
-| What if Site24x7 were compromised? | With the Device Key, an attacker could send logs into your Site24x7 account. With the stored `site24x7` key (section 6), they could call those 18 endpoints, for example change settings, switch log collection off, or open the dashboard and its (redacted) debug data. Revoke it with `SITE24X7_KEY_EXCLUDE=*`. They cannot reach your other Azure resources: the collector's identity is limited as described in section 3. |
+| What if Site24x7 were compromised? | With the Device Key, an attacker could send logs into your Site24x7 account. With the stored `site24x7` key (section 6), they could call those 19 endpoints, for example change settings, switch log collection off, delete the collector (it never deletes a resource group holding anything but its own resources), or open the dashboard and its (redacted) debug data. Revoke it with `SITE24X7_KEY_EXCLUDE=*`. They cannot reach your other Azure resources: the collector's identity is limited as described in section 3. |
 | Can I check what is deployed? | Each release zip is built by GitHub Actions from a tagged commit, with its SHA-256 in `version.json`. Compare the running package with the tag. |
 
 ## Operational freshness and connectivity

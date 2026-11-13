@@ -74,7 +74,7 @@ SITE24X7_FUNCTIONS = (
     "GetIgnoreList", "UpdateIgnoreList", "GetDisabledLogTypes", "UpdateDisabledLogTypes",
     "UpdateEntraLogTypes", "GetGeneralLogType", "UpdateGeneralLogType", "UpdateSettings",
     "GetConfiguredResources", "CheckUpdate", "RemoveDiagSettings",
-    "Dashboard", "GetDebugInfo", "HealthCheck", "LogCollection",
+    "Dashboard", "GetDebugInfo", "HealthCheck", "LogCollection", "DeleteCollector",
 )
 SITE24X7_KEY_NAME = "site24x7"
 
@@ -173,6 +173,8 @@ def build_status_summary(include_names: bool = True) -> Dict:
         "s247_reachable": scan.get("s247_reachable"),
         "processing_enabled": _processing_enabled(get_processing_enabled),
         "collection_enabled": _collection_enabled(),
+        # Delete Collector started deleting this collector's resource group.
+        "collector_deleting": _deleting(),
         "auto_scan_enabled": os.environ.get("AUTO_SCAN_ENABLED", "true").lower() == "true",
         "last_processing_time": runs[0].get("timestamp", "") if runs else "",
         "recent_uploaded": sum(int(r.get("uploaded", 0) or 0) for r in runs),
@@ -241,6 +243,14 @@ def _processing_enabled(read) -> Optional[bool]:
         return read()
     except Exception:
         return None
+
+
+def _deleting() -> bool:
+    try:
+        from shared.config_store import get_collection_state
+        return (get_collection_state(strict=True).get("delete") or {}).get("state") == "deleting"
+    except Exception:
+        return False
 
 
 def _collection_enabled() -> Optional[bool]:

@@ -7,6 +7,21 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.1.0-beta10] — 2026-11-13
+
+- Delete Collector (`POST /api/delete-collector`, confirmed with the Function
+  App's name). A queued job removes every diagnostic setting of this collector
+  and empties its storage, then deletes the collector's own resource group,
+  the Function App with it. It deletes nothing while a setting remains, when
+  the group holds anything that is not this collector's, or when a lock other
+  than its own is present. Site24x7 is told before the group delete starts, so
+  the registration can be removed at once.
+- The deployment grants the built-in Locks Contributor role on the collector's
+  own resource group (and setup.sh does too), so the collector can remove its
+  own lock for Delete Collector. Collectors deployed earlier report that the
+  lock could not be removed until they are deployed again.
+- Collector status reports `collector_deleting`.
+
 ## [1.1.0-beta9] — 2026-11-13
 
 - Switching log collection off empties the collector's log storage accounts

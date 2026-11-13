@@ -16,18 +16,22 @@ def main(msg: func.QueueMessage, context: func.Context = None) -> None:
     avoid the 230s gateway timeout. The function timeout (host.json) is 10 minutes."""
     from shared.log_context import bind
     bind(context)
-    from shared import collection
+    from shared import collection, teardown
     body = msg.get_body().decode("utf-8")
     dequeue_count = msg.dequeue_count
-    stop = collection.is_stop_request(body)
+    action = _action(body)
+    delete = action == teardown.DELETE_ACTION
+    stop = delete or action == collection.STOP_ACTION
     logging.info("ScanWorker: Picked up %s request (attempt %d): %s",
-                 "stop-collection" if stop else "scan", dequeue_count, body)
+                 action or "scan", dequeue_count, body)
 
     if dequeue_count > MAX_ATTEMPTS:
         # The lock is not cleared here: it may belong to a scan that is running
         # now; a stale one expires on its own (try_acquire_scan_lock).
         logging.warning("ScanWorker: Message retried %d times — giving up", dequeue_count)
-        if stop:
+        if delete:
+            teardown.mark_abandoned()
+        elif stop:
             collection.mark_stop_abandoned()
         try:
             from shared.debug_logger import log_event
@@ -76,6 +80,16 @@ def main(msg: func.QueueMessage, context: func.Context = None) -> None:
             pass
         raise RuntimeError("Scan lock busy; the queue retries this request")
 
+    if delete:
+        try:
+            outcome = teardown.delete_collector()
+        finally:
+            _clear_in_progress()
+        if outcome.get("state") != "deleting":
+            from shared.registration import register_with_site24x7
+            register_with_site24x7()
+        return
+
     if stop:
         try:
             collection.stop_collection()
@@ -110,6 +124,13 @@ def main(msg: func.QueueMessage, context: func.Context = None) -> None:
     finally:
         from shared.registration import register_with_site24x7
         register_with_site24x7()
+
+
+def _action(body: str) -> str:
+    try:
+        return str(json.loads(body).get("action") or "")
+    except Exception:
+        return ""
 
 
 def _source(body: str) -> str:

@@ -129,7 +129,7 @@
     "seedStorageName": "[if(greater(length(variables('uniqueSuffix')), 6), concat('s247dr', variables('uniqueSuffix')), take(concat('s247diag', replace(replace(deployment().location, ' ', ''), '-', ''), variables('uniqueSuffix')), 24))]",
     "hostingPlanName": "[concat('s247-diag-func-', variables('uniqueSuffix'), '-plan')]",
     "appInsightsName": "[concat('s247-diag-func-', variables('uniqueSuffix'), '-ai')]",
-    "functionZipUrl": "https://github.com/site24x7/azure-log-collector/releases/download/v1.1.0-beta9/released-package.zip",
+    "functionZipUrl": "https://github.com/site24x7/azure-log-collector/releases/download/v1.1.0-beta10/released-package.zip",
     "readerRoleId": "acdd72a7-3385-48ef-bd42-f606fba81ae7",
     "monitoringContributorRoleId": "749f88d5-cbae-40b8-bcfc-e573ddc772fa",
     "deploymentContainerName": "[concat('app-package-', take(variables('functionAppName'), 50))]",
@@ -607,6 +607,20 @@
               ],
               "properties": {
                 "roleDefinitionId": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Authorization/roleDefinitions/b24988ac-6180-42a0-ab88-20f7382dd24c')]",
+                "principalId": "[reference(resourceId('Microsoft.Web/sites', parameters('functionAppName')), '2023-01-01', 'Full').identity.principalId]",
+                "principalType": "ServicePrincipal"
+              }
+            },
+            {
+              "comments": "Locks Contributor (built-in: read, create and delete locks only) on this resource group, so Delete Collector can remove the collector's own lock before deleting the group.",
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "name": "[guid(resourceGroup().id, parameters('functionAppName'), '28bf596f-4eb7-45ce-b5bc-6cf482fec137')]",
+              "dependsOn": [
+                "[resourceId('Microsoft.Web/sites', parameters('functionAppName'))]"
+              ],
+              "properties": {
+                "roleDefinitionId": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Authorization/roleDefinitions/28bf596f-4eb7-45ce-b5bc-6cf482fec137')]",
                 "principalId": "[reference(resourceId('Microsoft.Web/sites', parameters('functionAppName')), '2023-01-01', 'Full').identity.principalId]",
                 "principalType": "ServicePrincipal"
               }

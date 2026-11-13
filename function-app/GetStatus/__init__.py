@@ -237,6 +237,11 @@ def _collection_state() -> dict:
     except Exception:
         return {}
     out = {"enabled": state.get("enabled") is True, "changed_at": str(state.get("changed_at") or "")}
+    delete = state.get("delete")
+    if isinstance(delete, dict):
+        out["delete"] = {k: delete[k] for k in ("state", "reason", "foreign", "foreign_count", "locks_failed",
+                                                 "other_locks", "errors", "unresolved", "requested_at", "finished_at")
+                         if k in delete}
     stop = state.get("stop")
     if isinstance(stop, dict):
         out["stop"] = {k: stop[k] for k in ("state", "removed", "errors", "unresolved", "containers_cleared",

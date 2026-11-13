@@ -292,6 +292,18 @@ provision_infrastructure() {
         log_error "Failed to assign Contributor on RG ${RG}"
         rbac_failed=true
     fi
+    # Locks only (built-in): Delete Collector removes the collector's lock before deleting the group.
+    if az role assignment create \
+        --assignee-object-id "$principal_id" \
+        --assignee-principal-type ServicePrincipal \
+        --role "Locks Contributor" \
+        --scope "$rg_id" \
+        -o none 2>>"$LOG_FILE"; then
+        log_ok "Locks Contributor on resource group ${RG}"
+    else
+        log_error "Failed to assign Locks Contributor on RG ${RG}"
+        rbac_failed=true
+    fi
 
     if [[ "$rbac_failed" == "true" ]]; then
         log_error ""
@@ -302,6 +314,7 @@ provision_infrastructure() {
         log_error "     - Reader on monitored subscriptions"
         log_error "     - Monitoring Contributor on monitored subscriptions"
         log_error "     - Contributor on resource group ${RG}"
+        log_error "     - Locks Contributor on resource group ${RG}"
         log_error ""
         log_info "Continuing setup — RBAC can be assigned later via Azure Portal."
     fi
