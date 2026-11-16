@@ -44,10 +44,11 @@ Check the collector logs and retry; storage failures never report a successful t
 
 The tab also shows the **target storage account** for Step 2 — a dedicated,
 non-regional storage account (tagged `diag-logs-tenant`). It's created on the
-next scan **once at least one log type is enabled**, left untouched by region
-reconciliation (so the target never changes), and **removed** on a later scan if
-you turn all Entra log types back off. Until a type is enabled and a scan runs,
-the tab tells you what to do.
+next scan **once at least one log type is enabled** and left untouched by region
+reconciliation (so the target never changes). If you turn all Entra log types back
+off, the account is **kept**, idle, with a 1-day retention so logs that still reach it
+do not build up; the normal retention comes back when a type is turned on again.
+Until a type is enabled and a scan runs, the tab tells you what to do.
 
 > This is our side only. It does not, and cannot, enable anything in Azure —
 > that's Step 2.
@@ -105,7 +106,7 @@ Set-AzDiagnosticSetting `
 
 ## Categories
 
-Toggle any of these on from the Platform Logs tab to create their Site24x7 log type:
+Turn any of these on in Site24x7 (the collector's **Log Types** tab, Microsoft Entra ID) to create their Site24x7 log type:
 
 | Azure category | Site24x7 log type | Availability |
 |----------------|-------------------|--------------|
@@ -123,7 +124,7 @@ Categories not licensed in your tenant simply produce no logs — enabling them 
 
 ### Turning individual categories off
 
-You can disable any of these from the dashboard's **Log Type Filters** page. For
+You can turn any of these off in Site24x7, on the collector's **Log Types** tab. For
 Entra (and other sources whose diagnostic setting we don't manage), the toggle
 takes effect at the **processing** stage: the logs still land in the storage
 account, but the collector stops forwarding the disabled category to Site24x7.
@@ -144,7 +145,7 @@ storage account, and the collector begins forwarding. Check the dashboard's
   right role.
 - **Dashboard shows no target storage account** — enable at least one log type
   (Step 1), then run a scan (or wait for the scheduled one). The dedicated
-  tenant storage account is created only while a type is enabled.
+  tenant storage account is created on the first scan after a type is enabled.
 - **Logs land but aren't forwarded** — the Site24x7 log type may not exist yet
   server-side (the sign-in family requires server-side log-type definitions).
   `auditlogs` works out of the box.

@@ -98,6 +98,8 @@ jobs:
       - name: Build function app zip
         if: steps.check_release.outputs.state != 'published'
         run: |
+          # The licence travels with the package.
+          cp LICENSE function-app/LICENSE
           cd function-app
           # Pre-install pip dependencies into .python_packages so that the zip is
           # self-contained: the template and the AutoUpdater deploy it with

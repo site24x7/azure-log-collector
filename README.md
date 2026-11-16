@@ -94,6 +94,14 @@ Raw URLs (if you prefer to paste directly into `Template spec deployment`):
 Pre-release versions (alpha/beta/rc) are available only by their tag, e.g.
 `https://raw.githubusercontent.com/site24x7/azure-log-collector/refs/tags/v<version>/setup/azuredeploy.json`.
 
+The collector starts collecting as soon as it is deployed. The portal form's second page
+chooses what is collected first: the other subscriptions to include (the deployment's own
+subscription is always included), the regions and resource types to include (all by
+default, including ones added later), and tags to exclude or include. They are saved once
+as the collector's filters; change them later in Site24x7 (the collector's
+Configurations tab). To add a subscription later, give the collector's managed identity Reader and
+Monitoring Contributor on it; the next scan finds it.
+
 ### Option B — Shell deploy
 
 ### Prerequisites
@@ -131,16 +139,11 @@ bash setup.sh
 This takes 5–10 minutes and provisions:
 - Resource group, storage account, Function App
 - Managed Identity with Reader + Monitoring Contributor (monitored subscriptions) and
-  Contributor (the collector's own resource group)
+  Contributor + Locks Contributor (the collector's own resource group)
 - Initial resource scan and diagnostic settings configuration
 
-The collector starts collecting as soon as it is deployed. The portal form's second page
-chooses what is collected first: the other subscriptions to include (the deployment's own
-subscription is always included), the regions and resource types to include (all by
-default, including ones added later), and tags to exclude or include. They are saved once
-as the collector's filters; change them later in Site24x7 (the collector's Resource
-Filters tab). To add a subscription later, give the collector's managed identity Reader and
-Monitoring Contributor on it; the next scan finds it.
+The collector starts collecting as soon as it is deployed. To add a subscription later, give
+the collector's managed identity Reader and Monitoring Contributor on it; the next scan finds it.
 
 At the end, you'll see the **Dashboard URL** — open it in your browser.
 
@@ -148,8 +151,9 @@ At the end, you'll see the **Dashboard URL** — open it in your browser.
 
 The dashboard is served directly from the Function App:
 ```
-https://<FUNCTION_APP_NAME>.azurewebsites.net/api/dashboard?code=<FUNCTION_KEY>
+https://<FUNCTION_APP_NAME>.azurewebsites.net/api/dashboard?code=<HOST_KEY>
 ```
+Use the Function App's host key named `default` (see **Which key opens the dashboard** above).
 
 ---
 
@@ -160,6 +164,7 @@ https://<FUNCTION_APP_NAME>.azurewebsites.net/api/dashboard?code=<FUNCTION_KEY>
 | **Overview** | Subscriptions, regions, last scan details, errors |
 | **Filters** | Include lists (subscriptions, regions, resource types), include/exclude tags, and which log types are on |
 | **Resources** | All configured resources with categories and storage accounts |
+| **Platform Logs** | Tenant-level sources such as Entra ID logs, and which of their log types are on |
 | **Debug** | System health, config validation, recent events, processing runs |
 
 The dashboard is read-only. Scans, updates, filters, log types and the Log Collection switch are
@@ -168,6 +173,24 @@ changed from the collector's page in Site24x7 (AppLogs > Azure Diagnostic Logs).
 ---
 
 ## Teardown
+
+### Delete Collector (from Site24x7)
+
+**Delete Collector** on the collector's page in Site24x7 uninstalls the collector from inside
+Azure. You confirm it by typing the Function App's name. The collector then:
+
+1. switches log collection off, removes its diagnostic settings from every resource and empties
+   its log storage accounts; if any setting cannot be removed, it stops and deletes nothing;
+2. checks that its resource group holds only the collector's own resources and no lock other
+   than its own; otherwise it deletes nothing and reports what it found;
+3. removes its own lock and deletes the resource group, the Function App with it.
+
+Left for an admin to remove: the managed identity's Reader and Monitoring Contributor role
+assignments on the monitored subscriptions, the subscription-level deployment record, and any
+Entra ID diagnostic setting a tenant admin created. Progress shows in Site24x7 until the
+collector is gone.
+
+### teardown.sh
 
 ```bash
 cd azure-log-collector/setup
@@ -178,7 +201,7 @@ Works only on the deployment's subscription and a resource group tagged
 `managed-by=s247-diag-logs`: removes its locks and the identity's subscription role
 assignments, then deletes the resource group. Add `--clean-diag-settings` to also remove this
 collector's diagnostic setting from resources where it sends to this deployment's storage
-(or use **Remove Diagnostic Settings** in Site24x7 / the dashboard first).
+(or use **Turn Off Log Collection** in Site24x7 first, which removes them).
 
 ## Cost Estimate
 
@@ -198,8 +221,12 @@ No Event Hubs needed — storage-based polling eliminates the ~$11/region/month 
 ├── setup/
 │   ├── config.env.example    ← Configuration template
 │   ├── setup.sh              ← One-click provisioning
+│   ├── install.sh            ← Guided setup: picks subscriptions, writes config.env, runs setup.sh
 │   ├── teardown.sh           ← One-click cleanup
-│   └── azuredeploy.json      ← ARM template
+│   ├── azuredeploy.json      ← ARM template
+│   ├── createUiDefinition.json    ← Portal deployment form
+│   ├── check-storage-names.py     ← Storage-name availability check
+│   └── check-release-approval.py  ← Stable-release approval check (release workflow)
 ├── function-app/
 │   ├── VERSION               ← Semantic version (a change on main starts a release)
 │   ├── shared/               ← Core Python modules
@@ -207,15 +234,17 @@ No Event Hubs needed — storage-based polling eliminates the ~$11/region/month 
 │   ├── DiagSettingsManager/  ← Timer: 6h resource scan + config
 │   ├── Dashboard/            ← Web dashboard (single-page HTML)
 │   ├── tests/                ← unit tests (pytest)
-│   └── ...                   ← 19 more functions (22 functions total)
+│   └── ...                   ← 20 more functions (23 functions total)
 ├── docs/
 │   ├── architecture-document.md
 │   ├── developer-guide.md
 │   ├── troubleshooting-guide.md
 │   ├── entra-id-logs.md           ← Tenant (Entra ID) log collection setup
+│   ├── release-validation.md      ← Stable release validation
 │   └── security-overview.md       ← Customer-facing security brief
 └── .github/workflows/
-    └── release-function-app.yml  ← Release workflow: VERSION change on main, or manual dispatch
+    ├── release-function-app.yml   ← Release workflow: VERSION change on main, or manual dispatch
+    └── validate-function-app.yml  ← Tests and checks on pull requests and before each release
 ```
 
 ## Auto-Updates
@@ -240,6 +269,7 @@ updates on its own, set `AUTO_UPDATE_ENABLED=true`.
 | `PINNED_VERSION` | *(unset)* | A pin freezes the collector at that version and never downgrades (`pinned_older` if the pin is older than installed). A newer pin installs only if it matches the fetched release; older releases are not fetched. |
 | `SKIP_AUTO_UPDATE` | `false` | `true` applies no update at all, automatic or manual — emergency switch, no redeploy needed. |
 | `MIN_RELEASE_AGE_MINUTES` | `60` | Refuses releases younger than N minutes, a grace window to stop a bad release before it is installed. |
+| `REQUIRE_PACKAGE_SHA256` | `true` | Refuses a release whose package has no published SHA-256 digest. A package that does not match a published digest is always refused. |
 
 ### Separating alpha/beta from customer builds
 
@@ -285,10 +315,6 @@ python3 -m pytest tests/ -q
 
 See [docs/developer-guide.md](docs/developer-guide.md) for detailed development setup.
 
-## License
-
-Internal — Site24x7 / Zoho Corporation
-
 Stable publication requires manual approval with live-validation evidence.
 See [Stable release validation](docs/release-validation.md) for fresh-install,
 repeat-deployment, upgrade, rollback, ingestion and client-workflow requirements.
@@ -296,3 +322,7 @@ repeat-deployment, upgrade, rollback, ingestion and client-workflow requirements
 The Site24x7 detail page reads current collector status directly. It distinguishes
 failures checking the collector from failures sending logs, without periodic
 registration writes. See [operational freshness](docs/troubleshooting-guide.md#operational-freshness-and-connectivity).
+
+## License
+
+[MIT](LICENSE) — Copyright (c) 2026 Zoho Corporation Private Limited

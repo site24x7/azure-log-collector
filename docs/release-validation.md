@@ -33,8 +33,7 @@ Prereleases remain publishable for candidate testing. A stable release is blocke
 on automatic VERSION pushes. The release owner must manually dispatch the
 release workflow with `stable_validation_confirmed=true` and
 `validation_report_url=https://...` after the applicable checks pass. The evidence
-link is included in the stable release notes. Forced replacement also requires
-this approval.
+link is included in the stable release notes.
 
 This is an explicit human approval gate, not an automated execution of the live
 tests or a verification of the linked report's claims. The release owner must

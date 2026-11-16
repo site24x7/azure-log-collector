@@ -1,8 +1,7 @@
 # Site24x7 Azure Diagnostic Logs Collection — Architecture Document
 
-**Version:** 1.0.1
-**Last Updated:** March 2026  
-**Status:** Implementation Complete — Pending Deployment
+**Version:** 1.1.0
+**Last Updated:** November 2026
 
 ---
 
@@ -55,7 +54,7 @@ This system automates the collection and forwarding of Azure diagnostic logs to 
 │  └──────┬────────┘  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘         │
 │         │ Diagnostic        │                  │                 │                 │
 │         │ Settings           │                  │                 │                 │
-│         ▼ (s247-diag-logs)   ▼                  ▼                 ▼                 │
+│         ▼ (s247-diag-logs-*) ▼                  ▼                 ▼                 │
 │  ┌────────────────────┐  ┌────────────────────┐  ┌────────────────────┐           │
 │  │ Storage: eastus     │  │ Storage: westus     │  │ Storage: westeu    │          │
 │  │ s247diageastus...   │  │ s247diagwestus...   │  │ s247diagwesteu...  │          │
@@ -84,8 +83,8 @@ This system automates the collection and forwarding of Azure diagnostic logs to 
 ║  │  │                            │    │                                 │    │  ║
 ║  │  │  1. List all resources     │    │  1. Find regional storage accs  │    │  ║
 ║  │  │  2. Reconcile regions      │    │     (by tag: s247-diag-logs)    │    │  ║
-║  │  │     (create/delete storage │    │  2. Scan insights-logs-* ctrs   │    │  ║
-║  │  │      accounts per region)  │    │  3. Load S247_{cat} config      │    │  ║
+║  │  │     (add missing storage   │    │  2. Scan insights-logs-* ctrs   │    │  ║
+║  │  │      accts; idle unused)   │    │  3. Load S247_{cat} config      │    │  ║
 ║  │  │  3. Fetch supported types  │    │     from blob store             │    │  ║
 ║  │  │     from Site24x7 API      │    │  4. Parse JSON blobs            │    │  ║
 ║  │  │  4. Batch-create log types │    │  5. Apply masking/hashing/      │    │  ║
@@ -117,16 +116,22 @@ This system automates the collection and forwarding of Azure diagnostic logs to 
 ║  └────────────────────────────────────────────────────────────────────────────┘  ║
 ║                                                                                  ║
 ║  ┌─── HTTP ENDPOINTS (protected by Function Keys) ───────────────────────────┐  ║
-║  │  GET  /api/dashboard             — Web UI                                  │  ║
-║  │  GET  /api/status                — System overview + resource counts        │  ║
+║  │  GET  /api/dashboard             — Read-only UI                            │  ║
+║  │  GET  /api/status                — System overview + resource counts       │  ║
 ║  │  GET  /api/health                — Liveness probe + dependency checks      │  ║
-║  │  POST /api/scan                  — Queue scan for ScanWorker                │  ║
-║  │  GET  /api/ignore-list           — Excluded RGs/locations/resources         │  ║
-║  │  PUT  /api/ignore-list           — Update exclusions + cleanup diag        │  ║
+║  │  GET|POST /api/debug             — Debug summary / redacted bundle         │  ║
+║  │  POST /api/scan                  — Queue scan for ScanWorker               │  ║
+║  │  GET  /api/configured-resources  — Resources with the collector's setting  │  ║
+║  │  GET  /api/ignore-list           — Resource filters (includes + tags)      │  ║
+║  │  PUT  /api/ignore-list           — Update filters; queue a scan            │  ║
 ║  │  GET  /api/disabled-logtypes     — Disabled log categories                 │  ║
 ║  │  POST /api/disabled-logtypes     — Disable/enable + cleanup                │  ║
+║  │  POST /api/entra-logtypes        — Enable/disable Entra ID log types       │  ║
 ║  │  PUT  /api/processing            — Toggle BlobLogProcessor on/off          │  ║
+║  │  PUT  /api/collection            — Log Collection on/off (queued)          │  ║
+║  │  GET|PUT /api/settings           — Auto-scan / pipeline monitoring         │  ║
 ║  │  POST /api/remove-diagnostic-settings — Remove all diagnostic settings     │  ║
+║  │  POST /api/delete-collector      — Delete the collector (queued)           │  ║
 ║  │  GET  /api/general-logtype       — General catch-all log type config       │  ║
 ║  │  PUT  /api/general-logtype       — Update general log type                 │  ║
 ║  │  GET  /api/check-update          — Check for available updates             │  ║
@@ -142,9 +147,9 @@ This system automates the collection and forwarding of Azure diagnostic logs to 
 ╔══════════════════════════════════════════════════════════════════════════════════╗
 ║  SITE24X7 SERVER (applogs)                                                       ║
 ║                                                                                  ║
-║  ┌─── AppLogServlet (deviceKey auth) ─────────────────────────────────────────┐  ║
-║  │  GET  /applog/azure/logtype_supported → azureLogTypes.json (50+ types)    │  ║
-║  │  GET /applog/logtype    → LogTypeAPI → sourceConfig                       │  ║
+║  ┌─── AppLogs API (deviceKey auth) ───────────────────────────────────────────┐  ║
+║  │  GET  /applog/azure/logtype_supported → supported Azure log types         │  ║
+║  │  GET  /applog/logtype    → log type definition for one category           │  ║
 ║  └────────────────────────────────────────────────────────────────────────────┘  ║
 ║                                                                                  ║
 ║  ┌─── Upload Endpoint ────────────────────────────────────────────────────────┐  ║
@@ -163,18 +168,26 @@ This system automates the collection and forwarding of Azure diagnostic logs to 
 
 | Resource | Name | Purpose |
 |----------|------|---------|
-| **Resource Group** | `s247-diag-logs-rg` | Contains all pipeline resources |
-| **Function App** | `s247-diag-func-XXXXXX` | Hosts all Azure Functions (Flex Consumption, Python 3.13) |
-| **Storage Account** (primary) | `s247diag<region><suffix>` | Function App storage + config blobs + checkpoints |
-| **Storage Accounts** (regional) | `s247diag{region}{suffix}` | Per-region log collection (auto-provisioned) |
+| **Resource Group** | `resourceGroupName` parameter; default `s247-diag-logs-rg`, or `s247-diag-logs-{suffix}-rg` when a deployment suffix is given | Contains all pipeline resources |
+| **Function App** | `s247-diag-func-{suffix}` | Hosts all Azure Functions (Flex Consumption, Python 3.13) |
+| **Hosting Plan** | `s247-diag-func-{suffix}-plan` | Flex Consumption plan (FC1) |
+| **Application Insights** | `s247-diag-func-{suffix}-ai` | Function App telemetry |
+| **Log Analytics Workspace** | `s247-diag-func-{suffix}-logs` | Workspace behind Application Insights |
+| **Storage Account** (host) | `s247diag{suffix}` | Function App storage (AzureWebJobsStorage) + app package container + config blobs + checkpoints |
+| **Storage Account** (seed) | `s247diag{region}{suffix}` (cut to 24 characters), or `s247dr{suffix}` when the suffix is longer than 6 characters | Regional account for the deployment region, created by the template |
+| **Storage Accounts** (regional) | See [4.3](#43-storage-account-provisioning-details) | Per-region log collection (auto-provisioned) |
+| **Storage Account** (Entra ID) | `s247diagtenant{suffix}` (cut to 24 characters), or `s247dt{suffix}` when the suffix is longer than 6 characters | Tenant-scoped Entra ID logs; created while an Entra ID log type is enabled |
+
+`{suffix}` is the deployment suffix (1–13 lowercase letters or digits), or 6 characters derived from the subscription when none is given.
 
 ### 3.2 RBAC Role Assignments (Managed Identity)
 
 | Role | Scope | Purpose |
 |------|-------|---------|
-| **Reader** | Subscription | Discover all resources |
-| **Monitoring Contributor** | Subscription | Create/delete diagnostic settings |
-| **Contributor** | Resource Group (`s247-diag-logs-rg`) | Manage storage accounts, app settings |
+| **Reader** | Each monitored subscription | Discover all resources |
+| **Monitoring Contributor** | Each monitored subscription | Create/delete diagnostic settings |
+| **Contributor** | The collector's resource group (default `s247-diag-logs-rg`) | Manage storage accounts, app settings |
+| **Locks Contributor** | The collector's resource group | Remove the collector's own lock when Delete Collector deletes the group |
 
 ### 3.3 Dependencies
 
@@ -223,14 +236,14 @@ Azure Diagnostic Settings require the destination Storage Account to be **in the
 
 | Property | Value |
 |----------|-------|
-| **Naming** | `s247diag{region}{suffix}` (max 24 chars, lowercase alphanumeric); `s247diag` + 16 random hex characters when that name is taken elsewhere in Azure. Accounts are identified by their tags, not by name. |
+| **Naming** | `s247diag{region}{suffix}` when the suffix has at most 6 characters and the name fits in 24; otherwise `s247diag` + 16 hex characters of a hash of suffix and region (`s247dr{suffix}` for the deployment region). `s247diag` + 16 random hex characters when the name is taken elsewhere in Azure. Names from earlier versions (cut at 24 characters) are still recognised. Accounts are identified by their tags, not by name. |
 | **SKU** | `Standard_LRS` |
 | **Kind** | `StorageV2` |
 | **TLS** | Minimum TLS 1.2 |
 | **Public Access** | Disabled |
 | **Base Container** | `insights-logs` (validation container) |
 | **Retention** | Lifecycle rule `s247-diag-logs-retention`: `BLOB_RETENTION_DAYS` (7); 1 day while the region is not collected. Never deleted: a deleted name can be taken by anyone in Azure. |
-| **Tags** | `managed-by: s247-diag-logs`, `purpose: diag-logs-regional`, `region: {region}` |
+| **Tags** | `managed-by: s247-diag-logs`, `purpose: diag-logs-regional`, `region: {region}`, `s247-collector: {Function App name}` (collectors sharing a group never use each other's accounts) |
 
 ### 4.4 Multi-Region Data Flow
 
@@ -260,7 +273,7 @@ Azure Diagnostic Settings require the destination Storage Account to be **in the
               │  Discovers all regional accounts by tag  │
               │  Polls insights-logs-* containers        │
               │  Uploads parsed logs to Site24x7         │
-              │  Deletes processed blobs                 │
+              │  Keeps blobs (lifecycle rule expires)    │
               └─────────────────────────────────────────┘
 ```
 
@@ -352,6 +365,8 @@ A scan is also queued when a worker starts after an installation (no scan yet), 
 }
 ```
 
+**Settings repair:** a diagnostic setting deleted or changed in Azure is written again. Step 5 skips unchanged tracked resources, but every 24 hours, and on every `POST /api/scan`, the scan first checks each tracked setting in Azure (in parallel); a missing or changed one is configured again in step 7.
+
 ---
 
 ### 5.2 Workflow 2: Log Processing & Upload (BlobLogProcessor)
@@ -431,12 +446,11 @@ A scan is also queued when a worker starts after an installation (no scan yet), 
 │  1. Add "AuditEvent" to disabled-logtypes.json                         │
 │  2. Delete config/logtype-configs/S247_AuditEvent.json                 │
 │  3. For each resource in configured-resources.json:                    │
-│     ├─ If resource has "AuditEvent" in its categories:                 │
-│     │   ├─ Remove "AuditEvent" from categories list                    │
-│     │   ├─ If no categories remain:                                    │
-│     │   │   ├─ DELETE diagnostic setting "s247-diag-logs" from resource│
-│     │   │   └─ Remove resource from configured tracking                │
-│     │   └─ Else: update resource with remaining categories             │
+│     ├─ If "AuditEvent" is its only category:                           │
+│     │   ├─ DELETE this collector's setting (s247-diag-logs-<suffix>)   │
+│     │   └─ Remove resource from configured tracking                    │
+│     └─ Else: setting and tracking stay unchanged (the processor no     │
+│        longer forwards the category; re-enabling needs no rediscovery) │
 │  4. Return: disabled list + count of removed settings                  │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -461,14 +475,17 @@ A scan is also queued when a worker starts after an installation (no scan yet), 
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  1. Save new ignore list to config/ignore-list.json                    │
+│  1. Save new filters to config/ignore-list.json                        │
 │  2. Load currently configured resources                                │
-│  3. For each configured resource:                                      │
-│     ├─ Check ID/subscription/RG; scan evaluates location/type/tags    │
-│     ├─ If newly ignored:                                               │
-│     │   ├─ DELETE diagnostic setting "s247-diag-logs"                  │
+│  3. For each configured resource (subscription rule only — the ID      │
+│     alone decides it):                                                 │
+│     ├─ If its subscription is no longer included:                      │
+│     │   ├─ DELETE this collector's setting (s247-diag-logs-<suffix>)   │
 │     │   └─ Remove from configured-resources.json                       │
-│  4. Return: updated ignore list + count of removed settings            │
+│  4. Location / resource type / tag changes (and a wider subscription   │
+│     list, or a scan already running): queue a scan, which reads the    │
+│     resource details and applies them                                  │
+│  5. Return: filters, settings removed / not removed, scan_queued       │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -512,6 +529,52 @@ A scan is also queued when a worker starts after an installation (no scan yet), 
 | Emergency halt | Set `SKIP_AUTO_UPDATE=true` — no redeploy required |
 | New version fails to start | No automatic rollback; inspect startup errors and reinstall a known-good package. A pin cannot recover it |
 
+### 5.7 Workflow 7: Log Collection On/Off (LogCollection)
+
+**Trigger:** `PUT /api/collection` with `{"enabled": false}` or `{"enabled": true}` (`shared/collection.py`). Answers HTTP 202; `/api/status` (`collection`) shows the progress. It changes no app setting, so the Function App does not restart.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  OFF:                                                                   │
+│  1. Save the switch: forwarding stops at once                           │
+│  2. Queue a job on scan-requests; ScanWorker runs it under scan lock:   │
+│     ├─ Remove this collector's diagnostic settings from every resource  │
+│     ├─ Delete every container in its storage accounts, with the         │
+│     │  processing checkpoints that pointed into them                    │
+│     └─ Accounts stay, empty (the resource group lock forbids deleting)  │
+│  3. Late writes from Azure Monitor are swept every 30 min for 24 h      │
+│  4. While off, no scan sets anything up again                           │
+│                                                                         │
+│  ON:                                                                    │
+│  1. Forwarding resumes                                                  │
+│  2. A scan is queued, which sets everything up again                    │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+Switching off again while already off queues the removal again, so a removal that left something behind can be retried.
+
+### 5.8 Workflow 8: Delete Collector (DeleteCollector)
+
+**Trigger:** `POST /api/delete-collector` with `{"confirm": "<this Function App's name>"}` (`shared/teardown.py`). A wrong or missing name answers HTTP 400 and deletes nothing. Otherwise answers HTTP 202 and queues the job; `/api/status` (`collection.delete`) shows the progress until the app is gone.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  ScanWorker, under the scan lock:                                       │
+│  1. Switch log collection off; remove every diagnostic setting of this  │
+│     collector and empty its storage (as Workflow 7)                     │
+│     └─ Anything left → stop (failed: settings_remain)                   │
+│  2. The resource group must hold only this collector's resources        │
+│     └─ Other resources → stop and report them (foreign_resources)       │
+│  3. Remove the collector's own locks (s247-lock-*), which needs Locks   │
+│     Contributor on the group                                            │
+│     └─ A lock that cannot be removed, or any other lock → stop (locks)  │
+│  4. Report to Site24x7, then start deleting the resource group (this    │
+│     removes the Function App too)                                       │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+Left for an admin: the Reader and Monitoring Contributor grants on the monitored subscriptions, the subscription-level deployment record, and any Entra ID diagnostic setting a tenant admin created.
+
 ---
 
 ## 6. Shared Modules
@@ -522,7 +585,7 @@ Manages per-region Storage Account provisioning, retention, and reconciliation.
 
 | Method | Purpose |
 |--------|---------|
-| `get_storage_name_for_region(region, suffix)` | Generate name: `s247diag{region}{suffix}` (max 24 chars) |
+| `get_storage_name_for_region(region, suffix)` | Generate name: `s247diag{region}{suffix}`, or the hashed / `s247dr{suffix}` form when that does not fit (see 4.3; `shared/storage_names.py`) |
 | `get_active_regions(resources)` | Extract unique regions from resource list |
 | `get_provisioned_regions(resource_group)` | List accounts by tag: `managed-by: s247-diag-logs` |
 | `provision_storage_account(rg, region, suffix)` | Create account + container + retention rule |
@@ -538,9 +601,9 @@ Wraps all Azure Management SDK calls behind a clean interface.
 | `get_all_resources(sub_ids)` | `ResourceManagementClient` | List all diagnostic-capable resources |
 | `supports_diagnostic_logs(id, type)` | `MonitorManagementClient` | Check if resource type has log categories (cached) |
 | `get_diagnostic_categories(id)` | `MonitorManagementClient` | List log category names for a resource |
-| `get_diagnostic_setting(id)` | `MonitorManagementClient` | Check if `s247-diag-logs` setting exists |
+| `get_diagnostic_setting(id)` | `MonitorManagementClient` | Check if this collector's setting (`collector_setting_name()`: `s247-diag-logs-<suffix>`) exists |
 | `create_diagnostic_setting(id, sa_id, categories=None, setting_name=None)` | `MonitorManagementClient` | Enable selected categories; use `allLogs` only when categories is `None` |
-| `delete_diagnostic_setting(id)` | `MonitorManagementClient` | Remove `s247-diag-logs` setting |
+| `delete_diagnostic_setting(id)` | `MonitorManagementClient` | Remove this collector's setting |
 | `remove_all_diagnostic_settings(sub_ids)` | `MonitorManagementClient` | Bulk removal across all resources |
 | `update_app_setting(key, value)` | `WebSiteManagementClient` | Update Function App configuration |
 
@@ -630,25 +693,32 @@ Checks remote `version.json` and auto-deploys via ARM OneDeploy.
 | Function | Schedule | Purpose |
 |----------|----------|---------|
 | **DiagSettingsManager** | `%TIMER_SCHEDULE%` (configurable) | Resource discovery, region reconciliation, log type creation, diagnostic settings configuration |
-| **BlobLogProcessor** | `0 */2 * * * *` (every 2 min) | Poll regional storage accounts, parse log blobs, upload to Site24x7, cleanup |
+| **BlobLogProcessor** | `0 */2 * * * *` (every 2 min) | Poll regional storage accounts, parse log blobs, upload to Site24x7 (blobs are kept; lifecycle rules expire them) |
 | **AutoUpdater** | `0 0 3 * * *` (3 AM UTC daily) | Check for updates; install only when `AUTO_UPDATE_ENABLED=true` |
+| **ScanWorker** | Queue `scan-requests` | Runs queued scans, Log Collection off jobs and Delete Collector jobs |
 
 ### 7.2 HTTP-Triggered Functions
 
 | Function | Method | Route | Purpose |
 |----------|--------|-------|---------|
-| **Dashboard** | GET | `/api/dashboard` | Web UI with status, controls, monitoring |
+| **Dashboard** | GET | `/api/dashboard` | Read-only web UI: status, filters, resources, platform logs, debug |
 | **GetStatus** | GET | `/api/status` | System overview: resources, regions, configs, errors |
 | **HealthCheck** | GET | `/api/health` | Liveness probe + dependency checks |
 | **TriggerScan** | POST | `/api/scan` | Enqueue scan-requests for ScanWorker |
-| **GetIgnoreList** | GET | `/api/ignore-list` | List exclusion rules + available resources |
-| **UpdateIgnoreList** | PUT | `/api/ignore-list` | Update exclusions + cleanup diagnostic settings |
+| **GetDebugInfo** | GET/POST | `/api/debug` | Debug summary or redacted debug bundle; POST `?clear=1` clears the event log |
+| **GetConfiguredResources** | GET | `/api/configured-resources` | Resources with the collector's setting (`page`, `per_page`, `type`) |
+| **GetIgnoreList** | GET | `/api/ignore-list` | List resource filters + available choices |
+| **UpdateIgnoreList** | PUT | `/api/ignore-list` | Update resource filters; remove settings or queue a scan |
 | **GetDisabledLogTypes** | GET | `/api/disabled-logtypes` | List disabled categories + supported types |
 | **UpdateDisabledLogTypes** | POST | `/api/disabled-logtypes` | Disable/enable log types with cleanup |
 | **GetGeneralLogType** | GET | `/api/general-logtype` | General catch-all log type status |
 | **UpdateGeneralLogType** | PUT | `/api/general-logtype` | Toggle general log type on/off |
+| **UpdateEntraLogTypes** | POST | `/api/entra-logtypes` | Enable/disable an Entra ID (tenant) log type |
 | **StopProcessing** | PUT | `/api/processing` | Toggle BlobLogProcessor on/off |
+| **LogCollection** | PUT | `/api/collection` | Log Collection on/off (see 5.7) |
+| **UpdateSettings** | GET/PUT | `/api/settings` | Read/update `AUTO_SCAN_ENABLED` and `MONITOR_PIPELINE_RESOURCES` |
 | **RemoveDiagSettings** | POST | `/api/remove-diagnostic-settings` | Bulk remove all diagnostic settings |
+| **DeleteCollector** | POST | `/api/delete-collector` | Delete the collector (see 5.8) |
 | **CheckUpdate** | GET/POST | `/api/check-update` | Check for updates / auto-apply |
 
 ---
@@ -657,16 +727,25 @@ Checks remote `version.json` and auto-deploys via ARM OneDeploy.
 
 ### 8.1 GET /api/status
 
-Returns complete system status.
+Returns complete system status. A representative example (not every field is shown):
 
 **Response:**
 ```json
 {
-  "last_scan_time": "2026-03-11T05:00:00Z",
+  "last_scan_time": "2026-11-13T05:00:00Z",
+  "scan_in_progress": false,
+  "scan_phases": ["..."],
+  "scan_details": {"newly_configured": 20, "already_configured": 100, "errors": 0, "...": "..."},
   "subscription_ids": ["xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"],
   "general_logtype_enabled": false,
   "processing_enabled": true,
-  "update_check_url": false,
+  "collection": {"enabled": true, "changed_at": ""},
+  "update_state": {"pending_version": "", "previous_version": "", "submitted_at": "", "confirmed_at": "", "failed_at": "", "error": ""},
+  "monitor_pipeline_resources": false,
+  "auto_scan_enabled": true,
+  "update_check_url": true,
+  "operational_status": {"...": "..."},
+  "entra": {"target_storage_account_name": "...", "logtypes": [], "any_enabled": false},
   "provisioned_regions": [
     {"region": "eastus", "storage_account": "s247diag<eastus><suffix>"},
     {"region": "westus", "storage_account": "s247diag<westus><suffix>"}
@@ -726,7 +805,9 @@ Triggers an immediate resource discovery and configuration scan.
 ```json
 {
   "ignore_list": { ... },
-  "diag_settings_removed": 5
+  "diag_settings_removed": 5,
+  "diag_settings_not_removed": 0,
+  "scan_queued": true
 }
 ```
 
@@ -754,11 +835,15 @@ Triggers an immediate resource discovery and configuration scan.
 ```json
 {
   "action": "disable",
-  "category": "AuditEvent",
+  "categories": ["AuditEvent"],
+  "count": 1,
   "diag_settings_removed": 3,
+  "diag_settings_not_removed": 0,
   "disabled_logtypes": ["AuditEvent", "AppServiceConsoleLogs"]
 }
 ```
+
+The request also accepts `"categories": [...]` (up to 200) instead of `category`. `enable` returns a `note` instead of the removal counts. `scan_queued: true` is added when a scan was running (it loaded the old list), so another scan is queued.
 
 ### 8.7 PUT /api/processing
 
@@ -780,12 +865,17 @@ Triggers an immediate resource discovery and configuration scan.
   "removed": 45,
   "skipped": 5,
   "errors": 0,
+  "unresolved": 0,
   "details": [
     {"id": "/subscriptions/.../myVM", "status": "removed"},
     {"id": "/subscriptions/.../mySQL", "status": "removed"}
-  ]
+  ],
+  "auto_scan_disabled": true,
+  "tracking_cleared": true
 }
 ```
+
+The call first sets `AUTO_SCAN_ENABLED=false` (an app-setting change, which restarts the Function App) so the next timer scan cannot re-create the settings, and holds the scan lock for the whole removal: while a scan runs it answers HTTP 409. Tracking is cleared only for resources whose setting is confirmed gone.
 
 ### 8.9 GET /api/health
 
@@ -793,8 +883,7 @@ Triggers an immediate resource discovery and configuration scan.
 ```json
 {
   "status": "alive",
-  "python_version": "3.13.x",
-  "env_keys": ["SUBSCRIPTION_IDS", "SITE24X7_API_KEY", "..."],
+  "python_version": "Python 3.13.x",
   "dependencies": {
     "azure.identity": "ok",
     "azure.mgmt.resource": "ok",
@@ -803,13 +892,15 @@ Triggers an immediate resource discovery and configuration scan.
     "azure.mgmt.web": "ok",
     "azure.storage.blob": "ok",
     "requests": "ok",
+    "shared": "ok",
     "shared.azure_manager": "ok",
     "shared.region_manager": "ok",
     "shared.ignore_list": "ok",
     "shared.log_parser": "ok",
     "shared.site24x7_client": "ok",
     "shared.updater": "ok"
-  }
+  },
+  "deps_ok": true
 }
 ```
 
@@ -875,13 +966,13 @@ s247diag{region}{suffix}  (e.g., s247diag<eastus><suffix>)
 
 ## 10. Site24x7 Integration
 
-### 10.1 Server-Side API (AppLogServlet — Java)
+### 10.1 Site24x7 API
 
-Two new endpoints added to `AppLogServlet.java`, authenticated via `deviceKey` query parameter.
+The collector calls two Site24x7 endpoints, authenticated via the `deviceKey` query parameter.
 
 #### GET /applog/azure/logtype_supported
 
-Returns all supported Azure log types from `azureLogTypes.json` (50+ types).
+Returns all supported Azure log types (50+ types).
 
 ```
 GET /applog/azure/logtype_supported?deviceKey={api_key}
@@ -923,10 +1014,7 @@ Function App                          Site24x7 Server
     ├─ GET /applog/azure/logtype_supported │
     │  ?deviceKey={SITE24X7_API_KEY}       │
     │ ────────────────────────────────────►│
-    │                                      ├─ Util.getUserIdFromAPIKey(deviceKey)
-    │                                      │   ├─ Redis cache: AKEY-{key}
-    │                                      │   ├─ Fallback: WM_API table lookup
-    │                                      │   └─ Returns userId or null
+    │                                      ├─ Validates the Device Key
     │                                      │
     │◄────────────────────────────────────│  200 + JSON (if valid)
     │                                      │  400 (if invalid key)
@@ -954,11 +1042,10 @@ Response Headers:
 
 ### 10.4 sourceConfig Structure
 
-Returned by Site24x7 when creating a log type. Stored base64-encoded.
+Built by the collector from the `/applog/logtype` response. Saved as JSON in `config/logtype-configs/S247_{category}.json` without the Device Key (`apiKey`): every upload uses the live `SITE24X7_API_KEY` and upload domain instead (`shared/config_store.py`, `shared/site24x7_client.py`).
 
 ```json
 {
-  "apiKey": "device_key_for_uploads",
   "logType": "S247_AuditEvent",
   "uploadDomain": "logc.site24x7.com",
   "dateFormat": "%Y-%m-%dT%H:%M:%S.%f",
@@ -997,7 +1084,7 @@ Returned by Site24x7 when creating a log type. Stored base64-encoded.
 | **HTTP Endpoints** | Function Keys | `authLevel: "function"` — requires `?code=<key>` or `x-functions-key` header |
 | **Azure APIs** | Managed Identity | `DefaultAzureCredential()` with system-assigned identity |
 | **Site24x7 API** | Device Key | `SITE24X7_API_KEY` passed as `deviceKey` query parameter |
-| **Site24x7 Upload** | API Key | `X-DeviceKey` header from sourceConfig |
+| **Site24x7 Upload** | Device Key | `X-DeviceKey` header with the live `SITE24X7_API_KEY` (never a stored copy) |
 
 ### 11.2 Function Key Management
 
@@ -1068,6 +1155,8 @@ When OPEN: post_logs() returns False immediately (records remain for retry withi
 | Resource doesn't support diagnostic logs | Skip, continue scanning |
 | Storage account provisioning fails | Log error, continue with other regions |
 | Site24x7 API unavailable | Circuit breaker opens; records remain for retry within storage retention |
+| Upload answered HTTP 400 | The upload service also answers 400 to an unknown Device Key, so the collector checks the key against the Site24x7 API: if the key is refused too (or the check gets no answer), the batch is retried, not dropped, and `/api/status` reports the Device Key as refused; otherwise the batch is rejected (dropped or split) |
+| Upload answered 401/403 | Device Key refused; batch retried, circuit breaker counts a failure |
 | Blob download fails | Skip blob, continue processing others |
 | Diagnostic setting creation fails | Log error, track in error count |
 | Retention rule cannot be set | Counted as a region error; the next scan retries |
@@ -1097,11 +1186,24 @@ When OPEN: post_logs() returns False immediately (records remain for retry withi
 | `PROCESSING_ENABLED` | `true` | Toggle BlobLogProcessor |
 | `GENERAL_LOGTYPE_ENABLED` | `false` | Enable general catch-all log type |
 | `S247_GENERAL_LOGTYPE` | (none) | Base64-encoded general sourceConfig |
-| `UPDATE_CHECK_URL` | (none) | URL or `owner/repo` shorthand for auto-updates |
+| `UPDATE_CHECK_URL` | (none; the template sets `site24x7/azure-log-collector`) | URL or `owner/repo` shorthand for auto-updates |
 | `UPDATE_CHANNEL` | `stable` | `stable` or `prerelease` — release channel filter |
 | `PINNED_VERSION` | (none) | A pin freezes the collector at that version and never downgrades (`pinned_older` if the pin is older than installed). A newer pin installs only if it matches the fetched release; older releases are not fetched. |
 | `SKIP_AUTO_UPDATE` | `false` | `true` blocks automatic and manual updates/checks; `AUTO_UPDATE_ENABLED=false` leaves checks and manual installs enabled |
 | `MIN_RELEASE_AGE_MINUTES` | `60` | Minimum age before a release is eligible |
+| `AUTO_UPDATE_ENABLED` | `false` | `true` lets AutoUpdater install new releases automatically |
+| `REQUIRE_PACKAGE_SHA256` | `true` | Refuse an update package whose release publishes no SHA-256 digest |
+| `GITHUB_TOKEN` | (none) | Optional token for GitHub API release checks |
+| `AUTO_SCAN_ENABLED` | `true` | `false` skips scheduled and startup scans (the collector still reports to Site24x7) |
+| `MONITOR_PIPELINE_RESOURCES` | `false` | `true` also collects logs from the collector's own resource group |
+| `MIN_SCAN_INTERVAL_MINUTES` | `30` | A startup scan is skipped when the last scan finished more recently |
+| `BLOB_RETENTION_DAYS` | `7` | Lifecycle retention of regional log blobs (idle accounts: 1 day) |
+| `DIAG_SEED_REGION` | (none; template: deployment region) | Region whose account receives global resources' logs; used in storage naming |
+| `COLLECTOR_RESOURCE_ID` | (none; template: Function App resource ID) | The collector's own Azure resource ID; derived from the other settings when unset |
+| `INITIAL_RESOURCE_FILTERS` | (none; template: deployment-form filters) | Saved once as the resource filters when none exist yet |
+| `SITE24X7_KEY_EXCLUDE` | `""` | Comma-separated functions whose keys are not shared with Site24x7; `*` shares none (the collector then stops reporting) |
+| `SITE24X7_UPLOAD_DOMAIN` | (derived from `SITE24X7_BASE_URL`) | Overrides the log upload domain (testing) |
+| `DEPLOYMENT_STORAGE_CONNECTION_STRING` | (set by the template) | Host storage connection the Flex Consumption plan reads the app package from |
 | `LAST_SCAN_TIME` | `never` | Legacy read fallback; current timestamp is in scan-state.json |
 | `FUNCTION_APP_NAME` | `""` | Legacy fallback; Azure supplies `WEBSITE_SITE_NAME` |
 
@@ -1151,14 +1253,7 @@ When OPEN: post_logs() returns False immediately (records remain for retry withi
 
 ### 14.2 Deploy Function App Code
 
-```bash
-# From Azure Cloud Shell:
-az functionapp deployment source config-zip \
-  --resource-group s247-diag-logs-rg \
-  --name s247-diag-func-XXXXXX \
-  --src s247-function-app.zip \
-  --build-remote true
-```
+The ARM template (`setup/azuredeploy.json`) installs the prebuilt `released-package.zip` of the release with OneDeploy (no remote build); `setup/setup.sh`, the shell alternative, zips the local source and deploys it with a remote build. See the README (Quick Start) for both paths. The steps below are for reference when configuring a deployment by hand.
 
 ### 14.3 Configure App Settings
 
@@ -1176,8 +1271,9 @@ az functionapp config appsettings set \
 ### 14.4 Assign RBAC Roles
 
 ```bash
-SUB_ID="your-subscription-id"
+SUB_ID="your-subscription-id"            # repeat Reader + Monitoring Contributor per monitored subscription
 PRINCIPAL="managed-identity-principal-id"
+RG="s247-diag-logs-rg"                   # the collector's resource group (default name)
 
 az role assignment create --assignee "$PRINCIPAL" \
   --role "Reader" --scope "/subscriptions/$SUB_ID"
@@ -1187,7 +1283,11 @@ az role assignment create --assignee "$PRINCIPAL" \
 
 az role assignment create --assignee "$PRINCIPAL" \
   --role "Contributor" \
-  --scope "/subscriptions/$SUB_ID/resourceGroups/s247-diag-logs-rg"
+  --scope "/subscriptions/$SUB_ID/resourceGroups/$RG"
+
+az role assignment create --assignee "$PRINCIPAL" \
+  --role "Locks Contributor" \
+  --scope "/subscriptions/$SUB_ID/resourceGroups/$RG"
 ```
 
 ### 14.5 Verify Deployment
@@ -1212,10 +1312,6 @@ curl -X POST "https://s247-diag-func-XXXXXX.azurewebsites.net/api/scan?code=$FUN
 open "https://s247-diag-func-XXXXXX.azurewebsites.net/api/dashboard?code=$FUNC_KEY"
 ```
 
-### 14.6 Deploy Java API Changes
-
-Deploy the updated `AppLogServlet.java` and `web.xml` to the Site24x7 applogs server using your standard Java deployment process.
-
 ---
 
 ## Appendix A: File Inventory
@@ -1226,29 +1322,39 @@ Deploy the updated `AppLogServlet.java` and `web.xml` to the Site24x7 applogs se
 | `shared/region_manager.py` | Module | Regional storage account lifecycle |
 | `shared/config_store.py` | Module | Blob-backed configuration store |
 | `shared/site24x7_client.py` | Module | Site24x7 API client + log upload pipeline |
-| `shared/ignore_list.py` | Module | Resource filtering (RG, location, ID) |
+| `shared/ignore_list.py` | Module | Resource filtering (subscriptions, regions, resource types, tags) |
+| `shared/storage_names.py` | Module | Storage account naming |
+| `shared/collection.py` | Module | Log Collection on/off |
+| `shared/teardown.py` | Module | Delete Collector |
 | `shared/log_parser.py` | Module | Azure diagnostic log envelope parser |
 | `shared/updater.py` | Module | Auto-update mechanism |
 | `DiagSettingsManager/__init__.py` | Timer Function | Resource discovery + configuration |
-| `BlobLogProcessor/__init__.py` | Timer Function | Blob polling + log upload + cleanup |
+| `BlobLogProcessor/__init__.py` | Timer Function | Blob polling + log upload |
 | `AutoUpdater/__init__.py` | Timer Function | Self-update check |
-| `Dashboard/__init__.py` | HTTP Function | Web UI |
+| `ScanWorker/__init__.py` | Queue Function | Runs queued scans, Log Collection off and Delete Collector jobs |
+| `Dashboard/__init__.py` | HTTP Function | Read-only web UI |
 | `GetStatus/__init__.py` | HTTP Function | System status |
 | `HealthCheck/__init__.py` | HTTP Function | Health probe |
 | `TriggerScan/__init__.py` | HTTP Function | Manual scan trigger |
-| `GetIgnoreList/__init__.py` | HTTP Function | Get exclusion rules |
-| `UpdateIgnoreList/__init__.py` | HTTP Function | Update exclusions + cleanup |
+| `GetDebugInfo/__init__.py` | HTTP Function | Debug summary / bundle |
+| `GetConfiguredResources/__init__.py` | HTTP Function | Resources with the collector's setting |
+| `GetIgnoreList/__init__.py` | HTTP Function | Get resource filters |
+| `UpdateIgnoreList/__init__.py` | HTTP Function | Update resource filters |
 | `GetDisabledLogTypes/__init__.py` | HTTP Function | Get disabled log types |
 | `UpdateDisabledLogTypes/__init__.py` | HTTP Function | Disable/enable log types |
 | `GetGeneralLogType/__init__.py` | HTTP Function | Get general log type status |
 | `UpdateGeneralLogType/__init__.py` | HTTP Function | Toggle general log type |
+| `UpdateEntraLogTypes/__init__.py` | HTTP Function | Enable/disable Entra ID log types |
 | `StopProcessing/__init__.py` | HTTP Function | Toggle processing |
+| `LogCollection/__init__.py` | HTTP Function | Log Collection on/off |
+| `UpdateSettings/__init__.py` | HTTP Function | Read/update whitelisted settings |
 | `RemoveDiagSettings/__init__.py` | HTTP Function | Bulk remove diagnostic settings |
+| `DeleteCollector/__init__.py` | HTTP Function | Delete Collector |
 | `CheckUpdate/__init__.py` | HTTP Function | Check/apply updates |
 | `requirements.txt` | Config | Python dependencies |
 | `host.json` | Config | Function App runtime settings |
-| `VERSION` | Config | Current version (1.0.1) |
+| `VERSION` | Config | Current version (1.1.0) |
 
 ---
 
-*Document generated from codebase analysis — March 2026*
+*Document generated from codebase analysis — November 2026*

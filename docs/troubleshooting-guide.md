@@ -44,7 +44,7 @@ az monitor app-insights query -g s247-diag-logs-rg --app <app-insights-name> \
 
 Open the dashboard URL in a browser:
 ```
-https://<func-app-name>.azurewebsites.net/api/dashboard?code=<function-key>
+https://<func-app-name>.azurewebsites.net/api/dashboard?code=<host-key>
 ```
 Navigate to the **Debug** tab — it shows config validation, S247 connectivity, recent events, and processing stats.
 
@@ -56,22 +56,15 @@ Navigate to the **Debug** tab — it shows config validation, S247 connectivity,
 
 **Symptom**: All functions fail with `ModuleNotFoundError`.
 
-**Cause**: Pip packages not installed. Happens when the app was deployed without remote build, or the package cache was cleared.
+**Cause**: The installed package is missing its Python dependencies: a remote build of the source (as `setup.sh` deploys it) failed, or a package other than a release's own `released-package.zip` was deployed. Release packages already contain their dependencies, so nothing is built in Azure.
 
-**Fix**: Redeploy with remote build:
+**Fix**: Install the release's package again (use the version the collector should run):
 ```bash
-# Build zip from function-app directory (exclude tests)
-cd function-app
-zip -r /tmp/s247-deploy.zip . -x "tests/*" -x "__pycache__/*" -x "*.pyc" -x "requirements-dev.txt"
-
-# Deploy with remote build to install pip packages
-az functionapp deployment source config-zip \
-  -g s247-diag-logs-rg -n <func-app-name> \
-  --src /tmp/s247-deploy.zip --build-remote true
-
-# Restart after deploy
-az functionapp restart -g s247-diag-logs-rg -n <func-app-name>
+az functionapp deploy -g s247-diag-logs-rg -n <func-app-name> --type zip \
+  --src-url https://github.com/site24x7/azure-log-collector/releases/download/v<version>/released-package.zip
 ```
+
+Azure CLI 2.79 may print a JSON parsing error although the install succeeded; check `/api/health` afterwards.
 
 **Verify**:
 ```bash
@@ -106,7 +99,7 @@ az monitor app-insights query -g s247-diag-logs-rg --app <app-insights-name> \
   --analytics-query "traces | where message contains 'No logtype configs' or message contains 'nothing to process' | where timestamp > ago(1h) | take 5"
 ```
 
-If you see `"No logtype configs found"` — the scan hasn't created log type configurations yet. Trigger a scan from the Dashboard.
+If you see `"No logtype configs found"` — the scan hasn't created log type configurations yet. Use **Scan now** on the collector's page in Site24x7.
 
 **Step 4 — Check for processing errors**:
 ```bash
@@ -148,8 +141,9 @@ az monitor app-insights query -g s247-diag-logs-rg --app <app-insights-name> \
 **Common causes**:
 - **Resource in unsupported region**: Check Dashboard → Overview → Provisioned Regions
 - **Resource type not supported**: Some Azure resource types don't emit diagnostic logs
-- **Resource in ignore list**: Check Dashboard → Filters → Ignore List
-- **Diagnostic categories disabled**: Check Dashboard → Filters → Disabled Log Types
+- **Resource filtered out**: Check Dashboard → Filters → Resource Filters and Tag Filters (change them in Site24x7)
+- **Diagnostic categories disabled**: Check Dashboard → Filters → Log Type Filters (change them in Site24x7)
+- **Log Collection switched off**: Check the Log Collection switch in Site24x7; while it is off, no scan sets anything up
 - **Permissions**: Managed Identity needs Reader + Monitoring Contributor on the subscription
 
 **Check role assignments**:
@@ -157,7 +151,7 @@ az monitor app-insights query -g s247-diag-logs-rg --app <app-insights-name> \
 PRINCIPAL_ID=$(az functionapp identity show -g s247-diag-logs-rg -n <func-app-name> --query "principalId" -o tsv)
 az role assignment list --assignee $PRINCIPAL_ID --query "[].{role:roleDefinitionName, scope:scope}" -o table
 ```
-Expected: `Reader` and `Monitoring Contributor` at subscription scope.
+Expected: `Reader` and `Monitoring Contributor` at subscription scope, and `Contributor` and `Locks Contributor` on the collector's resource group.
 
 ---
 
@@ -172,7 +166,7 @@ az rest --method get \
 ```
 
 If `"state": "Error"` reports a missing storage connection string, verify
-`AzureWebJobsStorage`. EventHubProcessor and `EVENTHUB_CONN` are no longer used:
+`AzureWebJobsStorage`. To keep one failing function from running while you investigate, disable it:
 ```bash
 # Disable the problematic function
 az functionapp config appsettings set -g s247-diag-logs-rg -n <func-app-name> \
@@ -191,9 +185,54 @@ az monitor app-insights query -g s247-diag-logs-rg --app <app-insights-name> \
 ```
 
 **Common causes**:
-- **Processing disabled**: Check the processing control in Site24x7 or the dashboard; the stored flag overrides `PROCESSING_ENABLED`
+- **Processing paused or Log Collection off**: Check the collector's status in Site24x7; the stored processing flag overrides `PROCESSING_ENABLED`
 - **BlobLogProcessor timing out**: If >500 blobs pending, processor may not finish in 2 min cycle
 - **No S247 config for category**: Blobs accumulate until a scan creates the config; storage lifecycle expires blobs after BLOB_RETENTION_DAYS (default 7 days)
+
+---
+
+### Issue: Log Collection switched off, or switching it off reports "partial"
+
+**Symptom**: No logs are forwarded and no scan sets anything up; the collector status (`collection` in `/api/status`) shows `enabled: false`.
+
+**Cause**: Log Collection was switched off in Site24x7. Switching it off stops forwarding at once, then removes this collector's diagnostic settings and empties its log storage accounts. `collection.stop.state` shows the outcome: `done`, or `partial` when some settings or storage could not be cleared (`errors`, `unresolved`).
+
+**Fix**: To resume, switch Log Collection on in Site24x7; a scan then sets everything up again. For `partial`, switch it off again to retry the removal, and check the managed identity's roles (see "Some resources not being monitored").
+
+---
+
+### Issue: Delete Collector refused
+
+**Symptom**: After **Delete Collector** in Site24x7, the collector is still there and `collection.delete` in `/api/status` shows `state: failed` with a `reason`.
+
+| Reason | Cause | Fix |
+|---|---|---|
+| `settings_remain` | Some diagnostic settings could not be removed (`errors`, `unresolved`) | Check the identity's Monitoring Contributor role, then run Delete Collector again |
+| `foreign_resources` | The resource group holds resources that are not the collector's (listed in `foreign`) | Move or delete those resources, or remove the collector with `teardown.sh` |
+| `locks` | A lock other than the collector's own is present (`other_locks`), or its own lock could not be removed (`locks_failed`) | Remove the other locks. A `locks_failed` collector installed from an older template lacks Locks Contributor: deploy the template again, or remove the collector's lock yourself |
+| `azure_error` | An Azure call failed | Run Delete Collector again |
+
+Nothing is deleted while any of these applies.
+
+---
+
+### Issue: Device Key refused
+
+**Symptom**: Uploads fail; the collector status reports the Device Key refused (`upload_refused`, upload status `refused`).
+
+**Cause**: Site24x7 does not accept `SITE24X7_API_KEY`, for example after the key was rotated or the account was reset. The upload service answers HTTP 400 (not 401) to an unknown key; the collector then checks the key with Site24x7's API and treats the 400 as a refused key.
+
+**Fix**: Set `SITE24X7_API_KEY` to the current Device Key and check `SITE24X7_BASE_URL` is the right data center. The logs are retried, not dropped, while they are still kept in storage (`BLOB_RETENTION_DAYS`).
+
+---
+
+### Issue: Automatic scans stopped after removing diagnostic settings
+
+**Symptom**: New resources are not configured; the scheduled scan logs `Auto-scan is DISABLED`.
+
+**Cause**: The remove-diagnostic-settings endpoint (`POST /api/remove-diagnostic-settings`) sets `AUTO_SCAN_ENABLED=false`, so scheduled scans do not set the settings up again.
+
+**Fix**: Turn **Automatic Resource Scan** on again on the collector's Configurations tab in Site24x7 (`AUTO_SCAN_ENABLED=true`). **Scan now** still runs a scan on demand.
 
 ---
 
@@ -266,8 +305,8 @@ Key settings to verify when troubleshooting:
 | `SUBSCRIPTION_IDS` | Yes | Comma-separated subscription IDs | Auto-set to deployment subscription |
 | `SITE24X7_API_KEY` | Yes | Site24x7 Device Key | Dashboard → Debug → Config Validation |
 | `SITE24X7_BASE_URL` | Yes | `https://www.site24x7.com` (or .in/.eu etc.) | Dashboard → Debug |
-| `PROCESSING_ENABLED` | No | Legacy fallback only; shared processing-control.json controls pause/resume | Dashboard → Controls |
-| `GENERAL_LOGTYPE_ENABLED` | No | `true` — enables fallback log type | Dashboard → Controls |
+| `PROCESSING_ENABLED` | No | Legacy fallback only; shared processing-control.json controls pause/resume | Collector status in Site24x7 |
+| `GENERAL_LOGTYPE_ENABLED` | No | `true` — enables fallback log type (default `false`) | Dashboard → Filters → Log Type Filters |
 | `TIMER_SCHEDULE` | No | CRON for DiagSettingsManager (default: every 6h) | App Settings |
 | `DIAG_STORAGE_SUFFIX` | Yes | Unique suffix for storage account names | Auto-generated |
 
@@ -333,7 +372,7 @@ Before escalating, collect:
 
 1. **Function App name** and **subscription ID**
 2. **App Insights exceptions** (last 24h): `exceptions | where timestamp > ago(24h) | summarize count() by outerMessage`
-3. **Dashboard screenshot** (all tabs: Overview, Filters, Resources, Debug)
+3. **Dashboard screenshot** (all tabs: Overview, Filters, Resources, Platform Logs, Debug)
 4. **Debug Bundle**: Dashboard → Debug → "Export Debug Bundle" (downloads JSON with all config + recent events)
 5. **Processing stats**: Dashboard → Debug → Processing Runs section
 6. **App settings**: Verify all required settings are present and non-empty

@@ -46,7 +46,7 @@ The Site24x7 addresses come from the `SITE24X7_BASE_URL` app setting. The upload
 | Regional storage account keys | Read at run time through ARM `listKeys` (Contributor on the collector's resource group), held in memory only | Reading the buffered log blobs |
 | Site24x7 Device Key | App setting `SITE24X7_API_KEY` (encrypted at rest by Azure) | Authenticating to Site24x7. It is not stored with the saved log type configurations, and the collector never writes it to its logs. (On the Site24x7 side, a request with an unknown Device Key is logged by Site24x7's own log-collection service; that is outside this collector.) |
 | Function App host keys | Azure-managed | Authorize every HTTP endpoint (section 7). Used by you, for example to open the dashboard. **Never sent to Site24x7.** |
-| `site24x7` function key | Azure-managed; created by the collector on the 19 functions Site24x7 calls or opens for its admins (including the dashboard) | **Sent to Site24x7** at registration (section 6). It does not open the dashboard, debug data or health endpoint. |
+| `site24x7` function key | Azure-managed; created by the collector on the 19 functions Site24x7 calls or opens for its admins (including the dashboard) | **Sent to Site24x7** at registration (section 6). It opens the dashboard, with its debug data and health endpoint, for Site24x7 admins (section 6). |
 
 **Rotation**
 - **Device Key:** update `SITE24X7_API_KEY`. Uploads always use the current setting.
@@ -72,6 +72,7 @@ It has no Owner role and no `Microsoft.Authorization/roleAssignments` write. Its
 Monitoring Contributor covers diagnostic settings on every resource in the subscription, so a compromised collector could change or remove diagnostic settings it did not create. The collector itself only touches settings named for this collector (`s247-diag-logs-<suffix>`). It removes the older shared name `s247-diag-logs` only when that setting sends to this collector's own storage account.
 
 **Locks:** the resource group gets a CanNotDelete lock at deployment. The collector removes locks only for Delete Collector, and only its own (named `s247-lock-*`), with the Locks Contributor role on its own group; it cannot grant roles. Otherwise it never deletes a storage account (section 5).
+A collector installed from an older template and then updated in place does not have the Locks Contributor role: Delete Collector reports that its lock could not be removed until the template is deployed again (or an admin removes the lock).
 
 **Delete Collector** (`POST /api/delete-collector`, the Function App's name typed as confirmation): a queued job switches log collection off, removes every diagnostic setting of this collector and empties its storage. It stops if any setting remains. It then checks that the resource group holds only this collector's resources (and the alert rules Application Insights creates); if it finds anything else, for example the customer's own resources in a group chosen on the deployment form, nothing is deleted and the resources are reported. Then it removes its own locks (a lock of any other name stops it), reports "deleting" to Site24x7 and starts deleting the group. Left for an admin: the Reader and Monitoring Contributor grants on the monitored subscriptions (shown as "Identity not found" once the identity is gone), the subscription-level deployment record, and any Entra ID diagnostic setting a tenant admin created.
 
@@ -86,7 +87,7 @@ A deployment collects at once; there is no separate approval step. The portal fo
 - **Regions and resource types:** include lists; all by default, which also covers ones added later. Global resources are always included.
 - **Tags:** resources with any of the excluded tags are not collected; if include tags are set, only resources with at least one of them are.
 
-The template passes these to the collector once (`INITIAL_RESOURCE_FILTERS`). On first use the collector validates them and saves them as its filters, without overwriting filters that already exist. If they are invalid or cannot be saved, the scan stops instead of collecting everything. Later changes are made in Site24x7 (or the dashboard) and are never replaced by the deployment's values.
+The template passes these to the collector once (`INITIAL_RESOURCE_FILTERS`). On first use the collector validates them and saves them as its filters, without overwriting filters that already exist. If they are invalid or cannot be saved, the scan stops instead of collecting everything. Later changes are made in Site24x7 and are never replaced by the deployment's values.
 
 ---
 
@@ -106,7 +107,7 @@ Once collecting, every scan (every 6 hours, and on demand) does the following:
 - A scan that can't read the resource filters stops.
 
 **Admin actions**
-- They can pause/resume processing through a shared storage flag, without restarting the Function App. Changes to automatic scans, general log type, own-resource collection and storage protection days still update app settings and restart it.
+- They can pause/resume processing through a shared storage flag, without restarting the Function App. Changes to automatic scans, the general log type and own-resource collection still update app settings (`AUTO_SCAN_ENABLED`, `GENERAL_LOGTYPE_ENABLED`, `MONITOR_PIPELINE_RESOURCES`) and restart it.
 - They can switch log collection off (`PUT /api/collection`). Forwarding stops at once; a queued job then removes this collector's diagnostic settings from every resource and empties its log storage accounts (every container, and the processing checkpoints for them), sweeping them again every 30 minutes for a day to catch logs Azure Monitor still writes. The accounts stay in place, empty (the resource group lock forbids deleting them, and a released storage name can be taken by anyone). No scan sets anything up while collection is off. Switching it on resumes forwarding and runs a scan. Neither needs an app-setting change or a restart.
 
 ---
@@ -133,7 +134,7 @@ The resource group lock forbids deleting keys, so the collector revokes a functi
 
 ## 7. HTTP endpoints
 
-All 19 HTTP functions use `authLevel: function`. Each needs a valid function or host key, and there is no anonymous endpoint (including `/api/health`). They are: dashboard, status, health, debug, scan, processing, settings, ignore-list (get and put), disabled-logtypes (get and post), general-logtype (get and put), entra-logtypes, configured-resources, check-update, remove-diagnostic-settings.
+All 19 HTTP functions use `authLevel: function`. Each needs a valid function or host key, and there is no anonymous endpoint (including `/api/health`). They are: dashboard, status, health, debug, scan, processing, collection, delete-collector, settings, ignore-list (get and put), disabled-logtypes (get and post), general-logtype (get and put), entra-logtypes, configured-resources, check-update, remove-diagnostic-settings.
 
 **Input checks**
 - Request bodies must be JSON objects.
@@ -221,7 +222,8 @@ AutoUpdater records each run as an event; the new version confirms the update on
 
 ## 11. Uninstall
 
-- **Remove the collector's settings first:** **Remove Diagnostic Settings** on the collector's Settings tab in Site24x7 (or the dashboard) removes this collector's diagnostic settings and turns automatic scans off.
+- **Delete Collector in Site24x7 (in-product uninstall):** removes this collector's diagnostic settings and empties its storage, then deletes its resource group, the Function App with it. It deletes nothing if a setting remains, if the group holds anything that is not the collector's, or if a lock other than its own is present (section 3). The subscription role assignments, the deployment record and any Entra ID diagnostic setting a tenant admin created are left for you to remove. Otherwise, uninstall in these steps:
+- **Remove the collector's settings first:** **Turn Off Log Collection** on the collector's Configurations tab in Site24x7 removes this collector's diagnostic settings and empties its log storage.
 - **Then run `setup/teardown.sh [--clean-diag-settings]`:**
   - It works only on the deployment's subscription and on a resource group tagged `managed-by=s247-diag-logs`.
   - It removes that group's locks, the managed identity's subscription role assignments, and the group itself, which holds the Function App, the regional storage accounts and their buffered logs.
@@ -235,7 +237,7 @@ AutoUpdater records each run as an event; the new version confirms the update on
 
 | Item | Status | Mitigation |
 |---|---|---|
-| Site24x7 holds a key to the collector's management endpoints (section 6) | By design (Site24x7 runs the admin actions) | Dedicated `site24x7` function key on 14 functions only; admin-only, server-built and audited actions in Site24x7; `SITE24X7_KEY_EXCLUDE` narrows or removes its reach. |
+| Site24x7 holds a key to the collector's management endpoints (section 6) | By design (Site24x7 runs the admin actions) | Dedicated `site24x7` function key on 19 functions only; admin-only, server-built and audited actions in Site24x7; `SITE24X7_KEY_EXCLUDE` narrows or removes its reach. |
 | A failed update is not rolled back automatically | Mitigated | A package whose functions cannot load (missing dependency, broken import, wrong Python build) is refused before install, by the release workflow and again by the collector. Packages are also checked (digest, structure, version) before install, releases install only after `MIN_RELEASE_AGE_MINUTES`, and the update is reported as confirmed only when the new version runs. The import check lowers the risk; it cannot prove the new version works at run time. Every release keeps its package as a release asset, and going back means installing the previous package again (README, Rollback). `SKIP_AUTO_UPDATE` stops updates; `PINNED_VERSION` freezes the collector at the pin and never downgrades (`pinned_older` for an older pin); a newer pin installs only if it matches the fetched release, and older releases are not fetched. |
 | Masking and filter patterns come from Site24x7 and run with Python's backtracking regular expressions | Accepted | Patterns are defined by Site24x7, not by log content. A rule that fails is applied fail-closed (the field is withheld). |
 | Release packages the template and updater install | Open (repository setting) | The template and the updater install release assets. The release workflow publishes each release once with all its files (draft, then publish) and has no path to replace a published one. Immutable releases are not yet on for the repository; until a repository admin turns them on, anyone with write access could still change a published release's files or move its tag by hand. |
@@ -246,7 +248,7 @@ AutoUpdater records each run as an event; the new version confirms the update on
 | Question | Answer |
 |---|---|
 | Can it read data outside its own resource group? | It reads the resource inventory and log categories of the monitored subscriptions, and the log blobs in its own regional storage accounts. It does not read data of your other resources (disks, databases, other storage accounts). |
-| Can it change my resources? | It manages diagnostic settings on resources in the monitored subscriptions (only its own, as described in section 3). It creates storage accounts in its own resource group (it never deletes them), and writes its own app settings. It does nothing until an admin starts collecting (section 4). |
+| Can it change my resources? | It manages diagnostic settings on resources in the monitored subscriptions (only its own, as described in section 3). It creates storage accounts in its own resource group (it never deletes them, except when Delete Collector deletes the whole group), and writes its own app settings. It starts collecting as soon as it is deployed, limited by the filters chosen on the deployment form (section 4). |
 | Can it change permissions? | No. It has no role-assignment rights. |
 | What if the GitHub repository were compromised? | An attacker would need to publish a release that passes the update gates (section 9) and wait for the age gate. You can turn updates off (`SKIP_AUTO_UPDATE=true`) or point `UPDATE_CHECK_URL` at your own fork. |
 | What if Site24x7 were compromised? | With the Device Key, an attacker could send logs into your Site24x7 account. With the stored `site24x7` key (section 6), they could call those 19 endpoints, for example change settings, switch log collection off, delete the collector (it never deletes a resource group holding anything but its own resources), or open the dashboard and its (redacted) debug data. Revoke it with `SITE24X7_KEY_EXCLUDE=*`. They cannot reach your other Azure resources: the collector's identity is limited as described in section 3. |

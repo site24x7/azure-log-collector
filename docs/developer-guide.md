@@ -123,13 +123,15 @@ function-app/
 |----------|---------|---------|
 | **DiagSettingsManager** | Timer (`%TIMER_SCHEDULE%`) | Scan Azure resources, create/reconcile diagnostic settings |
 | **BlobLogProcessor** | Timer (every 2 min) | Process diagnostic log blobs, upload to Site24x7 |
-| **GetDebugInfo** | HTTP GET `/api/debug` | Return diagnostic/debug bundle |
+| **ScanWorker** | Queue (`scan-requests`) | Run the queued resource scan, collection-off job or Delete Collector job (avoids the HTTP 230s timeout) |
+| **GetDebugInfo** | HTTP GET/POST `/api/debug` | Return diagnostic/debug bundle |
 | **GetStatus** | HTTP GET | Return function app status |
 | **GetConfiguredResources** | HTTP GET | Return list of configured resources |
 | **GetDisabledLogTypes** | HTTP GET | Return disabled log types |
 | **GetGeneralLogType** | HTTP GET | Return general log type config |
 | **GetIgnoreList** | HTTP GET | Return ignore list rules |
 | **UpdateDisabledLogTypes** | HTTP POST | Update disabled log types |
+| **UpdateEntraLogTypes** | HTTP POST | Provision or remove one tenant-scoped Entra ID log type (`/api/entra-logtypes`) |
 | **UpdateGeneralLogType** | HTTP PUT | Update general log type config |
 | **UpdateIgnoreList** | HTTP PUT | Update ignore list rules |
 | **UpdateSettings** | HTTP GET/PUT | Update function app settings |
@@ -137,6 +139,7 @@ function-app/
 | **RemoveDiagSettings** | HTTP POST | Remove all diagnostic settings |
 | **LogCollection** | HTTP PUT | Switch log collection on or off (`/api/collection`); off removes every setting and clears the stored logs in a queued job |
 | **StopProcessing** | HTTP PUT | Disable log processing |
+| **DeleteCollector** | HTTP POST | Queue the Delete Collector job (`/api/delete-collector`): remove every setting, empty the storage, then delete the collector's own resource group |
 | **HealthCheck** | HTTP GET | Health probe endpoint |
 | **CheckUpdate** | HTTP GET/POST | Check for available updates |
 | **AutoUpdater** | Timer | Daily update check; installs only when `AUTO_UPDATE_ENABLED=true` |
@@ -152,8 +155,9 @@ graph TD
         GDI[GetDebugInfo<br/><i>HTTP GET</i>]
         DASH[Dashboard<br/><i>HTTP GET</i>]
         AU[AutoUpdater<br/><i>Timer</i>]
+        SW[ScanWorker<br/><i>Queue</i>]
         HTTP_GET["GetStatus, GetConfiguredResources,<br/>GetDisabledLogTypes, GetGeneralLogType,<br/>GetIgnoreList, HealthCheck, CheckUpdate<br/><i>HTTP GET</i>"]
-        HTTP_POST["UpdateDisabledLogTypes, UpdateGeneralLogType,<br/>UpdateIgnoreList, UpdateSettings,<br/>TriggerScan, RemoveDiagSettings, StopProcessing<br/><i>HTTP POST / PUT; settings also GET</i>"]
+        HTTP_POST["UpdateDisabledLogTypes, UpdateGeneralLogType,<br/>UpdateIgnoreList, UpdateSettings,<br/>TriggerScan, RemoveDiagSettings, StopProcessing,<br/>LogCollection, UpdateEntraLogTypes, DeleteCollector<br/><i>HTTP POST / PUT; settings also GET</i>"]
     end
 
     subgraph "Shared Modules"
@@ -190,6 +194,9 @@ graph TD
     GDI -.-> S247
 
     AU --> UP
+
+    SW --> AM
+    SW --> CS
 
     HTTP_GET --> CS
     HTTP_GET --> IL
@@ -236,7 +243,7 @@ graph TD
 │                                                                         │
 │  Regional Storage ──read blobs──▶ Parse JSON records                   │
 │  Config Store ──get sourceConfig──▶ Transform + filter                 │
-│  Site24x7 Upload ◀──POST gzipped logs──▶ Delete processed blobs       │
+│  Site24x7 Upload ◀──POST gzipped logs──▶ Blobs kept (lifecycle rule)  │
 │  Checkpoints ──track progress──▶ Resume on next run                    │
 └──────────────────────────────────────────────────────────────────────────┘
                                     │
@@ -245,7 +252,8 @@ graph TD
 ┌──────────────────────────────────────────────────────────────────────────┐
 │ 3. MANAGEMENT (Dashboard + HTTP endpoints)                              │
 │                                                                         │
-│  Dashboard UI ──▶ GET/POST endpoints ──▶ Config Store / Azure Manager  │
+│  Site24x7 ──▶ HTTP endpoints ──▶ Config Store / Azure Manager / queue  │
+│  Dashboard UI (read-only) ──▶ GET endpoints                            │
 │  Debug endpoint ──▶ Events, stats, config validation, S247 test        │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
@@ -254,7 +262,7 @@ graph TD
 
 ## 3. Module API Reference
 
-All shared modules live in `function-app/shared/`. Each module is self-contained — the only cross-module dependency is `site24x7_client.py` lazily importing `debug_logger.log_event` in exception handlers.
+All shared modules live in `function-app/shared/`. They import each other, mostly lazily inside functions to avoid import cycles: for example `site24x7_client.py` uses `debug_logger`, `config_store`, `log_context` and `redaction`; `debug_logger.py` uses `config_store` and `redaction`; `updater.py` uses `config_store`; `azure_manager.py` uses `log_context` and `storage_names`; and `collection.py`, `teardown.py`, `registration.py` and `startup_scan.py` coordinate several of the others. `ignore_list.py` and `log_parser.py` import no other shared module.
 
 ### shared/azure_manager.py
 
@@ -275,12 +283,12 @@ Manages Azure resource discovery, diagnostic categories, and diagnostic settings
 | `delete_diagnostic_setting` | `(resource_id: str, setting_name: Optional[str] = None)` | `bool` | Delete diagnostic setting |
 | `remove_legacy_setting_if_own` | `(resource_id: str, own_storage_name: str)` | `bool` | Delete the old shared-name `s247-diag-logs` setting only if it sends to this collector's storage |
 | `delete_own_settings` | `(resource_id: str, record: Optional[Dict] = None)` | `bool` | Delete this collector's setting (and its own legacy-named one) |
-
-Setting names are per collector: `s247-diag-logs-<DIAG_STORAGE_SUFFIX>` (`collector_setting_name()`), or `s247-diag-logs` without a suffix. Two collectors watching one resource each keep their own setting.
 | `list_resource_groups` | `(subscription_id: str)` | `List[str]` | List all resource groups in subscription |
 | `list_locations` | `(subscription_id: str)` | `List[str]` | List all locations with resources |
 | `update_app_setting` | `(key: str, value: str)` | `bool` | Update Function App setting via `WebSiteManagementClient` |
-| `remove_all_diagnostic_settings` | `(subscription_ids: List[str])` | `Dict[str, Any]` | Bulk removal with summary |
+| `remove_all_diagnostic_settings` | `(subscription_ids: List[str], records: Optional[Dict[str, Dict]] = None)` | `Dict[str, Any]` | Bulk removal of this collector's settings, with summary |
+
+Setting names are per collector: `s247-diag-logs-<DIAG_STORAGE_SUFFIX>` (`collector_setting_name()`), or `s247-diag-logs` without a suffix. Two collectors watching one resource each keep their own setting.
 
 #### Module-level Functions
 
@@ -444,7 +452,8 @@ Tag-based resource filtering with include/exclude logic, backed by blob storage.
 
 | Function | Signature | Returns | Description |
 |----------|-----------|---------|-------------|
-| `load_ignore_list` | `()` | `Dict` | Load from blob, filling in missing lists |
+| `load_ignore_list` | `(strict: bool = False)` | `Dict` | Load from blob, filling in missing lists; with `strict` (scans) a read failure raises `IgnoreListUnavailable` |
+| `validate_ignore_list` | `(body)` | `str` | Validate structure; error string or empty (shared by the update endpoint and `INITIAL_RESOURCE_FILTERS`) |
 | `save_ignore_list` | `(ignore_list: Dict)` | `bool` | Save to blob with container creation |
 | `is_ignored` | `(resource: Dict, ignore_list: Dict)` | `bool` | Check if resource matches ignore rules |
 | `get_ignore_list` | `()` | `Dict` | Public getter wrapper |
@@ -455,15 +464,15 @@ Tag-based resource filtering with include/exclude logic, backed by blob storage.
 - **Exclude tags:** Deny-list. Always excludes, takes precedence over include.
 - **Empty include list:** No allow-list restriction (all resources pass).
 
-**Ignore dimensions:** Subscriptions, resource groups, locations, resource types, resource IDs, tags (include/exclude).
+**Ignore dimensions:** `subscriptions`, `locations`, `resource_types` (include lists: when one has entries, resources outside it are ignored; the hosting subscription is always included) and `tags` (include/exclude).
 
 #### Internal Functions
 
 | Function | Signature | Returns |
 |----------|-----------|---------|
-| `_migrate_tags` | `(ignore_list: Dict)` | `Dict` |
+| `_with_defaults` | `(ignore_list: Dict)` | `Dict` |
+| `_initial_filters` | `()` | `Optional[Dict]` |
 | `_tag_matches` | `(resource_tags: Dict, tag_rule: str)` | `bool` |
-| `_extract_rg_from_id` | `(resource_id: str)` | `str` |
 | `_extract_sub_from_id` | `(resource_id: str)` | `str` |
 
 ---
@@ -558,6 +567,23 @@ Auto-update mechanism — checks remote version and installs it with Azure ARM O
 1. **Direct version.json:** `{"version": "1.1.0", "package_url": "https://...", "release_notes": "..."}`
 2. **GitHub Releases API:** `https://api.github.com/repos/owner/repo/releases/latest` (expects `vX.Y.Z` tag, `s247-function-app.zip` asset)
 3. **GitHub Shorthand:** `owner/repo` (auto-expanded to GitHub API URL)
+
+---
+
+### Other shared modules
+
+| Module | Purpose |
+|--------|---------|
+| `shared/collection.py` | Switches log collection off (forwarding stops, then a queued job removes this collector's diagnostic settings and empties its storage) and on again (a scan is queued) |
+| `shared/teardown.py` | Delete Collector job, run by ScanWorker: switch collection off, check the resource group holds only collector resources, remove the collector's locks, then start the group delete |
+| `shared/registration.py` | Reports collector identity to Site24x7 after scans, restarts and key changes; `SITE24X7_FUNCTIONS` lists the functions Site24x7 gets a key for |
+| `shared/startup_scan.py` | Queues one scan when a worker starts after an installation, update or restart (the timer's `runOnStartup` is unreliable on Flex Consumption) |
+| `shared/subscriptions.py` | The subscriptions the collector works in: `SUBSCRIPTION_IDS` plus any other enabled subscription the managed identity can see |
+| `shared/entra_config.py` | Enumerates tenant-scoped Entra ID log categories; the collector is receive-only for Entra (a tenant admin creates the diagnostic setting) |
+| `shared/storage_names.py` | Stable storage account names; preserves legacy deployments and avoids suffix truncation |
+| `shared/scan_phases.py` | Canonical ordered list of scan phases, shared by DiagSettingsManager and GetStatus |
+| `shared/log_context.py` | `bind(context)` and `thread_pool()` keep log lines from worker threads in the function's logs |
+| `shared/redaction.py` | Strips credentials from everything written to, or downloaded from, the debug logs |
 
 ---
 
@@ -762,7 +788,7 @@ Site24x7 Backend                     Function App
 
 ### Disabling a Log Type
 
-Users can disable specific log types via the Dashboard or the `UpdateDisabledLogTypes` endpoint. Disabled types are stored in blob and checked during `DiagSettingsManager` scans via `config_store.is_log_type_disabled()`.
+Users disable specific log types from the collector's page in Site24x7, which calls the `UpdateDisabledLogTypes` endpoint (the Dashboard is read-only). Disabled types are stored in blob and checked during `DiagSettingsManager` scans via `config_store.is_log_type_disabled()`.
 
 ---
 
@@ -889,9 +915,9 @@ Key patterns to follow:
 - Always return proper HTTP responses with `mimetype="application/json"`
 - Wrap in try/except with error logging
 
-### Step 4: Wire Up in Dashboard (if needed)
+### Step 4: Give Site24x7 Access (if needed)
 
-If the endpoint should be accessible from the management Dashboard, add a call in the Dashboard's frontend JavaScript. The Dashboard function serves static HTML/JS that calls the function app's HTTP endpoints.
+If Site24x7 should call the endpoint, add the function name to `SITE24X7_FUNCTIONS` in `shared/registration.py`: Site24x7 gets its own `site24x7` function key on those functions only (minus any listed in `SITE24X7_KEY_EXCLUDE`). The Dashboard is read-only and changes nothing; actions are taken from the collector's page in Site24x7. Add a call in the Dashboard's JavaScript only for a read-only GET endpoint whose data the page should show.
 
 ### Step 5: Add Tests
 
@@ -968,12 +994,14 @@ python3 -m pytest tests/ -v --tb=short
 
 ### Test Files
 
+The table lists the main test files only; `function-app/tests/` holds 42 `test_*.py` files in all. Run every one with `python3 -m pytest tests/ -v`.
+
 | File | Module Under Test | Key Test Areas |
 |------|-------------------|----------------|
 | `test_azure_manager.py` | `shared/azure_manager.py` | Resource discovery, diagnostic settings CRUD, cache |
 | `test_config_store.py` | `shared/config_store.py` | Blob read/write, cache behavior, log type configs |
 | `test_site24x7_client.py` | `shared/site24x7_client.py` | Circuit breaker states, rate limiter, log parsing, API calls |
-| `test_ignore_list.py` | `shared/ignore_list.py` | Tag filtering, include/exclude logic, migration |
+| `test_ignore_list.py` | `shared/ignore_list.py` | Tag filtering, include/exclude logic, initial filters |
 | `test_log_parser.py` | `shared/log_parser.py` | Envelope parsing, resource ID extraction |
 | `test_region_manager.py` | `shared/region_manager.py` | Storage account lifecycle, region reconciliation |
 | `test_get_debug_info.py` | `GetDebugInfo/__init__.py` | HTTP responses, download headers, secret masking |
@@ -1246,7 +1274,6 @@ Debug events are stored in a ring buffer (max 200 events) in Azure Blob Storage.
 | `level=warning, message="No sourceConfig for category X"` | Log type not yet registered in Site24x7 | Check if the type is in `/applog/azure/logtype_supported`; wait for next scan |
 | `level=error, message="Failed to create diagnostic setting"` | Azure RBAC or API issue | Check managed identity permissions, subscription access |
 | `level=info, message="Scan completed: N resources"` | Normal scan completion | Verify N matches expected resource count |
-| `level=warning, message="Stale blobs cleaned"` | Old unprocessed blobs deleted | Expected if configs were missing; check for data loss |
 
 ### Local Debugging
 
@@ -1311,16 +1338,26 @@ s247-function-app.zip
 ├── DiagSettingsManager/
 │   ├── function.json
 │   └── __init__.py
-├── ... (all 22 function folders)
+├── ... (all 23 function folders)
 ├── shared/
 │   ├── __init__.py
 │   ├── azure_manager.py
+│   ├── collection.py
 │   ├── config_store.py
 │   ├── debug_logger.py
+│   ├── entra_config.py
 │   ├── ignore_list.py
+│   ├── log_context.py
 │   ├── log_parser.py
+│   ├── redaction.py
 │   ├── region_manager.py
+│   ├── registration.py
+│   ├── scan_phases.py
 │   ├── site24x7_client.py
+│   ├── startup_scan.py
+│   ├── storage_names.py
+│   ├── subscriptions.py
+│   ├── teardown.py
 │   └── updater.py
 ├── host.json
 ├── requirements.txt
@@ -1404,9 +1441,9 @@ The function app supports 6 Site24x7 data centers. The upload domain is derived 
 | US (Global) | `https://www.site24x7.com` | `logc.site24x7.com` |
 | India | `https://www.site24x7.in` | `logc.site24x7.in` |
 | EU | `https://www.site24x7.eu` | `logc.site24x7.eu` |
+| Australia | `https://www.site24x7.net.au` | `logc.site24x7.net.au` |
 | China | `https://www.site24x7.cn` | `logc.site24x7.cn` |
-| Australia | `https://www.site24x7.au` | `logc.site24x7.au` |
-| AU (Gov) | `https://www.site24x7.net.au` | `logc.site24x7.net.au` |
+| Japan | `https://www.site24x7.jp` | `logc.site24x7.jp` |
 
 The upload domain can be overridden with the `SITE24X7_UPLOAD_DOMAIN` environment variable (used for local testing with the mock server).
 
@@ -1416,7 +1453,7 @@ The upload domain can be overridden with the `SITE24X7_UPLOAD_DOMAIN` environmen
 
 ### Code Style
 
-- **Language:** Python 3.9+. Always use `python3` to run scripts — `python` on macOS is Python 2.7.
+- **Language:** Python 3.13 (the Function App runtime and CI). Always use `python3` to run scripts — `python` on macOS is Python 2.7.
 - **Type annotations:** Not used in most code. Don't add them unless the module already uses them.
 - **Logging:** Use Python's built-in `logging` module. Create a module-level logger:
   ```python
@@ -1466,7 +1503,7 @@ refactor: extract log parsing into shared/log_parser.py
 - [ ] New functions are direct child folders with `function.json` + `__init__.py`
 - [ ] New shared functions have unit tests
 - [ ] `requirements.txt` updated if new dependencies added
-- [ ] Dependency constraints respected (`azure-mgmt-monitor>=8.0.0b1`, `azure-storage-blob<12.28.0`)
+- [ ] Dependency constraints respected (`azure-mgmt-monitor==8.0.0b2`, `azure-storage-blob<12.28.0`; `requirements.lock` regenerated to match)
 - [ ] Documentation updated if behavior changed
 
 ---
@@ -1564,6 +1601,16 @@ curl http://localhost:7071/api/debug
 | `MIN_RELEASE_AGE_MINUTES` | No | Grace period before a new release is eligible (default: `60`) |
 | `SITE24X7_UPLOAD_DOMAIN` | No | Override upload endpoint (for testing with mock server) |
 | `BLOB_RETENTION_DAYS` | No | Days after which the storage lifecycle rule deletes log blobs, sent or not (default 7) |
+| `AUTO_SCAN_ENABLED` | No | `false` skips the scheduled scans (the collector still reports to Site24x7 on schedule) (default `true`) |
+| `MONITOR_PIPELINE_RESOURCES` | No | `true` also collects logs from resources in the collector's own resource group (default `false`: excluded, to avoid a self-referential log loop) |
+| `MIN_SCAN_INTERVAL_MINUTES` | No | A start-up scan is skipped when the last scan finished less than this many minutes ago (default `30`) |
+| `DIAG_SEED_REGION` | No | The deployment's region; global resources (Front Door, Traffic Manager, DNS, ...) send their logs to the storage account in this region |
+| `COLLECTOR_RESOURCE_ID` | No | The Function App's ARM resource ID reported to Site24x7; derived from `SUBSCRIPTION_IDS`, `RESOURCE_GROUP_NAME` and the site name when not set |
+| `INITIAL_RESOURCE_FILTERS` | No | JSON ignore list from the deployment form; saved as the ignore list only when none exists yet |
+| `SITE24X7_KEY_EXCLUDE` | No | Comma-separated function names kept out of the `site24x7` function key (`*` gives Site24x7 no key, and the collector then stops reporting) |
+| `REQUIRE_PACKAGE_SHA256` | No | `false` lets an update install without a published package SHA-256 (default `true`) |
+| `GITHUB_TOKEN` | No | Optional bearer token for GitHub Releases API update checks |
+| `DEPLOYMENT_STORAGE_CONNECTION_STRING` | Yes (Azure) | Connection string of the collector's storage account, used by Flex Consumption for its deployment package container (set by the template) |
 
 ## Operational freshness and connectivity
 
