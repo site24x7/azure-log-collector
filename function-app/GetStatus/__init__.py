@@ -240,7 +240,8 @@ def _collection_state() -> dict:
     delete = state.get("delete")
     if isinstance(delete, dict):
         out["delete"] = {k: delete[k] for k in ("state", "reason", "foreign", "foreign_count", "locks_failed",
-                                                 "other_locks", "errors", "unresolved", "requested_at", "finished_at")
+                                                 "other_locks", "errors", "unresolved", "blocked", "locked_groups",
+                                                 "requested_at", "finished_at")
                          if k in delete}
     stop = state.get("stop")
     if isinstance(stop, dict):

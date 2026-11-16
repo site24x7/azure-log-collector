@@ -7,6 +7,12 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.1.0-beta14] — 2026-11-16
+
+- When Delete Collector stops because some of its diagnostic settings could
+  not be removed, it now reports which resources they are on and which
+  resource groups' locks refused the removal, so Site24x7 can name them.
+
 ## [1.1.0-beta13] — 2026-11-16
 
 - A collector no longer collects from another Site24x7 collector's resources

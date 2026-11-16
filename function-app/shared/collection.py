@@ -13,10 +13,11 @@ On: forwarding resumes and a scan is queued, which sets everything up again.
 """
 
 import json
+import re
 import logging
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +164,29 @@ def sweep_if_due(now: Optional[datetime] = None) -> Optional[Dict]:
         return None
 
 
+MAX_BLOCKING_REPORTED = 20
+_LOCKED_SCOPE = re.compile(r"are locked: '([^']+)'")
+_RESOURCE_GROUP = re.compile(r"/resourcegroups/([^/']+)", re.IGNORECASE)
+
+
+def blocking_details(details) -> Tuple[List[str], List[str]]:
+    """What kept settings in place, for the customer: the resources whose setting
+    could not be removed (names), and the resource groups whose lock refused it."""
+    blocked: List[str] = []
+    groups: List[str] = []
+    for detail in details or []:
+        if not isinstance(detail, dict) or detail.get("status") != "error":
+            continue
+        name = str(detail.get("id", "")).rstrip("/").rsplit("/", 1)[-1]
+        if name and name not in blocked:
+            blocked.append(name)
+        for scope in _LOCKED_SCOPE.findall(str(detail.get("message", ""))):
+            match = _RESOURCE_GROUP.search(scope)
+            if match and match.group(1) not in groups:
+                groups.append(match.group(1))
+    return blocked[:MAX_BLOCKING_REPORTED], groups[:MAX_BLOCKING_REPORTED]
+
+
 def stop_collection() -> Dict:
     """Remove this collector's diagnostic settings everywhere and clear its stored logs.
 
@@ -188,6 +212,11 @@ def stop_collection() -> Dict:
             "removed": result["removed"], "errors": result["errors"] + not_cleared,
             "unresolved": result["unresolved"], **storage,
         }
+        blocked, locked_groups = blocking_details(result.get("details", []))
+        if blocked:
+            outcome["blocked"] = blocked
+        if locked_groups:
+            outcome["locked_groups"] = locked_groups
     except Exception as e:
         logger.error("Stopping log collection failed: %s", type(e).__name__)
         outcome = {"state": "failed", "error": type(e).__name__}

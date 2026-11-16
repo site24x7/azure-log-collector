@@ -129,7 +129,9 @@ def delete_collector() -> Dict:
     stop = collection.stop_collection()
     if stop.get("state") != "done":
         return _finish({"state": "failed", "reason": "settings_remain", "errors": stop.get("errors", 0),
-                        "unresolved": stop.get("unresolved", 0)})
+                        "unresolved": stop.get("unresolved", 0),
+                        "blocked": stop.get("blocked", [])[:MAX_REPORTED],
+                        "locked_groups": stop.get("locked_groups", [])[:MAX_REPORTED]})
     try:
         credential = DefaultAzureCredential()
         resources_client = ResourceManagementClient(credential, subscription)
