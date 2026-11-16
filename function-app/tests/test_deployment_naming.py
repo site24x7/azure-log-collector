@@ -312,7 +312,8 @@ def test_portal_form_warns_before_updating_an_existing_collector():
     fields = {f['name']: f for f in ui['basics']}
     api = fields['existingCollectors']
     assert api['type'] == 'Microsoft.Solutions.ArmApiControl' and api['request']['method'] == 'GET'
-    assert "/resources?$filter=resourceType%20eq%20%27Microsoft.Web%2Fsites%27" in api['request']['path']
+    # The plain sites list: the portal returned nothing for /resources with a $filter.
+    assert api['request']['path'] == "[concat(subscription().id, '/providers/Microsoft.Web/sites?api-version=2023-12-01')]"
     # The form's copy of the template's group and suffix rules (the form has no trim(); its
     # regexes keep spaces out of the group name, and the suffix's spaces are removed).
     variables = json.loads((ROOT / 'setup/azuredeploy.json').read_text())['variables']
@@ -328,10 +329,8 @@ def test_portal_form_warns_before_updating_an_existing_collector():
     assert f"concat('/resourcegroups/', toLower({FORM_RG}), '/providers/')" in rule
     assert f"equals(toLower(site.name), concat('s247-diag-func-', {FORM_CLEAN_SUFFIX}))" in rule
     assert "startsWith(toLower(site.name), 's247-diag-func-')" in rule
-    # The message's own text holds no quote: inside an expression it would end the string.
-    text = info['options']['text']
-    assert text.startswith("[concat('A Site24x7 log collector, ', first(") and text.endswith("')]")
-    assert "'" not in text.rsplit(".name, '", 1)[1][:-3]
+    # Plain text: the portal showed an InfoBox whose text was an expression as empty.
+    assert not info['options']['text'].startswith('[')
 
 
 @pytest.mark.parametrize('resource_group_name, suffix, expected', [

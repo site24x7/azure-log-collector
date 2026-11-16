@@ -7,6 +7,12 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.1.0-beta12] — 2026-11-16
+
+- The deployment form's existing-collector warning now appears: it reads the
+  subscription's web apps with a plain list (the portal returned nothing for
+  the filtered resource list beta11 used), and its message is plain text.
+
 ## [1.1.0-beta11] — 2026-11-16
 
 - The portal deployment form warns when the deployment would update an
