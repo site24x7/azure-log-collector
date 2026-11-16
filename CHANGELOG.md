@@ -7,6 +7,16 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.1.0-beta11] — 2026-11-16
+
+- The portal deployment form warns when the deployment would update an
+  existing collector: one already in the target resource group, or one with
+  this deployment suffix's name. Going on needs the "Update the existing
+  collector" tick, so a collector is not redeployed by accident (for example
+  from Deploy Again); entering a different suffix deploys a second collector.
+- Documentation brought up to date with 1.1.0; MIT licence, also included in
+  the release package.
+
 ## [1.1.0-beta10] — 2026-11-13
 
 - Delete Collector (`POST /api/delete-collector`, confirmed with the Function

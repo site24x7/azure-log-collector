@@ -94,6 +94,11 @@ Raw URLs (if you prefer to paste directly into `Template spec deployment`):
 Pre-release versions (alpha/beta/rc) are available only by their tag, e.g.
 `https://raw.githubusercontent.com/site24x7/azure-log-collector/refs/tags/v<version>/setup/azuredeploy.json`.
 
+If the subscription already has a collector in the target resource group (or one with the same
+suffix), the form says so and asks you to tick **Update the existing collector** before going on;
+enter a different deployment suffix to add a second collector instead. To update a collector's
+version, use Site24x7, not a new deployment.
+
 The collector starts collecting as soon as it is deployed. The portal form's second page
 chooses what is collected first: the other subscriptions to include (the deployment's own
 subscription is always included), the regions and resource types to include (all by

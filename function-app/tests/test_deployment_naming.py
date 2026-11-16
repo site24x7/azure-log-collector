@@ -263,7 +263,9 @@ def test_portal_form_matches_the_template():
     form_params = set(template['parameters']) - {'includeTags', 'excludeTags', 'includeTagFilter', 'excludeTagFilter', 'generalLogTypeEnabled'}
     assert set(outputs) - {'location'} == form_params
     assert outputs['location'] == '[location()]'
-    fields = {f['name']: f for f in ui['basics']}
+    # Form-only controls: the existing-collector check (no template parameter).
+    form_only = {'existingCollectors', 'existingCollectorInfo', 'updateExistingCollector'}
+    fields = {f['name']: f for f in ui['basics'] if f['name'] not in form_only}
     def controls(elements):
         result = {}
         for field in elements:
@@ -286,6 +288,66 @@ def test_portal_form_matches_the_template():
     domains = [o['value'] for o in fields['site24x7Domain']['constraints']['allowedValues']]
     assert domains == template['parameters']['site24x7Domain']['allowedValues']
     assert 'generalLogTypeEnabled' not in fields
+
+
+
+FORM_CLEAN_SUFFIX = ("replace(replace(replace(replace(toLower(basics('deploymentSuffix')), '-', ''), '_', ''), '.', ''), ' ', '')")
+FORM_RG = (f"if(empty(basics('resourceGroupName')), if(empty({FORM_CLEAN_SUFFIX}), 's247-diag-logs-rg', "
+           f"concat('s247-diag-logs-', {FORM_CLEAN_SUFFIX}, '-rg')), basics('resourceGroupName'))")
+
+
+def _form_existing_collectors(sites, resource_group_name, suffix):
+    """The form's existing-collector rule: a s247-diag-func-* app in the target group, or with this suffix's name."""
+    clean = suffix.lower().replace('-', '').replace('_', '').replace('.', '').replace(' ', '')
+    rg = resource_group_name or ('s247-diag-logs-rg' if not clean else f's247-diag-logs-{clean}-rg')
+    return [site['name'] for site in sites if site['name'].lower().startswith('s247-diag-func-') and (
+        f'/resourcegroups/{rg.lower()}/providers/' in site['id'].lower()
+        or (clean and site['name'].lower() == f's247-diag-func-{clean}'))]
+
+
+def test_portal_form_warns_before_updating_an_existing_collector():
+    ui = json.loads((ROOT / 'setup/createUiDefinition.json').read_text())['parameters']
+    names = [f['name'] for f in ui['basics']]
+    assert names[-4:] == ['deploymentSuffix', 'existingCollectors', 'existingCollectorInfo', 'updateExistingCollector']
+    fields = {f['name']: f for f in ui['basics']}
+    api = fields['existingCollectors']
+    assert api['type'] == 'Microsoft.Solutions.ArmApiControl' and api['request']['method'] == 'GET'
+    assert "/resources?$filter=resourceType%20eq%20%27Microsoft.Web%2Fsites%27" in api['request']['path']
+    # The form's copy of the template's group and suffix rules (the form has no trim(); its
+    # regexes keep spaces out of the group name, and the suffix's spaces are removed).
+    variables = json.loads((ROOT / 'setup/azuredeploy.json').read_text())['variables']
+    assert variables['cleanSuffix'] == ("[replace(replace(replace(replace(toLower(trim(parameters('deploymentSuffix'))), "
+                                        "'-', ''), '_', ''), '.', ''), ' ', '')]")
+    assert ' ' not in fields['resourceGroupName']['constraints']['regex']
+    info, tick = fields['existingCollectorInfo'], fields['updateExistingCollector']
+    assert info['type'] == 'Microsoft.Common.InfoBox' and info['options']['style'] == 'Warning'
+    assert tick['type'] == 'Microsoft.Common.CheckBox' and tick['constraints']['required'] is True
+    # Both appear only when a collector would be updated, and the tick is then needed to go on.
+    assert info['visible'] == tick['visible']
+    rule = tick['visible']
+    assert f"concat('/resourcegroups/', toLower({FORM_RG}), '/providers/')" in rule
+    assert f"equals(toLower(site.name), concat('s247-diag-func-', {FORM_CLEAN_SUFFIX}))" in rule
+    assert "startsWith(toLower(site.name), 's247-diag-func-')" in rule
+    # The message's own text holds no quote: inside an expression it would end the string.
+    text = info['options']['text']
+    assert text.startswith("[concat('A Site24x7 log collector, ', first(") and text.endswith("')]")
+    assert "'" not in text.rsplit(".name, '", 1)[1][:-3]
+
+
+@pytest.mark.parametrize('resource_group_name, suffix, expected', [
+    ('', '', ['s247-diag-func-qt4xn2']),                 # default deploy again: updates the default collector
+    ('', 'Oct-14', ['s247-diag-func-oct14']),           # same suffix again
+    ('', 'nov15', []),                                  # a new suffix: a second collector
+    ('s247-diag-logs-rg', 'nov15', ['s247-diag-func-qt4xn2']),  # into a group that already holds one
+    ('my-rg', 'oct14', ['s247-diag-func-oct14']),       # same name, other group: Azure would refuse it
+])
+def test_form_finds_the_collector_a_deployment_would_update(resource_group_name, suffix, expected):
+    sites = [
+        {'name': 's247-diag-func-qt4xn2', 'id': '/subscriptions/x/resourceGroups/s247-diag-logs-rg/providers/Microsoft.Web/sites/s247-diag-func-qt4xn2'},
+        {'name': 's247-diag-func-oct14', 'id': '/subscriptions/x/resourceGroups/s247-diag-logs-oct14-rg/providers/Microsoft.Web/sites/s247-diag-func-oct14'},
+        {'name': 'customer-app', 'id': '/subscriptions/x/resourceGroups/s247-diag-logs-rg/providers/Microsoft.Web/sites/customer-app'},
+    ]
+    assert _form_existing_collectors(sites, resource_group_name, suffix) == expected
 
 
 def test_application_insights_uses_the_collectors_own_workspace():
