@@ -1195,7 +1195,7 @@ When OPEN: post_logs() returns False immediately (records remain for retry withi
 | `REQUIRE_PACKAGE_SHA256` | `true` | Refuse an update package whose release publishes no SHA-256 digest |
 | `GITHUB_TOKEN` | (none) | Optional token for GitHub API release checks |
 | `AUTO_SCAN_ENABLED` | `true` | `false` skips scheduled and startup scans (the collector still reports to Site24x7) |
-| `MONITOR_PIPELINE_RESOURCES` | `false` | `true` also collects logs from the collector's own resource group |
+| `MONITOR_PIPELINE_RESOURCES` | `false` | `true` also collects logs from the collector's own resource group; other collectors' resources (tagged `managed-by: s247-diag-logs`) are never collected |
 | `MIN_SCAN_INTERVAL_MINUTES` | `30` | A startup scan is skipped when the last scan finished more recently |
 | `BLOB_RETENTION_DAYS` | `7` | Lifecycle retention of regional log blobs (idle accounts: 1 day) |
 | `DIAG_SEED_REGION` | (none; template: deployment region) | Region whose account receives global resources' logs; used in storage naming |

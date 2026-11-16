@@ -1602,7 +1602,7 @@ curl http://localhost:7071/api/debug
 | `SITE24X7_UPLOAD_DOMAIN` | No | Override upload endpoint (for testing with mock server) |
 | `BLOB_RETENTION_DAYS` | No | Days after which the storage lifecycle rule deletes log blobs, sent or not (default 7) |
 | `AUTO_SCAN_ENABLED` | No | `false` skips the scheduled scans (the collector still reports to Site24x7 on schedule) (default `true`) |
-| `MONITOR_PIPELINE_RESOURCES` | No | `true` also collects logs from resources in the collector's own resource group (default `false`: excluded, to avoid a self-referential log loop) |
+| `MONITOR_PIPELINE_RESOURCES` | No | `true` also collects logs from resources in the collector's own resource group (default `false`: excluded, to avoid a self-referential log loop). Other collectors' resources (tagged `managed-by: s247-diag-logs`) are never collected |
 | `MIN_SCAN_INTERVAL_MINUTES` | No | A start-up scan is skipped when the last scan finished less than this many minutes ago (default `30`) |
 | `DIAG_SEED_REGION` | No | The deployment's region; global resources (Front Door, Traffic Manager, DNS, ...) send their logs to the storage account in this region |
 | `COLLECTOR_RESOURCE_ID` | No | The Function App's ARM resource ID reported to Site24x7; derived from `SUBSCRIPTION_IDS`, `RESOURCE_GROUP_NAME` and the site name when not set |

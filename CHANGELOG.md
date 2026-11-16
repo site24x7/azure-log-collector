@@ -7,6 +7,17 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.1.0-beta13] — 2026-11-16
+
+- A collector no longer collects from another Site24x7 collector's resources
+  (those tagged `managed-by: s247-diag-logs` outside its own resource group).
+  Before, it set diagnostic settings on them, and deleting it then stopped:
+  the other collector's resource-group lock refused to remove those settings.
+  Its own resources still follow "Collect From the Collector's Own Resources".
+- An update shows as finished as soon as the new version answers a status
+  check, instead of at the next log processing run, which could wait several
+  minutes for a run of the previous version to end.
+
 ## [1.1.0-beta12] — 2026-11-16
 
 - The deployment form's existing-collector warning now appears: it reads the

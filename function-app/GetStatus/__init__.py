@@ -252,7 +252,13 @@ def _collection_state() -> dict:
 def _update_state() -> dict:
     """The last update submitted, and whether the new version confirmed it runs."""
     try:
-        from shared.updater import get_update_state
+        from shared.updater import confirm_running_version, get_update_state
+        # The new version answering here is running: confirm it now rather than at the
+        # processor's next run, which can wait for a long run of the old version.
+        try:
+            confirm_running_version()
+        except Exception:
+            pass  # the processor confirms it on its next run
         state = get_update_state()
         return {k: state.get(k, "") for k in ("pending_version", "previous_version", "submitted_at",
                                               "confirmed_at", "failed_at", "error")}

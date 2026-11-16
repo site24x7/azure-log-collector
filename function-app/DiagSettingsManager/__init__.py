@@ -153,6 +153,37 @@ def _tenant_storage(region_mgr, resource_group, suffix, hosting_subscription):
     name = region_mgr.get_subscription_name(hosting_subscription) if account.get("id") else ""
     return account, name, False
 
+
+# Every resource a collector deploys or creates carries this tag (template and region_manager).
+COLLECTOR_TAG = ("managed-by", "s247-diag-logs")
+
+
+def exclude_collector_resources(resources, own_resource_group: str, include_own: bool):
+    """Resources to collect from, without Site24x7 collectors' own resources.
+
+    This collector's resource group is collected from only when ``include_own``.
+    Another collector's resources (tagged ``managed-by: s247-diag-logs``) never
+    are: their lock would stop this collector removing its settings there when
+    it is deleted, and that collector has its own switch for them.
+    Returns (kept, own_skipped, other_collectors_skipped).
+    """
+    own_rg = (own_resource_group or "").lower()
+    kept, own_skipped, others_skipped = [], 0, 0
+    for r in resources:
+        in_own_rg = (r.get("resource_group") or "").lower() == own_rg
+        tags = r.get("tags") or {}
+        if in_own_rg:
+            if include_own:
+                kept.append(r)
+            else:
+                own_skipped += 1
+        elif isinstance(tags, dict) and tags.get(COLLECTOR_TAG[0]) == COLLECTOR_TAG[1]:
+            others_skipped += 1
+        else:
+            kept.append(r)
+    return kept, own_skipped, others_skipped
+
+
 def run_scan(full_reconcile: bool = False):
     """One full scan. A scan that stops records why (last_scan_error) before the error goes on.
 
@@ -283,23 +314,21 @@ def _run_scan(full_reconcile: bool = False):
     active_resources = [r for r in all_resources if not is_ignored(r, ignore_list)]
     ignored_count = len(all_resources) - len(active_resources)
 
-    # Optionally exclude pipeline's own resources (prevents self-referential log loop)
+    # The collector's own resources only when asked (a self-referential log loop
+    # otherwise), and never another collector's.
     monitor_pipeline = os.environ.get("MONITOR_PIPELINE_RESOURCES", "false").lower() == "true"
-    if not monitor_pipeline:
-        pipeline_rg = resource_group.lower()
-        before = len(active_resources)
-        active_resources = [
-            r for r in active_resources
-            if r.get("resource_group", "").lower() != pipeline_rg
-        ]
-        pipeline_skipped = before - len(active_resources)
-        if pipeline_skipped:
-            ignored_count += pipeline_skipped
-            logging.info(
-                "DiagSettingsManager: Excluded %d pipeline resources in RG '%s' "
-                "(MONITOR_PIPELINE_RESOURCES=false)",
-                pipeline_skipped, resource_group,
-            )
+    active_resources, pipeline_skipped, other_collectors_skipped = exclude_collector_resources(
+        active_resources, resource_group, include_own=monitor_pipeline)
+    ignored_count += pipeline_skipped + other_collectors_skipped
+    if pipeline_skipped:
+        logging.info(
+            "DiagSettingsManager: Excluded %d pipeline resources in RG '%s' "
+            "(MONITOR_PIPELINE_RESOURCES=false)",
+            pipeline_skipped, resource_group,
+        )
+    if other_collectors_skipped:
+        logging.info("DiagSettingsManager: Excluded %d resources of other Site24x7 collectors",
+                     other_collectors_skipped)
     logging.info(
         "DiagSettingsManager: %d active resources (%d ignored)",
         len(active_resources),
