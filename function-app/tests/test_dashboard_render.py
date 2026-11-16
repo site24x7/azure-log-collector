@@ -35,3 +35,11 @@ def test_site24x7_rejection_marks_status_degraded_whatever_loads_first():
     js = _rendered_js()
     assert "_s247Problem = s.s247_reachable === false" in js
     assert "if (!failed.length && _s247Problem)" in js
+
+
+def test_failing_uploads_are_not_shown_as_healthy():
+    # Site24x7 shows Needs Attention when uploads fail; the dashboard must not say Healthy / Connected then.
+    js = _rendered_js()
+    assert "op.upload_status === 'failed'" in js and "op.upload_refused === true" in js
+    assert "S247 Uploads Failing" in js
+    assert js.index("uploadFailing") < js.index("if (_s247Problem) { showDegraded(_s247Problem); }")

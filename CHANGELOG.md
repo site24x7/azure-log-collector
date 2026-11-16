@@ -7,6 +7,13 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.1.0-beta15] — 2026-11-16
+
+- The collector's dashboard no longer shows Healthy and "S247 Connected"
+  while log uploads to Site24x7 fail: it shows Degraded with the reason (HTTP
+  status, records waiting) and an "S247 Uploads Failing" badge, as Site24x7
+  shows the collector as Needs Attention.
+
 ## [1.1.0-beta14] — 2026-11-16
 
 - When Delete Collector stops because some of its diagnostic settings could

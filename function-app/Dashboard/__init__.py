@@ -623,11 +623,23 @@ async function loadStatus() {
     _s247Problem = s.s247_reachable === false
       ? 'Site24x7: ' + ((s.s247_errors || [])[0]?.message || 'unreachable during the last scan')
       : null;
+    // Log uploads failing is a problem too, the same way Site24x7 shows it (Needs Attention):
+    // the scan can reach Site24x7 while every upload fails.
+    const op = s.operational_status || {};
+    const uploadRefused = op.upload_refused === true || op.upload_status === 'refused';
+    const uploadFailing = uploadRefused || op.upload_status === 'failed' || op.upload_status === 'rejected';
+    if (!_s247Problem && uploadFailing) {
+      _s247Problem = 'Uploads to Site24x7 ' + (uploadRefused ? 'refused (check the Device Key)' : 'failing')
+        + (Number.isInteger(op.upload_http_status) ? ' (HTTP ' + op.upload_http_status + ')' : '')
+        + (Number(op.pending_records) > 0 ? '; ' + Number(op.pending_records).toLocaleString() + ' records waiting' : '');
+    }
     if (_s247Problem) { showDegraded(_s247Problem); }
 
-    // Site24x7 reachability
+    // Site24x7 reachability, and whether logs reach it
     const s247b = document.getElementById('s247Badge');
-    if (s.s247_reachable === true) {
+    if (s.s247_reachable === true && uploadFailing) {
+      s247b.className = 'badge badge-red'; s247b.textContent = 'S247 Uploads Failing'; s247b.style.display = 'inline-block';
+    } else if (s.s247_reachable === true) {
       s247b.className = 'badge badge-green'; s247b.textContent = 'S247 Connected'; s247b.style.display = 'inline-block';
     } else if (s.s247_reachable === false) {
       s247b.className = 'badge badge-red'; s247b.textContent = 'S247 Unreachable'; s247b.style.display = 'inline-block';
