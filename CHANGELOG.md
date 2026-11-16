@@ -7,6 +7,26 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.1.0] — 2026-11-17
+
+The first stable release on the Azure Functions Flex Consumption plan. It contains everything in 1.1.0-beta1 to
+beta15 (listed below). In short:
+
+- **Managed from Site24x7.** Filters (include lists by subscription, region, resource type, plus tag rules), the
+  Log Collection switch, automatic scans, collecting from the collector's own resources, Scan now, updates, and
+  Delete Collector are all on the collector's page in Site24x7; the collector's own dashboard is read-only.
+- **Delete Collector** removes the collector's diagnostic settings everywhere, empties its storage, removes its own
+  lock and deletes its resource group. It stops, and says which resources and locks are in the way, if anything
+  else would be affected. It never touches other collectors' resources.
+- **Safer deployments.** The portal form warns before updating an existing collector, and filters can be set at
+  deployment. A collector never collects from another Site24x7 collector's resources.
+- **Reliable collection.** Settings that are removed or changed in Azure are restored; scans record why a resource
+  got no setting; global resources and regions whose storage cannot be created are handled; uploads are retried
+  instead of dropped where Site24x7 asks for it; the dashboard shows failing uploads.
+- **Updates.** Self-update through OneDeploy with digest verification and a one-hour minimum release age; the
+  update shows as finished as soon as the new version answers.
+- MIT licence.
+
 ## [1.1.0-beta15] — 2026-11-16
 
 - The collector's dashboard no longer shows Healthy and "S247 Connected"

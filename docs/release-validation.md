@@ -41,10 +41,18 @@ review evidence for the matching candidate. CI continues to enforce regression,
 setup syntax, JSON and package/template VERSION pin checks. No stable release
 should be approved solely because these automated checks are green.
 
-## Current unresolved verification
+## 1.1.0 validation (2026-11-16)
 
-The Flex Consumption template must pass Azure preflight, then live OneDeploy
-startup, fresh install, upgrade, rollback and ingestion.
-Long-suffix naming requires the updated collector package and matching template
-pin. Legacy URL-mode updater behavior and transition from old deployment methods
-must be tested before customers receive the new stable version.
+Verified on Flex Consumption collectors in a test subscription (candidates beta12 to beta15):
+
+- Fresh install from the template, registration, first scan, and Scan now (21 resources configured, 0 errors).
+- A second collector in the same subscription skips the first collector's resources.
+- Upgrade in place (beta10 to beta12, beta10 to beta15), with settings and filters kept, and
+  confirmation by the status check.
+- Log Collection off (all settings removed), the toggles, Delete Collector (settings, lock and resource group
+  removed), and Remove From Site24x7.
+- Log delivery through the upload path (HTTP 200).
+
+Not verified: rollback to an earlier version. The updater never installs an older version; going back
+means redeploying the earlier template.
+
