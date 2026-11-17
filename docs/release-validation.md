@@ -41,6 +41,20 @@ review evidence for the matching candidate. CI continues to enforce regression,
 setup syntax, JSON and package/template VERSION pin checks. No stable release
 should be approved solely because these automated checks are green.
 
+## 1.1.2 validation (2026-11-17)
+
+On a collector running 1.1.1 and updated in place to 1.1.2-beta1 (the same code):
+
+- The update was applied from the in-app check and the new version was running within a minute.
+- Log Collection switched off, then on again while the removal was running: the stored logs were
+  kept (no containers emptied; pending records unchanged), the "off" was cleared from the status,
+  and the queued scan put all 5 settings back with 0 errors.
+- The shell uninstall checks (another collector's owner tag, setting destinations in another
+  subscription) and the shell install's plan tagging are covered by offline tests with every Azure
+  CLI call intercepted; a fresh shell install and uninstall were not run.
+
+Not verified: rollback, as for 1.1.0.
+
 ## 1.1.1 validation (2026-11-17)
 
 On a collector deployed from the v1.1.0 template and updated in place to 1.1.1-beta1 (the same code):

@@ -84,12 +84,12 @@ One-click ARM deployment. The public template is available at a pinned Git tag; 
 
 | Version | Button / URL |
 |---|---|
-| **Stable — v1.1.1** | [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fsite24x7%2Fazure-log-collector%2Frefs%2Ftags%2Fv1.1.1%2Fsetup%2Fazuredeploy.json/createUIDefinitionUri/https%3A%2F%2Fraw.githubusercontent.com%2Fsite24x7%2Fazure-log-collector%2Frefs%2Ftags%2Fv1.1.1%2Fsetup%2FcreateUiDefinition.json) |
+| **Stable — v1.1.2** | [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fsite24x7%2Fazure-log-collector%2Frefs%2Ftags%2Fv1.1.2%2Fsetup%2Fazuredeploy.json/createUIDefinitionUri/https%3A%2F%2Fraw.githubusercontent.com%2Fsite24x7%2Fazure-log-collector%2Frefs%2Ftags%2Fv1.1.2%2Fsetup%2FcreateUiDefinition.json) |
 
 Raw URLs (if you prefer to paste directly into `Template spec deployment`):
 
-- **Stable v1.1.1:**
-  `https://raw.githubusercontent.com/site24x7/azure-log-collector/refs/tags/v1.1.1/setup/azuredeploy.json`
+- **Stable v1.1.2:**
+  `https://raw.githubusercontent.com/site24x7/azure-log-collector/refs/tags/v1.1.2/setup/azuredeploy.json`
 
 Pre-release versions (alpha/beta/rc) are available only by their tag, e.g.
 `https://raw.githubusercontent.com/site24x7/azure-log-collector/refs/tags/v<version>/setup/azuredeploy.json`.
