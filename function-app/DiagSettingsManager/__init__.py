@@ -154,6 +154,18 @@ def _tenant_storage(region_mgr, resource_group, suffix, hosting_subscription):
     return account, name, False
 
 
+def _category_key(resource) -> str:
+    """Which resources share one discovered category list. Web apps and function apps are both
+    Microsoft.Web/sites but expose different log categories, so they are discovered apart: a web
+    app's list is also valid on a function app, Azure accepts it, and FunctionAppLogs would never
+    be enabled."""
+    rtype = resource.get("type", "") or ""
+    if rtype.lower() == "microsoft.web/sites":
+        kind = (resource.get("kind") or "").lower()
+        return rtype + ("#functionapp" if "functionapp" in kind else "#app")
+    return rtype
+
+
 # Every resource a collector deploys or creates carries this tag (template and region_manager).
 COLLECTOR_TAG = ("managed-by", "s247-diag-logs")
 
@@ -464,8 +476,9 @@ def _run_scan(full_reconcile: bool = False):
             stats["already_configured"] += 1
             continue
 
-        if resource_type not in types_needing_discovery:
-            types_needing_discovery[resource_type] = resource_id
+        category_key = _category_key(resource)
+        if category_key not in types_needing_discovery:
+            types_needing_discovery[category_key] = resource_id
 
     _log_event("info", "DiagSettingsManager",
                f"Phase 4a: {len(types_needing_discovery)} unique types to discover, "
@@ -532,7 +545,7 @@ def _run_scan(full_reconcile: bool = False):
     for rtype, cats in _category_cache_by_type.items():
         for cat in cats:
             cat_norm = normalize_category(cat)
-            _cat_rt_map.setdefault(cat_norm, set()).add(rtype)
+            _cat_rt_map.setdefault(cat_norm, set()).add(rtype.split("#", 1)[0])
             _cat_names.setdefault(cat_norm, cat)
     # Also include categories from already-configured resources
     for res_id, info in configured_resources.items():
@@ -566,7 +579,7 @@ def _run_scan(full_reconcile: bool = False):
         resource_type = resource.get("type", "")
 
         try:
-            categories = _category_cache_by_type.get(resource_type, [])
+            categories = _category_cache_by_type.get(_category_key(resource), [])
             if not categories:
                 stats["skipped"] += 1
                 _skip("no_log_categories", resource_type)

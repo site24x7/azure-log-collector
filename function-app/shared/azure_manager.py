@@ -126,6 +126,8 @@ class AzureManager:
                         "resource_group": _extract_resource_group(resource.id),
                         "subscription_id": sub_id,
                         "tags": resource.tags or {},
+                        # Web apps and function apps share a type; the kind tells them apart.
+                        "kind": getattr(resource, "kind", None) or "",
                     }
                     if self.supports_diagnostic_logs(resource.id, resource.type):
                         all_resources.append(r_dict)
@@ -234,7 +236,18 @@ class AzureManager:
             return False
         own_rg = os.environ.get("RESOURCE_GROUP_NAME", os.environ.get("RESOURCE_GROUP", "s247-diag-logs-rg"))
         destination = (existing.get("storage_account_id") or "").lower()
-        return f"/resourcegroups/{own_rg.lower()}/providers/microsoft.storage/" not in destination
+        # The whole prefix, subscription included: a same-named resource group in another
+        # subscription is not the collector's.
+        try:
+            from shared.subscriptions import configured_subscription_ids
+            ids = configured_subscription_ids()
+            hosting = (ids[0] if ids else "").lower()
+        except Exception:
+            hosting = ""
+        if not hosting:
+            return None  # unknown: neither replaced nor removed
+        own_prefix = f"/subscriptions/{hosting}/resourcegroups/{own_rg.lower()}/providers/microsoft.storage/storageaccounts/"
+        return not destination.startswith(own_prefix)
 
     def create_diagnostic_setting(
         self,

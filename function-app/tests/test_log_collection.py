@@ -67,6 +67,7 @@ def _msg(body, dequeue=1):
 
 def test_worker_runs_the_removal_under_the_scan_lock():
     with patch("shared.config_store.try_acquire_scan_lock", return_value=True), \
+         patch("shared.config_store.get_collection_state", return_value={"enabled": False}), \
          patch("shared.collection.stop_collection") as stop, \
          patch("ScanWorker._clear_in_progress") as clear, \
          patch("shared.registration.register_with_site24x7"), \
@@ -74,6 +75,30 @@ def test_worker_runs_the_removal_under_the_scan_lock():
         ScanWorker.main(_msg({"action": collection.STOP_ACTION, "requested_at": "2026-11-13T00:00:00+00:00"}))
     stop.assert_called_once()
     clear.assert_called_once()
+
+
+def test_a_removal_queued_before_collection_was_switched_back_on_is_dropped():
+    # OFF, then ON, then the OFF job is processed: it must not remove settings or empty storage.
+    with patch("shared.config_store.try_acquire_scan_lock", return_value=True), \
+         patch("shared.config_store.get_collection_state", return_value={"enabled": True}), \
+         patch("shared.collection.stop_collection") as stop, \
+         patch("ScanWorker._clear_in_progress") as clear, \
+         patch("shared.registration.register_with_site24x7"), \
+         patch("shared.debug_logger.log_event"):
+        ScanWorker.main(_msg({"action": collection.STOP_ACTION, "requested_at": "2026-11-13T00:00:00+00:00"}))
+    stop.assert_not_called()
+    clear.assert_called_once()
+
+
+def test_a_removal_waits_when_the_collection_state_is_unreadable():
+    with patch("shared.config_store.try_acquire_scan_lock", return_value=True), \
+         patch("shared.config_store.get_collection_state", side_effect=RuntimeError("storage")), \
+         patch("shared.collection.stop_collection") as stop, \
+         patch("ScanWorker._clear_in_progress"), \
+         patch("shared.debug_logger.log_event"):
+        with pytest.raises(RuntimeError):
+            ScanWorker.main(_msg({"action": collection.STOP_ACTION}))
+    stop.assert_not_called()
 
 
 def test_worker_retries_the_removal_while_a_scan_runs():

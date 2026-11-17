@@ -167,6 +167,10 @@ from azure.core.exceptions import ResourceNotFoundError  # noqa: E402
 
 
 class TestDiagnosticSettingsCrud:
+    @pytest.fixture(autouse=True)
+    def _hosting_subscription(self, monkeypatch):
+        monkeypatch.setenv("SUBSCRIPTION_IDS", "00000000-0000-0000-0000-0000000000aa")
+
     def test_get_setting_found(self, manager):
         mock_log1 = MagicMock()
         mock_log1.enabled = True
@@ -240,7 +244,7 @@ class TestDiagnosticSettingsCrud:
         with patch("shared.azure_manager.MonitorManagementClient") as mock_cls:
             mock_cls.return_value.diagnostic_settings.get.return_value = _setting(OWN_SA)
             result = manager.delete_diagnostic_setting(
-                "/subscriptions/s/resourceGroups/rg/providers/M/T/R"
+                "/subscriptions/00000000-0000-0000-0000-0000000000aa/resourceGroups/rg/providers/M/T/R"
             )
             assert result is True
 
@@ -249,7 +253,7 @@ class TestDiagnosticSettingsCrud:
             mock_cls.return_value.diagnostic_settings.get.return_value = _setting(OWN_SA)
             mock_cls.return_value.diagnostic_settings.delete.side_effect = Exception("Forbidden")
             result = manager.delete_diagnostic_setting(
-                "/subscriptions/s/resourceGroups/rg/providers/M/T/R"
+                "/subscriptions/00000000-0000-0000-0000-0000000000aa/resourceGroups/rg/providers/M/T/R"
             )
             assert result is False
 
@@ -266,6 +270,16 @@ class TestDiagnosticSettingsCrud:
             assert manager.delete_diagnostic_setting(RES) is True   # nothing of ours there
             mock_cls.return_value.diagnostic_settings.delete.assert_not_called()
 
+    def test_our_setting_name_to_a_same_named_group_in_another_subscription_is_not_ours(self, manager):
+        # F-03: the resource-group name alone does not make a destination the collector's.
+        other = "/subscriptions/00000000-0000-0000-0000-0000000000bb/resourceGroups/s247-diag-logs-rg/providers/Microsoft.Storage/storageAccounts/s247diagx"
+        with patch("shared.azure_manager.MonitorManagementClient") as mock_cls:
+            mock_cls.return_value.diagnostic_settings.get.return_value = _setting(other)
+            assert manager.delete_diagnostic_setting(RES) is True   # nothing of ours there
+            assert manager.create_diagnostic_setting(RES, OWN_SA) is False
+            mock_cls.return_value.diagnostic_settings.delete.assert_not_called()
+            mock_cls.return_value.diagnostic_settings.create_or_update.assert_not_called()
+
     def test_failed_lookup_changes_nothing(self, manager):
         with patch("shared.azure_manager.MonitorManagementClient") as mock_cls:
             mock_cls.return_value.diagnostic_settings.get.side_effect = Exception("throttled 429")
@@ -275,9 +289,9 @@ class TestDiagnosticSettingsCrud:
             mock_cls.return_value.diagnostic_settings.delete.assert_not_called()
 
 
-RES = "/subscriptions/s/resourceGroups/rg/providers/M/T/R"
-OWN_SA = "/subscriptions/s/resourceGroups/s247-diag-logs-rg/providers/Microsoft.Storage/storageAccounts/s247diagx"
-FOREIGN_SA = "/subscriptions/s/resourceGroups/customer-rg/providers/Microsoft.Storage/storageAccounts/theirs"
+RES = "/subscriptions/00000000-0000-0000-0000-0000000000aa/resourceGroups/rg/providers/M/T/R"
+OWN_SA = "/subscriptions/00000000-0000-0000-0000-0000000000aa/resourceGroups/s247-diag-logs-rg/providers/Microsoft.Storage/storageAccounts/s247diagx"
+FOREIGN_SA = "/subscriptions/00000000-0000-0000-0000-0000000000aa/resourceGroups/customer-rg/providers/Microsoft.Storage/storageAccounts/theirs"
 
 
 def _setting(storage_account_id):

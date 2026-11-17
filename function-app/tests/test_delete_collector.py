@@ -48,6 +48,9 @@ def test_a_group_of_only_the_collectors_resources_passes():
 @pytest.mark.parametrize("extra", [
     _res("customer-vm", "Microsoft.Compute/virtualMachines"),
     _res("s247-diag-func-other1", "Microsoft.Web/sites", MANAGED),  # another collector in the same group
+    # A customer's own alerting in the group is not Azure's add-on for this collector (F-01)
+    _res("Failure Anomalies - customer-app-ai", "microsoft.alertsmanagement/smartDetectorAlertRules"),
+    _res("customer-oncall", "microsoft.insights/actiongroups"),
     _res("s247diageastusother1", "Microsoft.Storage/storageAccounts",
          dict(MANAGED, purpose="diag-logs-regional", **{"s247-collector": "s247-diag-func-other1"})),
 ])

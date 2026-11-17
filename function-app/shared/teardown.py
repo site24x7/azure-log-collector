@@ -31,10 +31,23 @@ DELETE_ACTION = "delete_collector"
 # Locks the template and setup.sh create; other locks are never touched.
 OWN_LOCK_PREFIX = "s247-lock-"
 # Created in the group by Azure itself for Application Insights (smart detection).
-AZURE_CREATED_TYPES = frozenset({
-    "microsoft.alertsmanagement/smartdetectoralertrules",
-    "microsoft.insights/actiongroups",
-})
+# What Azure adds by itself next to the collector's Application Insights (<function app>-ai, or the
+# app's own name for a shell install):
+# its Failure Anomalies rule and the Smart Detection action group. Matched by exact name, never by
+# type alone: a customer's own alert rules or action groups in the same group are not ours.
+SMART_DETECTOR_TYPE = "microsoft.alertsmanagement/smartdetectoralertrules"
+ACTION_GROUP_TYPE = "microsoft.insights/actiongroups"
+SMART_DETECTION_ACTION_GROUP = "application insights smart detection"
+
+
+def _azure_created_for_collector(rtype: str, name: str, me: str) -> bool:
+    name = (name or "").strip().lower()
+    if rtype == SMART_DETECTOR_TYPE:
+        # The template names Application Insights <app>-ai; a shell install names it after the app.
+        return bool(me) and name in (f"failure anomalies - {me}-ai", f"failure anomalies - {me}")
+    if rtype == ACTION_GROUP_TYPE:
+        return name == SMART_DETECTION_ACTION_GROUP
+    return False
 MAX_REPORTED = 20
 
 
@@ -71,7 +84,7 @@ def foreign_resources(resources) -> List[str]:
         rtype = (r.type or "").lower()
         name = r.name or ""
         tags = r.tags or {}
-        if rtype in AZURE_CREATED_TYPES:
+        if _azure_created_for_collector(rtype, name, me):
             continue
         own = False
         if tags.get("managed-by") == "s247-diag-logs":

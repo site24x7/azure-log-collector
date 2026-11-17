@@ -91,6 +91,20 @@ def main(msg: func.QueueMessage, context: func.Context = None) -> None:
         return
 
     if stop:
+        # Checked under the scan lock: collection switched back on after this job was queued
+        # makes it obsolete. Running it would remove the settings and empty the storage that the
+        # current switch keeps. An unreadable state stops too: nothing destructive on a guess.
+        try:
+            from shared.config_store import get_collection_state
+            still_off = get_collection_state(strict=True).get("enabled") is False
+        except Exception as e:
+            logging.warning("ScanWorker: collection state unreadable (%s); the removal waits", type(e).__name__)
+            _clear_in_progress()
+            raise RuntimeError("Collection state unreadable; the queue retries this request")
+        if not still_off:
+            logging.info("ScanWorker: Log collection is on again — the queued removal is dropped")
+            _clear_in_progress()
+            return
         try:
             collection.stop_collection()
         finally:

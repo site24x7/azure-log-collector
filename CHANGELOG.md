@@ -7,6 +7,30 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.1.1-beta1] — 2026-11-17
+
+Fixes from the 1.1.0 source audit:
+
+- Delete Collector, and setup/teardown.sh, no longer treat any action group or smart-detector rule
+  in the resource group as the collector's: only the exact "Failure Anomalies - <app>(-ai)" rule
+  and "Application Insights Smart Detection" group that Azure adds for it. teardown.sh now checks
+  every resource and lock in the group before removing anything, removes only the collector's own
+  locks (s247-lock-*), and cleans up roles only for the collector's Function Apps.
+- Switching Log Collection off and on again no longer lets the earlier "off" job run afterwards:
+  the job checks the switch first, so it can't remove settings or empty storage after collection
+  was switched back on.
+- A diagnostic setting with the collector's name counts as the collector's only when it sends to
+  the collector's own subscription and resource group, not just a group with the same name.
+- Web apps and function apps (both Microsoft.Web/sites) get their own log categories, so function
+  apps get FunctionAppLogs even when a web app was discovered first.
+- setup.sh tags the resource group, storage account, Function App and Application Insights like
+  the template does, so both uninstall paths accept a shell installation.
+- Security overview: the dashboard's key does reach the admin's browser; corrected.
+
+Known, not changed in this release: a block blob replaced at the same path can keep an old read
+position (Azure diagnostic logs are append blobs), and a scan's time limit does not cancel log-type
+refresh calls already queued.
+
 ## [1.1.0] — 2026-11-17
 
 The first stable release on the Azure Functions Flex Consumption plan. It contains everything in 1.1.0-beta1 to

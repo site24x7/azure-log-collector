@@ -124,7 +124,7 @@ Site24x7 stores the key encrypted. With it, Site24x7 admins can run those action
 - built by Site24x7's server from validated fields; the browser never sends a URL or a raw request body;
 - audited in Site24x7.
 
-The key never reaches the browser. Site24x7 checks at registration that the Function App itself accepts the key.
+For these actions the key never reaches the browser: Site24x7's server calls the collector. Opening the dashboard is different: the admin's browser receives the key in the dashboard address, and the dashboard keeps it in that tab's session storage for its own requests. The dashboard's controls are read-only, but the key itself is not: whoever holds it can call all 19 functions until it is rotated or excluded. Site24x7 checks at registration that the Function App itself accepts the key.
 
 **Limiting or removing Site24x7's reach.** Set the app setting `SITE24X7_KEY_EXCLUDE`:
 - A comma-separated list of functions (for example `RemoveDiagSettings,CheckUpdate`) takes Site24x7's key away from those functions only.

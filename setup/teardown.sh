@@ -90,11 +90,53 @@ load_config() {
             log_error "Resource group ${RG} in subscription ${DEPLOY_SUB} is not tagged managed-by=s247-diag-logs; not touching it."
             exit 1
         fi
+        check_group_contents
     fi
     log_info "Resource group: ${RG} (subscription ${DEPLOY_SUB}); diagnostic setting: ${SETTING_NAME}"
 }
 
-# ── Remove all locks in the resource group ───────────────────
+# ── The group holds only the collector's resources and lock ──
+# A group tag does not prove that everything in it is the collector's: a group chosen on the
+# deployment form can also hold the customer's resources. Every resource must carry the collector's
+# managed-by tag, or be what Azure adds by itself for a tagged Function App's Application Insights
+# (its "Failure Anomalies - <app>-ai" rule and the "Application Insights Smart Detection" action
+# group; a shell install names its Application Insights after the app). Only the collector's own
+# locks (s247-lock-*) are allowed. Anything else stops here,
+# before any lock is removed or anything is deleted.
+check_group_contents() {
+    local resources apps foreign locks
+    resources=$(az resource list --resource-group "$RG" --subscription "$DEPLOY_SUB" -o json 2>/dev/null) || {
+        log_error "Could not list the resources in ${RG}; not touching it."
+        exit 1
+    }
+    apps=$(echo "$resources" | jq -r '[.[] | select((.type | ascii_downcase) == "microsoft.web/sites" and .tags["managed-by"] == "s247-diag-logs") | .name | ascii_downcase]')
+    foreign=$(echo "$resources" | jq -r --argjson apps "$apps" '
+        .[] | (.type | ascii_downcase) as $t | (.name | ascii_downcase) as $n
+        | select(.tags["managed-by"] != "s247-diag-logs")
+        | select(($t == "microsoft.alertsmanagement/smartdetectoralertrules"
+                  and ([$apps[] | ("failure anomalies - " + . + "-ai"), ("failure anomalies - " + .)] | index($n))) | not)
+        | select(($t == "microsoft.insights/actiongroups" and $n == "application insights smart detection"
+                  and ($apps | length) > 0) | not)
+        | "\(.name) (\(.type))"')
+    if [[ -n "$foreign" ]]; then
+        log_error "Resource group ${RG} also holds resources that are not this collector's; nothing was changed:"
+        echo "$foreign" | sed 's/^/    /'
+        log_error "Move or delete them first, or remove the collector's own resources yourself."
+        exit 1
+    fi
+    locks=$(az lock list --resource-group "$RG" --subscription "$DEPLOY_SUB" -o json 2>/dev/null | jq -r '.[].name | select(startswith("s247-lock-") | not)') || {
+        log_error "Could not list the locks in ${RG}; not touching it."
+        exit 1
+    }
+    if [[ -n "$locks" ]]; then
+        log_error "Resource group ${RG} has locks the collector did not create; nothing was changed:"
+        echo "$locks" | sed 's/^/    /'
+        exit 1
+    fi
+    log_ok "Resource group ${RG} holds only this collector's resources"
+}
+
+# ── Remove the collector's lock in the resource group ────────
 remove_locks() {
     log_section "Removing Resource Locks"
 
@@ -105,7 +147,8 @@ remove_locks() {
     fi
 
     local lock_ids
-    lock_ids=$(az lock list --resource-group "$RG" --subscription "$DEPLOY_SUB" -o json | jq -r '.[].id')
+    # Only the collector's own locks (s247-lock-*): check_group_contents refused any other.
+    lock_ids=$(az lock list --resource-group "$RG" --subscription "$DEPLOY_SUB" -o json | jq -r '.[] | select(.name | startswith("s247-lock-")) | .id')
 
     if [[ -z "$lock_ids" ]]; then
         log_skip "No locks found in resource group ${RG}"
@@ -199,7 +242,7 @@ remove_subscription_role_assignments() {
 
     local principal_ids
     principal_ids=$(az functionapp list --resource-group "$RG" --subscription "$DEPLOY_SUB" \
-        --query "[?identity.principalId!=null].identity.principalId" -o tsv 2>/dev/null || true)
+        --query "[?identity.principalId!=null && tags.\"managed-by\"=='s247-diag-logs'].identity.principalId" -o tsv 2>/dev/null || true)
 
     if [[ -z "$principal_ids" ]]; then
         log_skip "No managed identities found in ${RG} — nothing to clean up"

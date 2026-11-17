@@ -188,7 +188,9 @@ provision_infrastructure() {
 
     # ── Resource Group ───────────────────────────────────────
     log_info "Creating resource group ${RG} in ${REGION} ..."
-    run_az "Create resource group" group create --name "$RG" --location "$REGION" -o none
+    # Same tags as the one-click template: both teardown paths only remove what carries them.
+    run_az "Create resource group" group create --name "$RG" --location "$REGION" \
+        --tags managed-by=s247-diag-logs purpose=diagnostic-logs-collection -o none
     log_ok "Resource group ${RG} ready"
 
     # ── Storage Account ──────────────────────────────────────
@@ -201,6 +203,7 @@ provision_infrastructure() {
             --resource-group "$RG" \
             --location "$REGION" \
             --sku Standard_LRS \
+            --tags managed-by=s247-diag-logs purpose=function-app-runtime \
             -o none
         log_ok "Created storage account ${STORAGE}"
     fi
@@ -232,8 +235,18 @@ provision_infrastructure() {
             --runtime-version 3.13 \
             --instance-memory 2048 \
             --maximum-instance-count 10 \
+            --tags managed-by=s247-diag-logs \
             -o none
         log_ok "Created Function App ${FUNC_APP} (Flex Consumption)"
+        # functionapp create also makes an Application Insights named after the app: it is the
+        # collector's too, so it carries the same tag.
+        local ai_id
+        ai_id=$(az resource list --resource-group "$RG" --resource-type microsoft.insights/components \
+            --query "[?name=='${FUNC_APP}'].id | [0]" -o tsv 2>/dev/null || true)
+        if [[ -n "$ai_id" ]]; then
+            run_az "Tag Application Insights" tag update --resource-id "$ai_id" --operation merge \
+                --tags managed-by=s247-diag-logs -o none
+        fi
     fi
 
     # ── Managed Identity ─────────────────────────────────────

@@ -93,3 +93,13 @@ def test_a_delete_stopped_by_settings_reports_what_blocked_it(monkeypatch):
     assert outcome["state"] == "failed" and outcome["reason"] == "settings_remain"
     assert outcome["blocked"] == ["s247-diag-func-qt4xn2", "qt4xn2-ai"]
     assert outcome["locked_groups"] == ["s247-diag-logs-rg"]
+
+
+def test_web_apps_and_function_apps_are_discovered_apart():
+    # F-05: one Microsoft.Web/sites sample must not decide the categories of the other kind.
+    web = {"type": "Microsoft.Web/sites", "kind": "app,linux"}
+    func_app = {"type": "Microsoft.Web/sites", "kind": "functionapp,linux"}
+    assert dsm._category_key(web) != dsm._category_key(func_app)
+    assert dsm._category_key({"type": "Microsoft.Web/sites", "kind": "functionapp"}) == dsm._category_key(func_app)
+    # Other types keep one list per type
+    assert dsm._category_key({"type": "Microsoft.KeyVault/vaults", "kind": "x"}) == "Microsoft.KeyVault/vaults"
