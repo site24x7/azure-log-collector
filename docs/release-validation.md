@@ -41,6 +41,19 @@ review evidence for the matching candidate. CI continues to enforce regression,
 setup syntax, JSON and package/template VERSION pin checks. No stable release
 should be approved solely because these automated checks are green.
 
+## 1.1.1 validation (2026-11-17)
+
+On a collector deployed from the v1.1.0 template and updated in place to 1.1.1-beta1 (the same code):
+
+- The update was confirmed by the status check in under 2 minutes, and the settings were kept.
+- No diagnostic setting was placed on another collector's resources, checked in Azure.
+- Function apps got FunctionAppLogs; web apps got their own categories.
+- Log Collection off then on: the settings were removed and restored by the next scan (21 resources, 0 errors).
+- Delete Collector: the popup closed on confirm, the page showed the deleted state without a reload, and
+  the resource group was removed; Remove From Site24x7 worked.
+
+Not verified: rollback, as for 1.1.0.
+
 ## 1.1.0 validation (2026-11-16)
 
 Verified on Flex Consumption collectors in a test subscription (candidates beta12 to beta15):

@@ -7,6 +7,10 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.1.1] — 2026-11-17
+
+Same code as 1.1.1-beta1 (the 1.1.0 audit fixes), validated on a collector updated from 1.1.0.
+
 ## [1.1.1-beta1] — 2026-11-17
 
 Fixes from the 1.1.0 source audit:
