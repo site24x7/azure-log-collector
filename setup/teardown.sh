@@ -98,7 +98,8 @@ load_config() {
 # ── The group holds only the collector's resources and lock ──
 # A group tag does not prove that everything in it is the collector's: a group chosen on the
 # deployment form can also hold the customer's resources. Every resource must carry the collector's
-# managed-by tag, or be what Azure adds by itself for a tagged Function App's Application Insights
+# managed-by tag (and, when it names its collector in s247-collector, name a Function App in this
+# group), or be what Azure adds by itself for a tagged Function App's Application Insights
 # (its "Failure Anomalies - <app>-ai" rule and the "Application Insights Smart Detection" action
 # group; a shell install names its Application Insights after the app). Only the collector's own
 # locks (s247-lock-*) are allowed. Anything else stops here,
@@ -112,7 +113,9 @@ check_group_contents() {
     apps=$(echo "$resources" | jq -r '[.[] | select((.type | ascii_downcase) == "microsoft.web/sites" and .tags["managed-by"] == "s247-diag-logs") | .name | ascii_downcase]')
     foreign=$(echo "$resources" | jq -r --argjson apps "$apps" '
         .[] | (.type | ascii_downcase) as $t | (.name | ascii_downcase) as $n
-        | select(.tags["managed-by"] != "s247-diag-logs")
+        | ((.tags // {})["s247-collector"] // "" | ascii_downcase) as $owner
+        | select(.tags["managed-by"] != "s247-diag-logs"
+                 or ($owner != "" and ($apps | index($owner)) == null))
         | select(($t == "microsoft.alertsmanagement/smartdetectoralertrules"
                   and ([$apps[] | ("failure anomalies - " + . + "-ai"), ("failure anomalies - " + .)] | index($n))) | not)
         | select(($t == "microsoft.insights/actiongroups" and $n == "application insights smart detection"
@@ -196,10 +199,10 @@ clean_diagnostic_settings() {
             local destination
             destination=$(az monitor diagnostic-settings show --name "$SETTING_NAME" --resource "$id" \
                 --query storageAccountId -o tsv 2>/dev/null || true)
-            local dest_lc rg_lc
+            local dest_lc own_prefix
             dest_lc=$(echo "$destination" | tr '[:upper:]' '[:lower:]')
-            rg_lc=$(echo "$RG" | tr '[:upper:]' '[:lower:]')
-            if [[ -n "$destination" && "$dest_lc" != *"/resourcegroups/${rg_lc}/"* ]]; then
+            own_prefix=$(echo "/subscriptions/${DEPLOY_SUB}/resourcegroups/${RG}/providers/microsoft.storage/storageaccounts/" | tr '[:upper:]' '[:lower:]')
+            if [[ -n "$destination" && "$dest_lc" != "$own_prefix"* ]]; then
                 log_skip "${name}: ${SETTING_NAME} sends to another deployment's storage; left in place"
                 total_skipped=$((total_skipped + 1))
             elif [[ -n "$destination" ]]; then

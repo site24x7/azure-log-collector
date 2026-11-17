@@ -247,6 +247,19 @@ provision_infrastructure() {
             run_az "Tag Application Insights" tag update --resource-id "$ai_id" --operation merge \
                 --tags managed-by=s247-diag-logs -o none
         fi
+        # ... and a Flex plan for the app alone, which the CLI does not tag. Only the app's own
+        # plan, and only when it is in this group.
+        local plan_id plan_prefix
+        plan_id=$(az functionapp show --name "$FUNC_APP" --resource-group "$RG" --query serverFarmId -o tsv 2>/dev/null || true)
+        plan_prefix=$(echo "/resourcegroups/${RG}/providers/microsoft.web/serverfarms/" | tr '[:upper:]' '[:lower:]')
+        if [[ -n "$plan_id" && "$(echo "$plan_id" | tr '[:upper:]' '[:lower:]')" == *"$plan_prefix"* ]]; then
+            # Its generated name does not carry the suffix: the owner tag names the collector.
+            run_az "Tag Function App plan" tag update --resource-id "$plan_id" --operation merge \
+                --tags managed-by=s247-diag-logs \
+                s247-collector="$(echo "$FUNC_APP" | tr '[:upper:]' '[:lower:]')" -o none
+        else
+            log_error "Could not find the Function App's plan in ${RG}; tag it managed-by=s247-diag-logs and s247-collector=<Function App name> before uninstalling."
+        fi
     fi
 
     # ── Managed Identity ─────────────────────────────────────

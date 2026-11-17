@@ -187,6 +187,16 @@ def blocking_details(details) -> Tuple[List[str], List[str]]:
     return blocked[:MAX_BLOCKING_REPORTED], groups[:MAX_BLOCKING_REPORTED]
 
 
+def _switch_now() -> Optional[bool]:
+    """The saved switch as it reads now; None when it cannot be read."""
+    from shared.config_store import get_collection_state
+    try:
+        return get_collection_state(strict=True).get("enabled") is not False
+    except Exception as e:
+        logger.warning("Collection state unreadable before clearing storage (%s)", type(e).__name__)
+        return None
+
+
 def stop_collection() -> Dict:
     """Remove this collector's diagnostic settings everywhere and clear its stored logs.
 
@@ -204,7 +214,15 @@ def stop_collection() -> Dict:
             raise RuntimeError("no subscriptions configured")
         result = AzureManager().remove_all_diagnostic_settings(subscription_ids, get_configured_resources())
         not_cleared = sum(1 for rid in result.get("resolved_ids", []) if not unmark_resource_configured(rid))
-        storage = _clear_all()
+        # Switching on does not wait for this job: checked again before the stored logs go.
+        # Collection on again keeps them (its queued scan puts the settings back); a state that
+        # cannot be read keeps them too, nothing destructive on a guess.
+        switch = _switch_now()
+        if switch:
+            logger.info("Log collection switched on during the removal; the stored logs are kept")
+            update_collection_state({"stop": None})
+            return {"state": "superseded", "finished_at": _now()}
+        storage = _clear_all() if switch is False else {"accounts": 0, "containers_cleared": 0, "storage_errors": 1}
         complete = not (result["errors"] or result["unresolved"] or not_cleared or list_error
                         or storage["storage_errors"])
         outcome = {

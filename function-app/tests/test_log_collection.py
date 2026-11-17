@@ -148,6 +148,7 @@ def test_stop_records_a_partial_removal():
          patch("shared.config_store.get_configured_resources", return_value={}), \
          patch("shared.config_store.unmark_resource_configured", return_value=True), \
          patch("shared.collection._clear_all", return_value={"accounts": 2, "containers_cleared": 4, "storage_errors": 0}), \
+         patch("shared.config_store.get_collection_state", return_value={"enabled": False}), \
          patch("shared.debug_logger.log_event"), patch("shared.debug_logger.log_audit"):
         outcome = collection.stop_collection()
     assert outcome["state"] == "partial" and outcome["removed"] == 3 and outcome["errors"] == 1
@@ -319,5 +320,6 @@ def test_a_storage_failure_makes_the_stop_partial():
          patch("shared.config_store.get_configured_resources", return_value={}), \
          patch("shared.config_store.unmark_resource_configured", return_value=True), \
          patch("shared.collection._clear_all", return_value={"accounts": 1, "containers_cleared": 0, "storage_errors": 1}), \
+         patch("shared.config_store.get_collection_state", return_value={"enabled": False}), \
          patch("shared.debug_logger.log_event"), patch("shared.debug_logger.log_audit"):
         assert collection.stop_collection()["state"] == "partial"

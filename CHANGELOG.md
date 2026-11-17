@@ -7,6 +7,25 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.1.2-beta1] — 2026-11-17
+
+Fixes from the re-review of 1.1.1:
+
+- setup/teardown.sh refuses a resource group that holds a resource tagged for another collector
+  (s247-collector naming a Function App that is not in the group), as Delete Collector already did.
+- Switching Log Collection on while an earlier "off" is still removing settings now keeps the
+  stored logs: the switch is read again just before the storage is emptied, and the queued scan
+  puts the settings back. If the switch cannot be read then, the logs are kept too.
+- teardown.sh --clean-diag-settings removes the collector's setting only when it sends to the
+  collector's own subscription and resource group, the same rule the collector uses.
+- setup.sh tags the Flex Consumption plan that the Azure CLI creates for the Function App
+  (managed-by and s247-collector), so both uninstall paths accept a fresh shell installation.
+
+Known, not changed in this release: a diagnostic setting is treated as the collector's when it
+sends to any storage account in the collector's resource group, not only the collector's own
+accounts; a collector that saved an incomplete function-app category list on 1.1.0 keeps it (only
+test collectors ran 1.1.0); and the two items listed under 1.1.1-beta1.
+
 ## [1.1.1] — 2026-11-17
 
 Same code as 1.1.1-beta1 (the 1.1.0 audit fixes), validated on a collector updated from 1.1.0.
