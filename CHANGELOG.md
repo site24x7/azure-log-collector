@@ -7,6 +7,10 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.2.0-beta2] — 2026-11-18
+
+Same code as 1.2.0-beta1, released to test a self-update under the narrower roles.
+
 ## [1.2.0-beta1] — 2026-11-18
 
 Second round of the security review fixes:
