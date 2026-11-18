@@ -239,10 +239,10 @@ def _patched_run(proc_env, blob_specs, all_configs=None,
 
     saved = {}
 
-    def _save(_conn, cps):
+    def _save(cps):
         saved.update(cps)
 
-    def _load(_conn):
+    def _load():
         return dict(initial_checkpoints or {})
 
     with patch("BlobLogProcessor.DefaultAzureCredential"), \
@@ -484,7 +484,7 @@ class TestBlockListProcessing:
              patch("BlobLogProcessor.BlobServiceClient.from_connection_string",
                    return_value=fake_blob_service), \
              patch("BlobLogProcessor._save_checkpoints",
-                   side_effect=lambda _c, cps: saved.update(cps)), \
+                   side_effect=lambda cps: saved.update(cps)), \
              patch("BlobLogProcessor._load_checkpoints", return_value={}), \
              patch("shared.config_store.get_all_logtype_configs",
                    return_value={"S247_test": {"x": 1}}), \
@@ -634,14 +634,15 @@ class TestReliabilityFixes:
 
     def test_checkpoint_gc_survives_the_merge(self, monkeypatch):
         import BlobLogProcessor
+        monkeypatch.setenv("AzureWebJobsStorage", "conn")
         stale = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
         remote = {"old/blob": {"next_block": 3, "last_seen": stale}}
         blob_client = MagicMock()
         service = MagicMock()
         service.get_container_client.return_value.get_blob_client.return_value = blob_client
         monkeypatch.setattr(BlobLogProcessor.BlobServiceClient, "from_connection_string", lambda c: service)
-        monkeypatch.setattr(BlobLogProcessor, "_load_checkpoints_with_etag", lambda c: (remote, "etag"))
-        BlobLogProcessor._save_checkpoints("conn", {"new/blob": {"next_block": 1, "last_seen": _now_iso()}})
+        monkeypatch.setattr(BlobLogProcessor, "_load_checkpoints_with_etag", lambda: (remote, "etag"))
+        BlobLogProcessor._save_checkpoints({"new/blob": {"next_block": 1, "last_seen": _now_iso()}})
         written = json.loads(blob_client.upload_blob.call_args.args[0])
         assert "old/blob" not in written and "new/blob" in written
 
@@ -670,7 +671,7 @@ def _patched_run_append(proc_env, blob_specs, client):
     with patch("BlobLogProcessor.DefaultAzureCredential"), \
          patch("BlobLogProcessor.StorageManagementClient", return_value=mgmt), \
          patch("BlobLogProcessor.BlobServiceClient.from_connection_string", return_value=fake_service), \
-         patch("BlobLogProcessor._save_checkpoints", side_effect=lambda c, cps: saved.update(cps)), \
+         patch("BlobLogProcessor._save_checkpoints", side_effect=lambda cps: saved.update(cps)), \
          patch("BlobLogProcessor._load_checkpoints", return_value={}), \
          patch("shared.config_store.get_all_logtype_configs", return_value={"S247_test": {"x": 1}}), \
          patch("shared.config_store.clear_cache"):

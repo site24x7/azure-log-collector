@@ -58,7 +58,7 @@ def _clear_storage(region_mgr, resource_group: str) -> Dict[str, int]:
     """Empty this collector's storage accounts: the diagnostic-log containers go, and
     the processing checkpoints that pointed into them. The accounts stay, idle."""
     from azure.mgmt.storage import StorageManagementClient
-    from azure.storage.blob import BlobServiceClient
+    from shared.storage_clients import regional_blob_service
     from shared.region_manager import IDLE_RETENTION_DAYS, REGIONAL_PURPOSE, TENANT_STORAGE_PURPOSE, is_own_account
 
     counts = {"accounts": 0, "containers_cleared": 0, "storage_errors": 0}
@@ -75,9 +75,12 @@ def _clear_storage(region_mgr, resource_group: str) -> Dict[str, int]:
         if not region_mgr.set_retention(resource_group, acct.name, IDLE_RETENTION_DAYS):
             counts["storage_errors"] += 1
         try:
-            key = client.storage_accounts.list_keys(resource_group, acct.name).keys[0].value
-            service = BlobServiceClient(account_url=f"https://{acct.name}.blob.core.windows.net",
-                                        credential={"account_name": acct.name, "account_key": key})
+            primary = getattr(getattr(acct, "primary_endpoints", None), "blob", None)
+            service = regional_blob_service(
+                acct.name,
+                blob_endpoint=primary if isinstance(primary, str) and primary
+                else f"https://{acct.name}.blob.core.windows.net",
+                credential=region_mgr.credential, storage_mgmt=client, resource_group=resource_group)
             # Only the containers Azure diagnostic settings write to (insights-logs*, insights-metrics-*).
             for container in service.list_containers(name_starts_with="insights-"):
                 service.delete_container(container["name"])
@@ -94,19 +97,19 @@ def _clear_storage(region_mgr, resource_group: str) -> Dict[str, int]:
 def _drop_checkpoints(accounts) -> bool:
     """Forget the processing checkpoints of blobs in these accounts (they are gone)."""
     from azure.core import MatchConditions
-    from azure.storage.blob import BlobServiceClient
     from BlobLogProcessor import CHECKPOINT_BLOB, CHECKPOINT_CONTAINER, _load_checkpoints_with_etag
     from shared.config_store import is_conflict
+    from shared.storage_clients import runtime_blob_service
 
-    conn_str = os.environ.get("AzureWebJobsStorage", "")
-    if not conn_str:
+    service = runtime_blob_service()
+    if service is None:
         return True
     prefixes = tuple(f"{name}/" for name in accounts)
-    blob = BlobServiceClient.from_connection_string(conn_str).get_container_client(
+    blob = service.get_container_client(
         CHECKPOINT_CONTAINER).get_blob_client(CHECKPOINT_BLOB)
     for _ in range(5):
         try:
-            checkpoints, etag = _load_checkpoints_with_etag(conn_str)
+            checkpoints, etag = _load_checkpoints_with_etag()
             kept = {k: v for k, v in checkpoints.items() if not str(k).startswith(prefixes)}
             if len(kept) == len(checkpoints):
                 return True

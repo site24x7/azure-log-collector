@@ -123,13 +123,13 @@ preflight_checks() {
     log_info "Region:            ${REGION}"
 
     # Check required tools
-    for cmd in az jq zip; do
+    for cmd in az jq zip python3; do
         if ! command -v $cmd &>/dev/null; then
             log_error "$cmd is required but not installed"
             exit 1
         fi
     done
-    log_ok "Required tools available (az, jq, zip)"
+    log_ok "Required tools available (az, jq, zip, python3)"
 
     # Check az CLI login
     if ! az account list --output tsv &>/dev/null; then
@@ -311,77 +311,41 @@ provision_infrastructure() {
 
     # ── RBAC Role Assignments ────────────────────────────────
     log_info "Assigning RBAC roles ..."
-    local rbac_failed=false
+    local sub scope rg_id site_id hosting_sub definitions custom_role_id
+    local custom_role
+    hosting_sub=$(az account show --query id -o tsv)
+    # Role names are unique per tenant: one CLI-created definition per subscription, named apart
+    # from the template's ("... v1 (<sub>)"), so either install path can come first.
+    custom_role="Site24x7 Collector RG Delete v1 CLI (${hosting_sub})"
+    rg_id=$(az group show --subscription "$hosting_sub" --name "$RG" --query id -o tsv)
+    site_id=$(az functionapp show --subscription "$hosting_sub" --resource-group "$RG" \
+        --name "$FUNC_APP" --query id -o tsv)
+    if [[ -z "$hosting_sub" || -z "$rg_id" || -z "$site_id" ]]; then
+        log_error "Could not resolve the Azure scopes for the collector's required roles."
+        exit 1
+    fi
+    if ! custom_role_id=$(ensure_rg_delete_role "$hosting_sub" "$custom_role"); then
+        log_error "Setup stopped before code deployment. The installer needs Owner or Contributor plus User Access Administrator to create the custom role and assign roles."
+        exit 1
+    fi
 
     for sub in "${SUBS[@]}"; do
         sub="$(echo "$sub" | xargs)"
-        local scope="/subscriptions/${sub}"
-
-        if az role assignment create \
-            --assignee-object-id "$principal_id" \
-            --assignee-principal-type ServicePrincipal \
-            --role "Reader" \
-            --scope "$scope" \
-            -o none 2>>"$LOG_FILE"; then
-            log_ok "Reader on subscription ${sub}"
-        else
-            log_error "Failed to assign Reader on ${sub} (need Owner/RBAC Admin role)"
-            rbac_failed=true
-        fi
-
-        if az role assignment create \
-            --assignee-object-id "$principal_id" \
-            --assignee-principal-type ServicePrincipal \
-            --role "Monitoring Contributor" \
-            --scope "$scope" \
-            -o none 2>>"$LOG_FILE"; then
-            log_ok "Monitoring Contributor on subscription ${sub}"
-        else
-            log_error "Failed to assign Monitoring Contributor on ${sub}"
-            rbac_failed=true
-        fi
+        scope="/subscriptions/${sub}"
+        require_collector_role "$sub" "$scope" "$principal_id" "Reader" "Reader"
+        require_collector_role "$sub" "$scope" "$principal_id" "Monitoring Contributor" "Monitoring Contributor"
+        log_ok "Reader and Monitoring Contributor on subscription ${sub}"
     done
 
-    # Contributor on RG only (for storage account + lock management)
-    local rg_id
-    rg_id=$(az group show --name "$RG" --query id -o tsv)
-    if az role assignment create \
-        --assignee-object-id "$principal_id" \
-        --assignee-principal-type ServicePrincipal \
-        --role "Contributor" \
-        --scope "$rg_id" \
-        -o none 2>>"$LOG_FILE"; then
-        log_ok "Contributor on resource group ${RG}"
-    else
-        log_error "Failed to assign Contributor on RG ${RG}"
-        rbac_failed=true
-    fi
-    # Locks only (built-in): Delete Collector removes the collector's lock before deleting the group.
-    if az role assignment create \
-        --assignee-object-id "$principal_id" \
-        --assignee-principal-type ServicePrincipal \
-        --role "Locks Contributor" \
-        --scope "$rg_id" \
-        -o none 2>>"$LOG_FILE"; then
-        log_ok "Locks Contributor on resource group ${RG}"
-    else
-        log_error "Failed to assign Locks Contributor on RG ${RG}"
-        rbac_failed=true
-    fi
-
-    if [[ "$rbac_failed" == "true" ]]; then
-        log_error ""
-        log_error "RBAC assignments failed. Your account needs Owner or RBAC Administrator"
-        log_error "role on the subscription to assign roles. Ask your Azure admin to either:"
-        log_error "  1. Grant you 'Role Based Access Control Administrator' role, OR"
-        log_error "  2. Manually assign these roles to the managed identity (principal: ${principal_id}):"
-        log_error "     - Reader on monitored subscriptions"
-        log_error "     - Monitoring Contributor on monitored subscriptions"
-        log_error "     - Contributor on resource group ${RG}"
-        log_error "     - Locks Contributor on resource group ${RG}"
-        log_error ""
-        log_info "Continuing setup — RBAC can be assigned later via Azure Portal."
-    fi
+    definitions="/subscriptions/$hosting_sub/providers/Microsoft.Authorization/roleDefinitions"
+    require_scoped_collector_role "$hosting_sub" "$rg_id" "$principal_id" \
+        "$definitions/17d1049b-9a84-46fb-8f53-869881c3d3ab" "Storage Account Contributor"
+    require_scoped_collector_role "$hosting_sub" "$site_id" "$principal_id" \
+        "$definitions/de139f84-1756-47ae-9be6-808fbbe84772" "Website Contributor"
+    require_scoped_collector_role "$hosting_sub" "$rg_id" "$principal_id" "$custom_role_id" "$custom_role"
+    require_collector_role "$hosting_sub" "$rg_id" "$principal_id" \
+        "$definitions/28bf596f-4eb7-45ce-b5bc-6cf482fec137" "Locks Contributor"
+    log_ok "Storage Account Contributor, Locks Contributor and ${custom_role} on ${RG}; Website Contributor on ${FUNC_APP}"
 
     # ── Resource Locks ───────────────────────────────────────
     log_info "Applying CanNotDelete locks ..."
@@ -697,6 +661,8 @@ main() {
     echo "=== Setup started at $(date) ===" >> "$LOG_FILE"
     log_info "Full log: ${LOG_FILE}"
 
+    # Reuse the RBAC provisioning helpers without running the migration.
+    source "${SCRIPT_DIR}/migrate-roles.sh"
     preflight_checks
     provision_infrastructure
     deploy_function_app

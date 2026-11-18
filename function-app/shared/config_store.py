@@ -15,6 +15,8 @@ from azure.core import MatchConditions
 from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
 from azure.storage.blob import BlobServiceClient
 
+from shared.storage_clients import runtime_blob_service, runtime_storage_configured
+
 logger = logging.getLogger(__name__)
 
 CONTAINER_NAME = "config"
@@ -58,11 +60,10 @@ def _expire_cache() -> None:
 
 
 def _get_service_client() -> Optional[BlobServiceClient]:
-    conn_str = os.environ.get("AzureWebJobsStorage", "")
-    if not conn_str:
-        logger.error("AzureWebJobsStorage environment variable is not set")
-        return None
-    return BlobServiceClient.from_connection_string(conn_str)
+    service = runtime_blob_service()
+    if service is None:
+        logger.error("Runtime storage is not configured (AzureWebJobsStorage or its identity settings)")
+    return service
 
 
 def _ensure_container(service_client: BlobServiceClient) -> None:
@@ -629,7 +630,7 @@ def get_processing_enabled() -> bool:
     app-setting write or restart. Storage/corrupt-data errors are not treated as
     permission to resume processing.
     """
-    if not os.environ.get("AzureWebJobsStorage"):
+    if not runtime_storage_configured():
         return os.environ.get("PROCESSING_ENABLED", "true").lower() == "true"
     raw = _read_blob(PROCESSING_CONTROL_BLOB, strict=True)
     if raw is None:
@@ -647,7 +648,7 @@ def get_collection_state(strict: bool = False) -> Dict:
     A missing blob is "on" (every collector starts collecting). With ``strict`` an
     unreadable or corrupt state raises: a scan must not set up settings the
     customer switched off."""
-    if not os.environ.get("AzureWebJobsStorage"):
+    if not runtime_storage_configured():
         return {"enabled": True}  # not on Azure (local runs, tests): as the pause flag
     raw = _read_blob(COLLECTION_CONTROL_BLOB, strict=True) if strict else _read_blob(COLLECTION_CONTROL_BLOB)
     if raw is None:

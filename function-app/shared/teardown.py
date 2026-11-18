@@ -13,11 +13,13 @@ ScanWorker under the scan lock:
    Locks Contributor role on the group, which the template grants; a collector
    deployed before it reports so and the admin removes them.
 4. Site24x7 is told the collector is being deleted, then the group delete is
-   started (not awaited: it removes this Function App too).
+   started using Site24x7 Collector RG Delete v1 on this group. The job does
+   not await the delete because it removes this Function App too.
 
 Left for an admin, and listed in the result: the Reader and Monitoring
 Contributor grants on the monitored subscriptions, the subscription-level
-deployment record, and an Entra ID diagnostic setting a tenant admin made.
+deployment record, and an Entra ID diagnostic setting a tenant admin made. The
+shared custom RG-delete role definition is retained in the hosting subscription.
 """
 
 import logging

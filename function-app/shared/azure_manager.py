@@ -10,7 +10,12 @@ from typing import Optional, Dict, List, Any
 
 from azure.identity import DefaultAzureCredential
 from azure.mgmt.resource import ResourceManagementClient
-from azure.mgmt.monitor import MonitorManagementClient
+try:  # optional: only used when MONITOR_CLIENT=sdk
+    from azure.mgmt.monitor import MonitorManagementClient
+except Exception:  # pragma: no cover
+    MonitorManagementClient = None
+
+from shared.monitor_rest import MonitorRestClient, sdk_requested, warn_sdk_unavailable
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +52,7 @@ class AzureManager:
     def __init__(self):
         self.credential = DefaultAzureCredential()
         self._diag_support_cache: Dict[str, bool] = {}
-        self._monitor_clients: Dict[str, MonitorManagementClient] = {}
+        self._monitor_clients: Dict[str, Any] = {}
         # What the last get_all_resources() could not read. While it is not
         # empty the list is partial, and nothing may be removed on its basis.
         self.discovery_errors: List[str] = []
@@ -56,14 +61,23 @@ class AzureManager:
     def discovery_complete(self) -> bool:
         return not self.discovery_errors
 
-    def _get_monitor_client(self, subscription_id: str) -> MonitorManagementClient:
-        """Get or create a cached MonitorManagementClient for a subscription."""
+    def _get_monitor_client(self, subscription_id: str) -> Any:
+        """Get or create a cached Monitor client for a subscription.
+
+        REST by default; the SDK only when MONITOR_CLIENT=sdk (and installed).
+        """
         if subscription_id not in self._monitor_clients:
-            self._monitor_clients[subscription_id] = MonitorManagementClient(
-                self.credential, subscription_id,
-                connection_timeout=10,
-                read_timeout=30,
-            )
+            if sdk_requested() and MonitorManagementClient is None:
+                warn_sdk_unavailable()
+            if sdk_requested() and MonitorManagementClient is not None:
+                client = MonitorManagementClient(
+                    self.credential, subscription_id,
+                    connection_timeout=10,
+                    read_timeout=30,
+                )
+            else:
+                client = MonitorRestClient(self.credential)
+            self._monitor_clients[subscription_id] = client
         return self._monitor_clients[subscription_id]
 
     # ------------------------------------------------------------------

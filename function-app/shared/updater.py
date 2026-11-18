@@ -506,9 +506,12 @@ UPDATE_STATE_BLOB = "update-state.json"
 def _stage_verified_package(zip_path: str, version: str, sha256: str) -> str:
     """Upload the verified zip and return a read-only HTTPS link to it."""
     from azure.core.exceptions import ResourceExistsError
-    from azure.storage.blob import BlobSasPermissions, BlobServiceClient, generate_blob_sas
+    from azure.storage.blob import BlobSasPermissions, generate_blob_sas
+    from shared.storage_clients import MODE_IDENTITY, runtime_blob_service, runtime_storage_mode
 
-    service = BlobServiceClient.from_connection_string(os.environ["AzureWebJobsStorage"])
+    service = runtime_blob_service()
+    if service is None:
+        raise RuntimeError("Runtime storage is not configured")
     container = service.get_container_client(PACKAGE_CONTAINER)
     try:
         container.create_container()
@@ -519,11 +522,16 @@ def _stage_verified_package(zip_path: str, version: str, sha256: str) -> str:
     blob = container.get_blob_client(name)
     with open(zip_path, "rb") as f:
         blob.upload_blob(f, overwrite=True)
-    sas = generate_blob_sas(
-        account_name=service.account_name, container_name=PACKAGE_CONTAINER, blob_name=name,
-        account_key=service.credential.account_key, permission=BlobSasPermissions(read=True),
-        expiry=datetime.now(timezone.utc) + timedelta(hours=PACKAGE_LINK_HOURS), protocol="https",
-    )
+    now = datetime.now(timezone.utc)
+    expiry = now + timedelta(hours=PACKAGE_LINK_HOURS)
+    sas_args = dict(account_name=service.account_name, container_name=PACKAGE_CONTAINER, blob_name=name,
+                    permission=BlobSasPermissions(read=True), expiry=expiry, protocol="https")
+    if runtime_storage_mode() == MODE_IDENTITY:
+        # Identity mode: a user delegation key signs the link; no account key exists here.
+        sas_args["user_delegation_key"] = service.get_user_delegation_key(now - timedelta(minutes=5), expiry)
+    else:
+        sas_args["account_key"] = service.credential.account_key
+    sas = generate_blob_sas(**sas_args)
     return f"{blob.url}?{sas}"
 
 

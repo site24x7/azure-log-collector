@@ -211,22 +211,24 @@ def test_a_disabled_category_matches_in_any_spelling(saved, asked):
         assert config_store.is_log_type_disabled(asked) is True
 
 
-def test_unreadable_checkpoints_skip_the_run():
+def test_unreadable_checkpoints_skip_the_run(monkeypatch):
     import BlobLogProcessor as blp
+    monkeypatch.setenv("AzureWebJobsStorage", "UseDevelopmentStorage=true")
     service = MagicMock()
     service.get_container_client.return_value.download_blob.side_effect = RuntimeError("timeout")
     with patch.object(blp.BlobServiceClient, "from_connection_string", return_value=service):
         with pytest.raises(blp.CheckpointsUnavailable):
-            blp._load_checkpoints("UseDevelopmentStorage=true")
+            blp._load_checkpoints()
 
 
-def test_missing_checkpoints_are_empty():
+def test_missing_checkpoints_are_empty(monkeypatch):
     import BlobLogProcessor as blp
+    monkeypatch.setenv("AzureWebJobsStorage", "UseDevelopmentStorage=true")
     from azure.core.exceptions import ResourceNotFoundError
     service = MagicMock()
     service.get_container_client.return_value.download_blob.side_effect = ResourceNotFoundError("missing")
     with patch.object(blp.BlobServiceClient, "from_connection_string", return_value=service):
-        assert blp._load_checkpoints("UseDevelopmentStorage=true") == {}
+        assert blp._load_checkpoints() == {}
 
 
 @pytest.mark.parametrize("error, conflict", [

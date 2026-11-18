@@ -203,7 +203,7 @@ def _run(proc_env, blob_client, client, last_modified, checkpoints=None):
     with patch("BlobLogProcessor.DefaultAzureCredential"), \
          patch("BlobLogProcessor.StorageManagementClient", return_value=mgmt), \
          patch("BlobLogProcessor.BlobServiceClient.from_connection_string", return_value=service), \
-         patch("BlobLogProcessor._save_checkpoints", side_effect=lambda c, cps: saved.update(cps)), \
+         patch("BlobLogProcessor._save_checkpoints", side_effect=lambda cps: saved.update(cps)), \
          patch("BlobLogProcessor._load_checkpoints", return_value=dict(checkpoints or {})), \
          patch("shared.debug_logger.save_processing_stats", side_effect=lambda s: stats.update(s)), \
          patch("shared.config_store.get_all_logtype_configs", return_value={"S247_test": {"x": 1}}), \

@@ -101,8 +101,8 @@ def _arm(method: str, url: str, token: str, body: Optional[Dict] = None):
 def get_function_key(resource_id: str) -> Optional[str]:
     """The key Site24x7 uses: the same "site24x7" function key on every function
     in site24x7_functions(), created (or re-created after a rotation that left
-    the functions with different values) through the managed identity (RG
-    Contributor). On functions the customer excluded the key is overwritten
+    the functions with different values) through the managed identity (Website
+    Contributor scoped to this Function App). On functions the customer excluded the key is overwritten
     with a value nobody holds (the resource group lock forbids deleting keys).
     Returns None when it cannot be read or set, or when every function is excluded."""
     from azure.identity import DefaultAzureCredential
@@ -119,7 +119,7 @@ def get_function_key(resource_id: str) -> Optional[str]:
         if not resp.ok:
             _record("warning", f"Could not read the Site24x7 function key (ARM listkeys HTTP {resp.status_code})",
                     {"stage": "listKeys", "function": function, "http_status": resp.status_code,
-                     "hint": "the app's managed identity needs Contributor on its resource group"})
+                     "hint": "the app's managed identity needs Website Contributor on this Function App"})
             return None
         keys = resp.json() or {}
         values[function] = keys.get(SITE24X7_KEY_NAME) if isinstance(keys, dict) else None

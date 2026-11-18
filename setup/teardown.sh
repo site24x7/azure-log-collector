@@ -261,49 +261,64 @@ clean_diagnostic_settings() {
     echo -e "  Failed:  ${RED}${total_failed}${NC}"
 }
 
-# ── Remove subscription-scoped role assignments for the managed identity ──
-remove_subscription_role_assignments() {
-    log_section "Removing Subscription-Scoped Role Assignments"
+# ── Remove role assignments for the managed identity ─────────
+delete_role_assignments() {
+    local assignment_ids="$1" aid
+    while IFS= read -r aid; do
+        [[ -z "$aid" ]] && continue
+        log_info "Deleting role assignment: $(basename "$aid")"
+        if az role assignment delete --ids "$aid" -o none 2>/dev/null; then
+            count=$((count + 1))
+        else
+            log_error "Failed to delete role assignment ${aid}"
+        fi
+    done <<< "$assignment_ids"
+}
 
-    # Collect principal IDs of any managed identities on Function Apps in the RG
-    if ! az group show --name "$RG" --subscription "$DEPLOY_SUB" &>/dev/null; then
+remove_collector_role_assignments() {
+    log_section "Removing Collector Role Assignments"
+
+    local rg_id sites
+    if ! rg_id=$(az group show --name "$RG" --subscription "$DEPLOY_SUB" --query id -o tsv 2>/dev/null); then
         log_skip "Resource group ${RG} does not exist — skipping role assignment cleanup"
         return
     fi
-
-    local principal_ids
-    principal_ids=$(az functionapp list --resource-group "$RG" --subscription "$DEPLOY_SUB" \
-        --query "[?identity.principalId!=null && tags.\"managed-by\"=='s247-diag-logs'].identity.principalId" -o tsv 2>/dev/null || true)
-
-    if [[ -z "$principal_ids" ]]; then
+    if ! sites=$(az functionapp list --resource-group "$RG" --subscription "$DEPLOY_SUB" \
+        --query "[?identity.principalId!=null && tags.\"managed-by\"=='s247-diag-logs'].[identity.principalId,id]" -o tsv 2>/dev/null); then
+        log_error "Could not list the collectors' managed identities. Check for leftover subscription assignments."
+        return
+    fi
+    if [[ -z "$sites" ]]; then
         log_skip "No managed identities found in ${RG} — nothing to clean up"
         return
     fi
 
-    local count=0
-    while IFS= read -r pid; do
-        [[ -z "$pid" ]] && continue
+    local count=0 pid site_id sub scope assignment_ids
+    while IFS=$'\t' read -r pid site_id; do
         for sub in "${SUBS[@]}"; do
             sub="$(echo "$sub" | xargs)"
-            local assignment_ids
-            assignment_ids=$(az role assignment list \
-                --assignee "$pid" \
-                --subscription "$sub" \
-                --scope "/subscriptions/${sub}" \
-                --query "[].id" -o tsv 2>/dev/null || true)
-            while IFS= read -r aid; do
-                [[ -z "$aid" ]] && continue
-                log_info "Deleting role assignment: $(basename "$aid")"
-                if az role assignment delete --ids "$aid" -o none 2>/dev/null; then
-                    count=$((count + 1))
-                else
-                    log_error "Failed to delete role assignment ${aid}"
-                fi
-            done <<< "$assignment_ids"
+            scope="/subscriptions/${sub}"
+            if assignment_ids=$(az role assignment list \
+                --assignee-object-id "$pid" --fill-principal-name false --fill-role-definition-name false \
+                --subscription "$sub" --scope "$scope" --query "[?scope=='${scope}'].id" -o tsv 2>/dev/null); then
+                delete_role_assignments "$assignment_ids"
+            else
+                log_error "Could not list subscription assignments for ${pid} on ${sub}."
+            fi
         done
-    done <<< "$principal_ids"
+        # Look only at the collector's own RG and site. Any scoped grants still
+        # present when Azure deletes the group are removed with those resources.
+        if assignment_ids=$(az role assignment list --subscription "$DEPLOY_SUB" \
+            --assignee-object-id "$pid" --fill-principal-name false --scope "$site_id" \
+            --include-inherited --query "[?(scope=='${rg_id}' && (contains(['Storage Account Contributor', 'Locks Contributor'], roleDefinitionName) || starts_with(roleDefinitionName, 'Site24x7 Collector RG Delete v1'))) || (scope=='${site_id}' && roleDefinitionName=='Website Contributor')].id" \
+            -o tsv 2>/dev/null); then
+            delete_role_assignments "$assignment_ids"
+        else
+            log_skip "Could not list scoped assignments for ${pid}; Azure removes them with the group."
+        fi
+    done <<< "$sites"
 
-    log_ok "Removed ${count} subscription-scoped role assignment(s)"
+    log_ok "Removed ${count} role assignment(s)"
 }
 
 # ── Delete the resource group ────────────────────────────────
@@ -332,7 +347,7 @@ print_summary() {
         echo -e "  Diagnostic Settings:       ${YELLOW}Not cleaned${NC} (use --clean-diag-settings)"
     fi
     echo -e "  Resource Locks:            ${GREEN}Removed${NC}"
-    echo -e "  Role Assignments:          ${GREEN}Removed (sub scope)${NC}"
+    echo "  Shared custom role definition retained: Site24x7 Collector RG Delete v1 (one per subscription)"
     echo ""
     log_ok "Teardown complete! 🧹"
 }
@@ -354,7 +369,7 @@ main() {
         log_info "Skipping diagnostic settings cleanup (pass --clean-diag-settings to enable)"
     fi
 
-    remove_subscription_role_assignments
+    remove_collector_role_assignments
     delete_resource_group
     print_summary
 }

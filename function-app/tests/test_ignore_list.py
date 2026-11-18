@@ -234,11 +234,11 @@ class TestLoadIgnoreList:
 
 
 class TestSaveIgnoreList:
-    @patch("shared.ignore_list.BlobServiceClient")
+    @patch("shared.ignore_list.runtime_blob_service")
     def test_save_success(self, mock_bsc_cls, monkeypatch):
         monkeypatch.setenv("AzureWebJobsStorage", "DefaultEndpointsProtocol=https;AccountName=test")
         svc = MagicMock()
-        mock_bsc_cls.from_connection_string.return_value = svc
+        mock_bsc_cls.return_value = svc
         container = MagicMock()
         container.exists.return_value = True
         svc.get_container_client.return_value = container

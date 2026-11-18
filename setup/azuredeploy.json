@@ -129,7 +129,7 @@
     "seedStorageName": "[if(greater(length(variables('uniqueSuffix')), 6), concat('s247dr', variables('uniqueSuffix')), take(concat('s247diag', replace(replace(deployment().location, ' ', ''), '-', ''), variables('uniqueSuffix')), 24))]",
     "hostingPlanName": "[concat('s247-diag-func-', variables('uniqueSuffix'), '-plan')]",
     "appInsightsName": "[concat('s247-diag-func-', variables('uniqueSuffix'), '-ai')]",
-    "functionZipUrl": "https://github.com/site24x7/azure-log-collector/releases/download/v1.1.3/released-package.zip",
+    "functionZipUrl": "https://github.com/site24x7/azure-log-collector/releases/download/v1.2.0-beta1/released-package.zip",
     "readerRoleId": "acdd72a7-3385-48ef-bd42-f606fba81ae7",
     "monitoringContributorRoleId": "749f88d5-cbae-40b8-bcfc-e573ddc772fa",
     "deploymentContainerName": "[concat('app-package-', take(variables('functionAppName'), 50))]",
@@ -234,12 +234,37 @@
       ]
     },
     {
+      "type": "Microsoft.Authorization/roleDefinitions",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(subscription().id, 's247-collector-rg-delete-v1')]",
+      "properties": {
+        "roleName": "[concat('Site24x7 Collector RG Delete v1 (', subscription().subscriptionId, ')')]",
+        "description": "Read and delete the resource group assigned to the Site24x7 collector.",
+        "type": "CustomRole",
+        "assignableScopes": [
+          "[subscription().id]"
+        ],
+        "permissions": [
+          {
+            "actions": [
+              "Microsoft.Resources/subscriptions/resourceGroups/delete",
+              "Microsoft.Resources/subscriptions/resourceGroups/read"
+            ],
+            "notActions": [],
+            "dataActions": [],
+            "notDataActions": []
+          }
+        ]
+      }
+    },
+    {
       "type": "Microsoft.Resources/deployments",
       "apiVersion": "2022-09-01",
       "name": "s247-diag-logs-resources",
       "resourceGroup": "[variables('rgName')]",
       "dependsOn": [
-        "[variables('rgName')]"
+        "[variables('rgName')]",
+        "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', guid(subscription().id, 's247-collector-rg-delete-v1'))]"
       ],
       "properties": {
         "mode": "Incremental",
@@ -294,6 +319,9 @@
           },
           "logWorkspaceName": {
             "value": "[variables('logWorkspaceName')]"
+          },
+          "rgDeleteRoleDefinitionId": {
+            "value": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', guid(subscription().id, 's247-collector-rg-delete-v1'))]"
           }
         },
         "template": {
@@ -346,6 +374,9 @@
               "type": "string"
             },
             "logWorkspaceName": {
+              "type": "string"
+            },
+            "rgDeleteRoleDefinitionId": {
               "type": "string"
             }
           },
@@ -599,16 +630,80 @@
               }
             },
             {
-              "type": "Microsoft.Authorization/roleAssignments",
-              "apiVersion": "2022-04-01",
-              "name": "[guid(resourceGroup().id, parameters('functionAppName'), 'b24988ac-6180-42a0-ab88-20f7382dd24c')]",
+              "comments": "Pass the runtime principal ID into the nested deployment so it can be used in assignment names.",
+              "type": "Microsoft.Resources/deployments",
+              "apiVersion": "2022-09-01",
+              "name": "[concat(parameters('functionAppName'), '-scoped-roles')]",
               "dependsOn": [
                 "[resourceId('Microsoft.Web/sites', parameters('functionAppName'))]"
               ],
               "properties": {
-                "roleDefinitionId": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Authorization/roleDefinitions/b24988ac-6180-42a0-ab88-20f7382dd24c')]",
-                "principalId": "[reference(resourceId('Microsoft.Web/sites', parameters('functionAppName')), '2023-01-01', 'Full').identity.principalId]",
-                "principalType": "ServicePrincipal"
+                "mode": "Incremental",
+                "expressionEvaluationOptions": {
+                  "scope": "inner"
+                },
+                "parameters": {
+                  "functionAppName": {
+                    "value": "[parameters('functionAppName')]"
+                  },
+                  "principalId": {
+                    "value": "[reference(resourceId('Microsoft.Web/sites', parameters('functionAppName')), '2023-01-01', 'Full').identity.principalId]"
+                  },
+                  "rgDeleteRoleDefinitionId": {
+                    "value": "[parameters('rgDeleteRoleDefinitionId')]"
+                  }
+                },
+                "template": {
+                  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                  "contentVersion": "1.0.0.0",
+                  "parameters": {
+                    "functionAppName": {
+                      "type": "string"
+                    },
+                    "principalId": {
+                      "type": "string"
+                    },
+                    "rgDeleteRoleDefinitionId": {
+                      "type": "string"
+                    }
+                  },
+                  "resources": [
+                    {
+                      "comments": "Storage Account Contributor",
+                      "type": "Microsoft.Authorization/roleAssignments",
+                      "apiVersion": "2022-04-01",
+                      "name": "[guid(resourceGroup().id, parameters('principalId'), subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '17d1049b-9a84-46fb-8f53-869881c3d3ab'))]",
+                      "properties": {
+                        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '17d1049b-9a84-46fb-8f53-869881c3d3ab')]",
+                        "principalId": "[parameters('principalId')]",
+                        "principalType": "ServicePrincipal"
+                      }
+                    },
+                    {
+                      "comments": "Website Contributor",
+                      "type": "Microsoft.Authorization/roleAssignments",
+                      "apiVersion": "2022-04-01",
+                      "name": "[guid(resourceId('Microsoft.Web/sites', parameters('functionAppName')), parameters('principalId'), subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'de139f84-1756-47ae-9be6-808fbbe84772'))]",
+                      "scope": "[resourceId('Microsoft.Web/sites', parameters('functionAppName'))]",
+                      "properties": {
+                        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'de139f84-1756-47ae-9be6-808fbbe84772')]",
+                        "principalId": "[parameters('principalId')]",
+                        "principalType": "ServicePrincipal"
+                      }
+                    },
+                    {
+                      "comments": "Site24x7 Collector RG Delete v1",
+                      "type": "Microsoft.Authorization/roleAssignments",
+                      "apiVersion": "2022-04-01",
+                      "name": "[guid(resourceGroup().id, parameters('principalId'), parameters('rgDeleteRoleDefinitionId'))]",
+                      "properties": {
+                        "roleDefinitionId": "[parameters('rgDeleteRoleDefinitionId')]",
+                        "principalId": "[parameters('principalId')]",
+                        "principalType": "ServicePrincipal"
+                      }
+                    }
+                  ]
+                }
               }
             },
             {
@@ -754,7 +849,7 @@
     },
     "cleanupNote": {
       "type": "string",
-      "value": "[concat('To fully remove this deployment, delete resource group \"', variables('rgName'), '\" AND the subscription-scope deployment named \"s247-diag-logs-sub-roles-', variables('uniqueSuffix'), '\" (found under Subscription \u2192 Deployments).')]"
+      "value": "[concat('To fully remove this deployment, delete resource group \"', variables('rgName'), '\" AND the subscription-scope deployment named \"s247-diag-logs-sub-roles-', variables('uniqueSuffix'), '\" (found under Subscription \u2192 Deployments). Remove the managed identity assignments on the monitored subscriptions. The shared Site24x7 Collector RG Delete v1 custom role definition remains in the hosting subscription.')]"
     },
     "deploymentSuffix": {
       "type": "string",

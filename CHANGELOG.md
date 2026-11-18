@@ -7,6 +7,23 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.2.0-beta1] — 2026-11-18
+
+Second round of the security review fixes:
+
+- Narrower roles for new installs: the managed identity gets Storage Account Contributor on its
+  resource group, Website Contributor on its own Function App, Locks Contributor, and a custom role
+  that can only read and delete its resource group, instead of Contributor on the group. Installing
+  now needs Owner (or Contributor + User Access Administrator) to create that custom role.
+  Collectors already deployed keep Contributor until an admin runs setup/migrate-roles.sh
+  (read-only plan by default; --apply switches the roles and prints a rollback command).
+- Diagnostic settings are read and written through the Azure REST API instead of the beta
+  azure-mgmt-monitor package. The package stays as a fallback: app setting MONITOR_CLIENT=sdk.
+- Storage access can use the managed identity (AzureWebJobsStorage__accountName or
+  __blobServiceUri for the runtime storage, STORAGE_AUTH=identity for the regional log storage;
+  update packages are then shared with a user-delegation SAS). Account keys remain the default,
+  so existing collectors behave as before.
+
 ## [1.1.3] — 2026-11-18
 
 Same code as 1.1.3-beta2: the fixes from the security review of 1.1.2 and the setup.sh fixes from

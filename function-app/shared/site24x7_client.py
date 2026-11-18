@@ -82,11 +82,10 @@ class CircuitBreaker:
     def _load_state(self):
         """Load persisted state from blob storage."""
         try:
-            conn_str = os.environ.get("AzureWebJobsStorage", "")
-            if not conn_str:
+            from shared.storage_clients import runtime_blob_service
+            blob_service = runtime_blob_service()
+            if blob_service is None:
                 return
-            from azure.storage.blob import BlobServiceClient
-            blob_service = BlobServiceClient.from_connection_string(conn_str)
             blob_client = blob_service.get_blob_client("s247-config", self.BLOB_NAME)
             stream = blob_client.download_blob()
             self._etag = getattr(stream.properties, "etag", None)
@@ -112,12 +111,11 @@ class CircuitBreaker:
         (which could prevent the circuit from ever tripping).
         """
         try:
-            conn_str = os.environ.get("AzureWebJobsStorage", "")
-            if not conn_str:
-                return
-            from azure.storage.blob import BlobServiceClient
+            from shared.storage_clients import runtime_blob_service
             from azure.core import MatchConditions
-            blob_service = BlobServiceClient.from_connection_string(conn_str)
+            blob_service = runtime_blob_service()
+            if blob_service is None:
+                return
             container_client = blob_service.get_container_client("s247-config")
             try:
                 container_client.create_container()

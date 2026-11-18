@@ -31,12 +31,11 @@ _RMW_MAX_ATTEMPTS = 5
 
 def _get_blob_client(blob_name: str):
     """Get a blob client for the given blob name."""
-    from azure.storage.blob import BlobServiceClient
+    from shared.storage_clients import runtime_blob_service
 
-    conn_str = os.environ.get("AzureWebJobsStorage", "")
-    if not conn_str:
+    service = runtime_blob_service()
+    if service is None:
         return None
-    service = BlobServiceClient.from_connection_string(conn_str)
     container = service.get_container_client(CONTAINER_NAME)
     try:
         container.create_container()
@@ -256,11 +255,12 @@ def validate_config() -> List[Dict]:
                 })
 
     # Storage connection
-    if not os.environ.get("AzureWebJobsStorage"):
+    from shared.storage_clients import runtime_storage_configured
+    if not runtime_storage_configured():
         issues.append({
             "level": "error",
             "field": "AzureWebJobsStorage",
-            "message": "Not set — blob storage for configs/state won't work",
+            "message": "Not set (no connection string or identity settings) — blob storage for configs/state won't work",
         })
 
     # Processing state

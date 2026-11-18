@@ -108,7 +108,14 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 debug_info["environment"][key] = val
         # Indicate presence of secrets without revealing them
         debug_info["environment"]["SITE24X7_API_KEY"] = "***set***" if os.environ.get("SITE24X7_API_KEY") else "NOT SET"
-        debug_info["environment"]["AzureWebJobsStorage"] = "***set***" if os.environ.get("AzureWebJobsStorage") else "NOT SET"
+        from shared.storage_clients import runtime_account_name, runtime_storage_mode
+        storage_mode = runtime_storage_mode()
+        debug_info["environment"]["AzureWebJobsStorage"] = (
+            "***set***" if storage_mode == "connection_string"
+            else "managed identity" if storage_mode == "identity" else "NOT SET")
+        debug_info["environment"]["storage_auth_mode"] = storage_mode or "none"
+        if storage_mode == "identity":
+            debug_info["environment"]["storage_account"] = runtime_account_name()
 
         # 7. Live S247 connectivity test (optional — slow)
         if req.params.get("test_s247") == "1":

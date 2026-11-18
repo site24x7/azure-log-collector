@@ -34,10 +34,11 @@ from datetime import datetime, timedelta, timezone
 
 import azure.functions as func
 from azure.identity import DefaultAzureCredential
-from azure.storage.blob import BlobServiceClient
+from azure.storage.blob import BlobServiceClient  # noqa: F401  (kept: tests patch it here)
 from azure.mgmt.storage import StorageManagementClient
 
 from shared.entra_config import get_entra_normalized_categories
+from shared.storage_clients import regional_blob_service, runtime_blob_service, runtime_storage_configured
 
 logger = logging.getLogger(__name__)
 
@@ -190,9 +191,8 @@ def _process_all_regions():
     logger.info("BlobLogProcessor: Found %d regional storage accounts, %d logtype configs",
                 len(regional_accounts), len(all_configs))
 
-    main_conn_str = os.environ.get("AzureWebJobsStorage", "")
     try:
-        checkpoints = _load_checkpoints(main_conn_str)
+        checkpoints = _load_checkpoints()
     except CheckpointsUnavailable as e:
         # Reading on without them would send every stored log again.
         logger.error("BlobLogProcessor: checkpoints unreadable (%s) — skipping this run", e)
@@ -221,13 +221,12 @@ def _process_all_regions():
         region = (acct.tags or {}).get("region", acct.primary_location or "unknown")
 
         try:
-            keys = storage_mgmt.storage_accounts.list_keys(resource_group, acct_name)
-            acct_key = keys.keys[0].value
-            conn_str = (
-                f"DefaultEndpointsProtocol=https;AccountName={acct_name};"
-                f"AccountKey={acct_key};EndpointSuffix=core.windows.net"
-            )
-            blob_service = BlobServiceClient.from_connection_string(conn_str)
+            primary = getattr(getattr(acct, "primary_endpoints", None), "blob", None)
+            blob_service = regional_blob_service(
+                acct_name,
+                blob_endpoint=primary if isinstance(primary, str) and primary else None,
+                credential=credential,
+                storage_mgmt=storage_mgmt, resource_group=resource_group)
 
             for container in blob_service.list_containers():
                 cname = container["name"]
@@ -560,7 +559,7 @@ def _process_all_regions():
 
     # GC stale checkpoint entries (blobs already aged out by lifecycle rule)
     checkpoints = _gc_checkpoints(checkpoints, ttl_days=CHECKPOINT_TTL_DAYS)
-    _save_checkpoints(main_conn_str, checkpoints)
+    _save_checkpoints(checkpoints)
 
     run_duration = time.monotonic() - run_start
     total_stats["duration_s"] = round(run_duration, 1)
@@ -878,8 +877,8 @@ def _gc_checkpoints(checkpoints: dict, ttl_days: int = CHECKPOINT_TTL_DAYS) -> d
     return out
 
 
-def _load_checkpoints(conn_str: str) -> dict:
-    data, _etag = _load_checkpoints_with_etag(conn_str)
+def _load_checkpoints() -> dict:
+    data, _etag = _load_checkpoints_with_etag()
     return data
 
 
@@ -887,17 +886,17 @@ class CheckpointsUnavailable(RuntimeError):
     """The checkpoints exist but could not be read; empty ones would resend everything."""
 
 
-def _load_checkpoints_with_etag(conn_str: str):
+def _load_checkpoints_with_etag():
     """Load checkpoints and return (dict, etag). Creates container if missing.
 
     Only missing checkpoints (a new collector) are empty. A failed read raises
     CheckpointsUnavailable; corrupt content is logged and read as empty (else
     processing would stop for good)."""
-    if not conn_str:
+    if not runtime_storage_configured():
         return {}, None
     from azure.core.exceptions import ResourceNotFoundError
     try:
-        blob_service = BlobServiceClient.from_connection_string(conn_str)
+        blob_service = runtime_blob_service()
         container_client = blob_service.get_container_client(CHECKPOINT_CONTAINER)
         try:
             container_client.create_container()
@@ -918,18 +917,18 @@ def _load_checkpoints_with_etag(conn_str: str):
     return (data if isinstance(data, dict) else {}), etag
 
 
-def _save_checkpoints(conn_str: str, checkpoints: dict) -> None:
+def _save_checkpoints(checkpoints: dict) -> None:
     """Persist checkpoints with ETag-based merge-on-conflict.
 
     On concurrent writes we re-fetch the remote, merge per-blob entries with
     ``_merge_checkpoints``, and retry. Per-blob entries take the max
     ``next_block`` and the most recent ``last_seen``.
     """
-    if not conn_str:
+    if not runtime_storage_configured():
         return
     try:
         from azure.core import MatchConditions
-        blob_service = BlobServiceClient.from_connection_string(conn_str)
+        blob_service = runtime_blob_service()
         container_client = blob_service.get_container_client(CHECKPOINT_CONTAINER)
         try:
             container_client.create_container()
@@ -938,7 +937,7 @@ def _save_checkpoints(conn_str: str, checkpoints: dict) -> None:
         blob_client = container_client.get_blob_client(CHECKPOINT_BLOB)
 
         local = dict(checkpoints)
-        existing, etag = _load_checkpoints_with_etag(conn_str)
+        existing, etag = _load_checkpoints_with_etag()
         # GC again after the merge: the remote copy still holds entries the local
         # GC dropped, and merging would otherwise bring them back for good.
         merged = _gc_checkpoints(_merge_checkpoints(existing, local))
@@ -960,7 +959,7 @@ def _save_checkpoints(conn_str: str, checkpoints: dict) -> None:
             except Exception as e:
                 from shared.config_store import is_conflict
                 if is_conflict(e):
-                    existing, etag = _load_checkpoints_with_etag(conn_str)
+                    existing, etag = _load_checkpoints_with_etag()
                     merged = _gc_checkpoints(_merge_checkpoints(existing, local))
                     time.sleep(0.05 * (attempt + 1))
                     continue

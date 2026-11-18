@@ -78,6 +78,13 @@ Avoid `_master`, which also grants key management.
 
 ## Quick Start
 
+For v1.2.0 deployments, the installer needs **Owner** or **Contributor plus User Access
+Administrator** to deploy resources, assign roles at the required scopes and create the custom
+role definition (`Microsoft.Authorization/roleDefinitions/write` on the hosting subscription).
+Existing collectors keep their resource-group Contributor grant until an administrator runs
+`setup/migrate-roles.sh` with `--apply`. Run it first with `--app <name> --rg <group>
+--subscription <hosting-subscription>` to review the read-only plan.
+
 ### Option A — Deploy to Azure (portal)
 
 One-click ARM deployment. The public template is available at a pinned Git tag; no GitHub sign-in is required.
@@ -112,7 +119,7 @@ Monitoring Contributor on it; the next scan finds it.
 ### Prerequisites
 
 - Azure CLI (`az`) installed and logged in
-- `jq` and `zip` installed
+- `jq`, `zip` and `python3` installed
 - One or more Azure subscriptions with resources to monitor
 
 ### Step 1: Clone & Configure
@@ -143,8 +150,9 @@ bash setup.sh
 
 This takes 5–10 minutes and provisions:
 - Resource group, storage account, Function App
-- Managed Identity with Reader + Monitoring Contributor (monitored subscriptions) and
-  Contributor + Locks Contributor (the collector's own resource group)
+- Managed identity with Reader and Monitoring Contributor on the monitored subscriptions,
+  Storage Account Contributor, Locks Contributor and Site24x7 Collector RG Delete v1 on
+  the collector's resource group, and Website Contributor on the Function App itself
 - Initial resource scan and diagnostic settings configuration
 
 The collector starts collecting as soon as it is deployed. To add a subscription later, give
@@ -192,7 +200,8 @@ Azure. You confirm it by typing the Function App's name. The collector then:
 
 Left for an admin to remove: the managed identity's Reader and Monitoring Contributor role
 assignments on the monitored subscriptions, the subscription-level deployment record, and any
-Entra ID diagnostic setting a tenant admin created. Progress shows in Site24x7 until the
+Entra ID diagnostic setting a tenant admin created. The shared Site24x7 Collector RG Delete v1
+role definition remains in the hosting subscription. Progress shows in Site24x7 until the
 collector is gone.
 
 ### teardown.sh
@@ -203,8 +212,9 @@ bash teardown.sh
 ```
 
 Works only on the deployment's subscription and a resource group tagged
-`managed-by=s247-diag-logs`: removes its locks and the identity's subscription role
-assignments, then deletes the resource group. Add `--clean-diag-settings` to also remove this
+`managed-by=s247-diag-logs`: removes its locks and the identity's role assignments it finds,
+then deletes the resource group. The shared custom role definition remains in place.
+Add `--clean-diag-settings` to also remove this
 collector's diagnostic setting from resources where it sends to this deployment's storage
 (or use **Turn Off Log Collection** in Site24x7 first, which removes them).
 

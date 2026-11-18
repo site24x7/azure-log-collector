@@ -27,7 +27,7 @@ import os
 from typing import Dict
 
 from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
-from azure.storage.blob import BlobServiceClient
+from shared.storage_clients import runtime_blob_service
 
 logger = logging.getLogger(__name__)
 
@@ -57,11 +57,10 @@ def _hosting_subscription() -> str:
 
 def _get_blob_client():
     """Create a BlobClient for the ignore-list blob."""
-    conn_str = os.environ.get("AzureWebJobsStorage", "")
-    if not conn_str:
-        logger.error("AzureWebJobsStorage environment variable is not set")
+    service_client = runtime_blob_service()
+    if service_client is None:
+        logger.error("Runtime storage is not configured (AzureWebJobsStorage or its identity settings)")
         return None
-    service_client = BlobServiceClient.from_connection_string(conn_str)
     return service_client.get_blob_client(
         container=CONTAINER_NAME, blob=BLOB_NAME
     )
@@ -228,10 +227,10 @@ def _save_initial_filters(blob_client):
 
 
 def _ensure_container() -> None:
-    conn_str = os.environ.get("AzureWebJobsStorage", "")
-    if not conn_str:
-        raise RuntimeError("AzureWebJobsStorage is not set")
-    container_client = BlobServiceClient.from_connection_string(conn_str).get_container_client(CONTAINER_NAME)
+    service_client = runtime_blob_service()
+    if service_client is None:
+        raise RuntimeError("Runtime storage is not configured")
+    container_client = service_client.get_container_client(CONTAINER_NAME)
     try:
         container_client.create_container()
     except ResourceExistsError:
@@ -243,13 +242,12 @@ def save_ignore_list(ignore_list: Dict) -> bool:
 
     Creates the container if it does not exist.
     """
-    conn_str = os.environ.get("AzureWebJobsStorage", "")
-    if not conn_str:
-        logger.error("AzureWebJobsStorage environment variable is not set")
+    service_client = runtime_blob_service()
+    if service_client is None:
+        logger.error("Runtime storage is not configured (AzureWebJobsStorage or its identity settings)")
         return False
 
     try:
-        service_client = BlobServiceClient.from_connection_string(conn_str)
         container_client = service_client.get_container_client(CONTAINER_NAME)
         if not container_client.exists():
             container_client.create_container()

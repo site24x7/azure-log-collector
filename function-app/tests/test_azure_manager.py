@@ -39,6 +39,12 @@ class TestExtractResourceGroup:
 # ─── AzureManager ───────────────────────────────────────────────────────────
 
 
+@pytest.fixture(autouse=True)
+def _sdk_client(monkeypatch):
+    # These tests mock the SDK client class.
+    monkeypatch.setenv("MONITOR_CLIENT", "sdk")
+
+
 @pytest.fixture
 def manager():
     with patch("shared.azure_manager.DefaultAzureCredential"):
