@@ -7,6 +7,17 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.1.3-beta2] — 2026-11-18
+
+Same Function App code as 1.1.3-beta1; fixes found by the live setup.sh test:
+
+- setup.sh read Azure CLI warnings as part of command output, so with any warning the managed
+  identity ID was wrong and no role was assigned. Warnings now go to the log only, and setup stops if
+  the ID is not a valid one.
+- setup.sh now finds the Flex Consumption plan (current Azure CLI returns it under properties) and
+  tags it, and the Application Insights resource, on every run, not only when the app is created.
+- setup.sh no longer ends with exit code 1 after a successful run.
+
 ## [1.1.3-beta1] — 2026-11-18
 
 Fixes from the security review of 1.1.2:

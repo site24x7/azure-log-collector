@@ -194,8 +194,32 @@ def test_shell_cleanup_removes_setting_sending_to_its_own_group(tmp_path):
 
 def test_shell_install_tags_its_flex_plan_with_the_owner():
     setup = (REPO / 'setup/setup.sh').read_text()
-    assert '--query serverFarmId' in setup
+    # Current Azure CLI returns the plan under properties (the 1.1.2 query found nothing).
+    assert '--query "serverFarmId || properties.serverFarmId"' in setup
+    # Tagged on every run, after the create-or-reuse branch, not only when the app is created.
+    assert setup.index('Tag Function App plan') > setup.index('log_ok "Created Function App ${FUNC_APP} (Flex Consumption)"\n    fi')
     assert 's247-collector="$(echo "$FUNC_APP"' in setup
     plan = _res('ASP-s247diaglogsrg-1a2b', 'Microsoft.Web/serverFarms',
                 dict(MANAGED, **{'s247-collector': APP}))
     assert teardown.foreign_resources([plan]) == []
+
+
+def test_run_az_keeps_cli_warnings_out_of_captured_values(tmp_path):
+    """An az warning on stderr must not become part of a captured ID (no roles were assigned)."""
+    import subprocess
+    setup = (REPO / 'setup/setup.sh').read_text()
+    start = setup.index('run_az() {')
+    body = setup[start:setup.index('\n}\n', start) + 3]
+    fake = tmp_path / 'az'
+    fake.write_text('#!/bin/bash\necho "WARNING: something" >&2\necho 11111111-2222-3333-4444-555555555555\n')
+    fake.chmod(0o755)
+    script = ('LOG_FILE=/dev/null; log_debug(){ :; }; log_error(){ :; }\n' + body +
+              'v=$(run_az "x" identity assign); printf "%s" "$v"')
+    out = subprocess.run(['bash', '-c', script], capture_output=True, text=True,
+                         env={'PATH': f'{tmp_path}:/usr/bin:/bin'})
+    assert out.returncode == 0 and out.stdout == '11111111-2222-3333-4444-555555555555'
+
+
+def test_setup_return_trap_clears_itself():
+    setup = (REPO / 'setup/setup.sh').read_text()
+    assert """trap 'rm -rf "$zip_dir"; trap - RETURN' RETURN""" in setup

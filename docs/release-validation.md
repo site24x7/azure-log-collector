@@ -42,6 +42,33 @@ review evidence for the matching candidate. CI continues to enforce regression,
 setup syntax, JSON and package/template VERSION pin checks. No stable release
 should be approved solely because these automated checks are green.
 
+## 1.1.3-beta1 validation (2026-11-18)
+
+Verified in a test subscription:
+
+- Update in place: a collector on 1.1.2 updated to 1.1.3-beta1 with Check for Updates, confirmed by
+  the status check 20 seconds after the request.
+- Device Key out of URLs: with a Site24x7 build that has the POST endpoints, both log type calls
+  (`/applog/azure/logtype_supported`, `/applog/azure/logtype`) went as POST with the key in the body,
+  with no GET fallback; 50 log types returned and the log type check passed. A server without them
+  answers 400 or 404, which the collector meets with the earlier GET form.
+- `/api/health` ignores `azure_test` and lists no resources.
+- Rollback: `az functionapp deploy --src-url` with the 1.1.2 `released-package.zip` (README, Rollback)
+  ran 1.1.2 within a minute. Azure CLI printed the JSON parsing error the README mentions; the install
+  succeeded. Health, the Site24x7 calls, settings, filters, the configured resources and regional
+  storage were kept. Updating forward to 1.1.3-beta1 again was confirmed in 41 seconds. After a manual
+  rollback, `update_state` in `/api/status` still describes the later update until the next one.
+- Shell install and removal (`setup.sh`, `teardown.sh`) on a new suffix, with automatic scans off so
+  no resource was touched. The first run found three `setup.sh` faults, fixed in 1.1.3-beta2: no role
+  was assigned (an Azure CLI warning was read as the managed identity ID), the Flex plan was not tagged
+  (the plan ID is under `properties` in current Azure CLI output, and the tag was applied only when the
+  app was created), and the script ended with exit code 1. With the fixes, two more runs on the same
+  suffix assigned all four roles, tagged the plan and ended with exit code 0. `teardown.sh
+  --clean-diag-settings` then removed the locks, the subscription role assignments and the resource
+  group; no role assignment of the identity remained.
+
+Not verified: uploads (the local upload server was off), Delete Collector, and end-to-end delivery.
+
 ## 1.1.2 validation (2026-11-17)
 
 On a collector running 1.1.1 and updated in place to 1.1.2-beta1 (the same code):
