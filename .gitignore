@@ -33,3 +33,4 @@ Thumbs.db
 secrets.json
 credentials.json
 .pytest_cache/
+.s247-role-migration-*.json

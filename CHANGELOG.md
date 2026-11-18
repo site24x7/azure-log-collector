@@ -7,6 +7,12 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.2.0-beta3] — 2026-11-18
+
+- setup/migrate-roles.sh: the collector's own delete lock on its resource group also blocks removing a
+  role assignment there; the script now lifts only its s247-lock-* group lock for that call and always
+  restores it, and reports Azure's actual error.
+
 ## [1.2.0-beta2] — 2026-11-18
 
 Same code as 1.2.0-beta1, released to test a self-update under the narrower roles.

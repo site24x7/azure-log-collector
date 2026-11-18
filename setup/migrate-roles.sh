@@ -303,8 +303,28 @@ migrate_collector_roles() {
     fi
     if [[ -n "$legacy_id" ]]; then
         save_migration_progress ready-to-remove || return 1
-        if ! az role assignment delete --subscription "$subscription" --ids "$legacy_id" --only-show-errors -o none 2>/dev/null; then
-            role_migration_error "Could not remove $legacy_id. Microsoft.Authorization/roleAssignments/delete is required."
+        # The collector's delete lock on its group also blocks deleting role assignments there:
+        # lift only its own s247-lock-* group locks for this one call, and always put them back.
+        local locks lock_name lock_notes lock_level err removed=true
+        locks=$(az lock list --subscription "$subscription" --resource-group "${rg_id##*/}" \
+            --query "[?starts_with(name, 's247-lock-') && level=='CanNotDelete' && contains(id, '/resourceGroups/${rg_id##*/}/providers/Microsoft.Authorization/locks/')].[name, level, notes]" \
+            -o tsv 2>/dev/null) || locks=""
+        while IFS=$'\t' read -r lock_name lock_level lock_notes; do
+            [[ -n "$lock_name" ]] || continue
+            az lock delete --subscription "$subscription" --resource-group "${rg_id##*/}" --name "$lock_name" \
+                --only-show-errors -o none || { role_migration_error "Could not lift lock $lock_name."; return 1; }
+        done <<< "$locks"
+        if ! err=$(az role assignment delete --subscription "$subscription" --ids "$legacy_id" --only-show-errors -o none 2>&1); then
+            removed=false
+        fi
+        while IFS=$'\t' read -r lock_name lock_level lock_notes; do
+            [[ -n "$lock_name" ]] || continue
+            az lock create --subscription "$subscription" --resource-group "${rg_id##*/}" --name "$lock_name" \
+                --lock-type "$lock_level" ${lock_notes:+--notes "$lock_notes"} --only-show-errors -o none ||
+                role_migration_error "Could not restore lock $lock_name on ${rg_id##*/}; recreate it (CanNotDelete)."
+        done <<< "$locks"
+        if [[ "$removed" != true ]]; then
+            role_migration_error "Could not remove $legacy_id: $(grep -v -i 'warning' <<< "$err" | head -3)"
             return 1
         fi
         echo "Removed the exact RG Contributor assignment."

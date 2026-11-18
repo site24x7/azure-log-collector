@@ -42,6 +42,28 @@ review evidence for the matching candidate. CI continues to enforce regression,
 setup syntax, JSON and package/template VERSION pin checks. No stable release
 should be approved solely because these automated checks are green.
 
+## 1.2.0-beta validation (2026-11-18)
+
+Verified in a test subscription:
+
+- Fresh install from the 1.2.0-beta1 template, scoped to one tagged Logic App in a second region:
+  the identity received Reader and Monitoring Contributor on the subscription, Storage Account
+  Contributor, Locks Contributor and the custom RG-delete role on its group, and Website Contributor on
+  its Function App only (no Contributor). The scan created the regional storage account and its
+  retention policy, and created the diagnostic setting through the REST client (0 scan errors).
+- Registration and the `site24x7` function key worked; self-update 1.2.0-beta1 to beta2 (OneDeploy)
+  under Website Contributor was confirmed in 36 seconds.
+- Delete Collector removed the diagnostic setting and the resource group in about two minutes with no
+  per-resource delete permission. The subscription Reader and Monitoring Contributor assignments remain
+  (the collector cannot remove its own role assignments); remove them as the cleanup note says.
+- `migrate-roles.sh` on an existing 1.1.3 collector: plan, then apply added the new roles and removed
+  the exact RG Contributor assignment. The first run showed that the collector's CanNotDelete lock on its
+  group also blocks deleting role assignments there; fixed in 1.2.0-beta3 (the lock is lifted for that
+  one call and restored). A scan with only the new roles completed with 0 errors.
+
+Not verified: storage with managed identity (STORAGE_AUTH=identity, AzureWebJobsStorage__accountName),
+setup.sh with the new roles, and MONITOR_CLIENT=sdk.
+
 ## 1.1.3 validation (2026-11-18)
 
 1.1.3 is the same Function App code as 1.1.3-beta1 and the same setup scripts as 1.1.3-beta2,
