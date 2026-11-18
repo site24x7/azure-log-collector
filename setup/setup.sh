@@ -30,19 +30,24 @@ run_az() {
     local description="$1"
     shift
     log_debug "Running Azure command: ${description}"
-    local output
-    if output=$(az "$@" 2>&1); then
+    # Only stdout is returned: az prints warnings on stderr, which must never end up in a
+    # captured value (an ID, a key). Stderr goes to the log, and with the error on failure.
+    local output errors err_file exit_code=0
+    err_file=$(mktemp)
+    output=$(az "$@" 2>"$err_file") || exit_code=$?
+    errors=$(cat "$err_file")
+    rm -f "$err_file"
+    if [[ $exit_code -eq 0 ]]; then
         log_debug "Success: ${description}"
+        [[ -n "$errors" ]] && log_debug "az stderr: ${errors}"
         echo "$output"
         return 0
-    else
-        local exit_code=$?
-        log_error "${description} failed (exit code: ${exit_code})"
-        log_error "Azure operation: ${description}"
-        log_error "Output: ${output}"
-        echo "$output"
-        return $exit_code
     fi
+    log_error "${description} failed (exit code: ${exit_code})"
+    log_error "Azure operation: ${description}"
+    log_error "Output: ${errors}${output:+ ${output}}"
+    echo "$output"
+    return $exit_code
 }
 
 # ============================================================
@@ -266,28 +271,29 @@ provision_infrastructure() {
             --tags managed-by=s247-diag-logs \
             -o none
         log_ok "Created Function App ${FUNC_APP} (Flex Consumption)"
-        # functionapp create also makes an Application Insights named after the app: it is the
-        # collector's too, so it carries the same tag.
-        local ai_id
-        ai_id=$(az resource list --resource-group "$RG" --resource-type microsoft.insights/components \
-            --query "[?name=='${FUNC_APP}'].id | [0]" -o tsv 2>/dev/null || true)
-        if [[ -n "$ai_id" ]]; then
-            run_az "Tag Application Insights" tag update --resource-id "$ai_id" --operation merge \
-                --tags managed-by=s247-diag-logs -o none
-        fi
-        # ... and a Flex plan for the app alone, which the CLI does not tag. Only the app's own
-        # plan, and only when it is in this group.
-        local plan_id plan_prefix
-        plan_id=$(az functionapp show --name "$FUNC_APP" --resource-group "$RG" --query serverFarmId -o tsv 2>/dev/null || true)
-        plan_prefix=$(echo "/resourcegroups/${RG}/providers/microsoft.web/serverfarms/" | tr '[:upper:]' '[:lower:]')
-        if [[ -n "$plan_id" && "$(echo "$plan_id" | tr '[:upper:]' '[:lower:]')" == *"$plan_prefix"* ]]; then
-            # Its generated name does not carry the suffix: the owner tag names the collector.
-            run_az "Tag Function App plan" tag update --resource-id "$plan_id" --operation merge \
-                --tags managed-by=s247-diag-logs \
-                s247-collector="$(echo "$FUNC_APP" | tr '[:upper:]' '[:lower:]')" -o none
-        else
-            log_error "Could not find the Function App's plan in ${RG}; tag it managed-by=s247-diag-logs and s247-collector=<Function App name> before uninstalling."
-        fi
+    fi
+    # Also on a re-run: functionapp create makes an Application Insights named after the app,
+    # which is the collector's too, so it carries the same tag.
+    local ai_id
+    ai_id=$(az resource list --resource-group "$RG" --resource-type microsoft.insights/components \
+        --query "[?name=='${FUNC_APP}'].id | [0]" -o tsv 2>/dev/null || true)
+    if [[ -n "$ai_id" ]]; then
+        run_az "Tag Application Insights" tag update --resource-id "$ai_id" --operation merge \
+            --tags managed-by=s247-diag-logs -o none
+    fi
+    # ... and a Flex plan for the app alone, which the CLI does not tag. Only the app's own
+    # plan, and only when it is in this group.
+    local plan_id plan_prefix
+    plan_id=$(az functionapp show --name "$FUNC_APP" --resource-group "$RG" \
+        --query "serverFarmId || properties.serverFarmId" -o tsv 2>/dev/null || true)
+    plan_prefix=$(echo "/resourcegroups/${RG}/providers/microsoft.web/serverfarms/" | tr '[:upper:]' '[:lower:]')
+    if [[ -n "$plan_id" && "$(echo "$plan_id" | tr '[:upper:]' '[:lower:]')" == *"$plan_prefix"* ]]; then
+        # Its generated name does not carry the suffix: the owner tag names the collector.
+        run_az "Tag Function App plan" tag update --resource-id "$plan_id" --operation merge \
+            --tags managed-by=s247-diag-logs \
+            s247-collector="$(echo "$FUNC_APP" | tr '[:upper:]' '[:lower:]')" -o none
+    else
+        log_error "Could not find the Function App's plan in ${RG}; tag it managed-by=s247-diag-logs and s247-collector=<Function App name> before uninstalling."
     fi
 
     # ── Managed Identity ─────────────────────────────────────
@@ -297,6 +303,10 @@ provision_infrastructure() {
         --name "$FUNC_APP" \
         --resource-group "$RG" \
         --query principalId -o tsv)
+    if [[ ! "$principal_id" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+        log_error "Could not read the managed identity's principal ID; no roles were assigned."
+        exit 1
+    fi
     log_ok "Managed identity enabled (principal: ${principal_id})"
 
     # ── RBAC Role Assignments ────────────────────────────────
@@ -485,7 +495,9 @@ deploy_function_app() {
     zip_dir=$(mktemp -d)
     chmod 700 "$zip_dir"
     zip_path="${zip_dir}/s247-function-app.zip"
-    trap 'rm -rf "$zip_dir"' RETURN
+    # Removed when this function returns; the trap then clears itself, or it would fire
+    # again on later returns with zip_dir unset (and fail the script at the end).
+    trap 'rm -rf "$zip_dir"; trap - RETURN' RETURN
 
     if [[ ! -d "$func_src" ]]; then
         log_error "Function App source not found at ${func_src}"
