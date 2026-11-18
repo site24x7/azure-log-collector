@@ -42,6 +42,11 @@ review evidence for the matching candidate. CI continues to enforce regression,
 setup syntax, JSON and package/template VERSION pin checks. No stable release
 should be approved solely because these automated checks are green.
 
+## 1.1.3 validation (2026-11-18)
+
+1.1.3 is the same Function App code as 1.1.3-beta1 and the same setup scripts as 1.1.3-beta2,
+validated as below.
+
 ## 1.1.3-beta1 validation (2026-11-18)
 
 Verified in a test subscription:
