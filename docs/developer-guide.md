@@ -1608,7 +1608,6 @@ curl http://localhost:7071/api/debug
 | `COLLECTOR_RESOURCE_ID` | No | The Function App's ARM resource ID reported to Site24x7; derived from `SUBSCRIPTION_IDS`, `RESOURCE_GROUP_NAME` and the site name when not set |
 | `INITIAL_RESOURCE_FILTERS` | No | JSON ignore list from the deployment form; saved as the ignore list only when none exists yet |
 | `SITE24X7_KEY_EXCLUDE` | No | Comma-separated function names kept out of the `site24x7` function key (`*` gives Site24x7 no key, and the collector then stops reporting) |
-| `REQUIRE_PACKAGE_SHA256` | No | `false` lets an update install without a published package SHA-256 (default `true`) |
 | `GITHUB_TOKEN` | No | Optional bearer token for GitHub Releases API update checks |
 | `DEPLOYMENT_STORAGE_CONNECTION_STRING` | Yes (Azure) | Connection string of the collector's storage account, used by Flex Consumption for its deployment package container (set by the template) |
 

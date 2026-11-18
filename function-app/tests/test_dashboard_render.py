@@ -43,3 +43,29 @@ def test_failing_uploads_are_not_shown_as_healthy():
     assert "op.upload_status === 'failed'" in js and "op.upload_refused === true" in js
     assert "S247 Uploads Failing" in js
     assert js.index("uploadFailing") < js.index("if (_s247Problem) { showDegraded(_s247Problem); }")
+
+
+def _render():
+    resp = Dashboard.main(MagicMock(params={}, headers={}, method="GET"))
+    return resp.headers["Content-Security-Policy"], resp.get_body().decode()
+
+
+def test_csp_uses_a_per_request_script_nonce():
+    csp, html = _render()
+    script_src = next(d.strip() for d in csp.split(";") if d.strip().startswith("script-src"))
+    assert "'unsafe-inline'" not in script_src
+    m = re.fullmatch(r"script-src 'nonce-([A-Za-z0-9_-]{16,})'", script_src)
+    assert m, script_src
+    nonce = m.group(1)
+    assert re.findall(r"<script\b[^>]*>", html) == [f'<script nonce="{nonce}">']
+    assert "__CSP_NONCE__" not in html
+    assert "style-src 'unsafe-inline'" in csp
+
+    csp2, _ = _render()
+    assert csp2 != csp
+
+
+def test_dashboard_html_has_no_inline_event_handlers():
+    _, html = _render()
+    assert not re.search(r"\son[a-z]+\s*=", html.split("<script", 1)[0])
+    assert "javascript:" not in html

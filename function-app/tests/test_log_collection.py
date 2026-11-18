@@ -269,6 +269,8 @@ def test_switching_off_empties_every_container_of_the_collectors_accounts_only(m
         counts = collection._clear_storage(region_mgr, "rg")
     assert counts == {"accounts": 2, "containers_cleared": 6, "storage_errors": 0}
     dropped.assert_called_once_with(["s247diageastusx", "s247diagtenantx"])
+    # Only diagnostic-log containers are listed (and so deleted).
+    assert all(c.kwargs == {"name_starts_with": "insights-"} for c in service.list_containers.call_args_list)
 
 
 def test_checkpoints_of_emptied_accounts_are_dropped(monkeypatch):
@@ -323,3 +325,16 @@ def test_a_storage_failure_makes_the_stop_partial():
          patch("shared.config_store.get_collection_state", return_value={"enabled": False}), \
          patch("shared.debug_logger.log_event"), patch("shared.debug_logger.log_audit"):
         assert collection.stop_collection()["state"] == "partial"
+
+
+def test_dropping_checkpoints_without_an_etag_never_overwrites(monkeypatch):
+    from azure.core import MatchConditions
+    import BlobLogProcessor as blp
+    monkeypatch.setenv("AzureWebJobsStorage", "UseDevelopmentStorage=true")
+    blob = MagicMock()
+    service = MagicMock()
+    service.get_container_client.return_value.get_blob_client.return_value = blob
+    with patch.object(blp, "_load_checkpoints_with_etag", return_value=({"s247diageastusx/a/b.json": {}}, None)), \
+         patch("azure.storage.blob.BlobServiceClient.from_connection_string", return_value=service):
+        assert collection._drop_checkpoints(["s247diageastusx"]) is True
+    assert blob.upload_blob.call_args.kwargs["match_condition"] == MatchConditions.IfMissing

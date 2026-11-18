@@ -25,6 +25,7 @@ Use unique test-event markers and retain evidence of the events in AppLogs.
 | Site24x7 cannot read collector API | Simulate timeout, denied key/non-2xx and malformed 200 response. The detail page shows collector API failure; cached healthy status cannot override it. Outbound health stays last-known/unknown, never inferred from inbound failure. |
 | Collector cannot reach Site24x7 API/upload | Keep collector status API reachable, fail outbound API and upload paths independently. Live status shows API phase + HTTP status or last upload failure + observation time; empty runs do not establish recovery. A real successful upload clears the recorded upload failure. |
 | Both paths fail | With no recent report/live snapshot, status becomes unavailable within the 26-hour historical-report policy (live failures show immediately); old data remains historical. Recovery preserves the server's true last registration time. |
+| Shell install and removal | `setup.sh` and then `teardown.sh` run against a test subscription from Cloud Shell: setup creates the group, storage, Function App and roles and registers with Site24x7; teardown removes the diagnostic settings, role assignments and group, and refuses a group that holds other resources. |
 | Client onboarding | Test the deployed client link, prerequisites, Device Key/DC guidance, Azure handoff, deployment Outputs, dashboard/scan flow, ingestion confirmation, management and cleanup. Opening Azure is not deployment success. |
 
 ## Publication gate
@@ -78,7 +79,9 @@ Verified on Flex Consumption collectors in a test subscription (candidates beta1
   confirmation by the status check.
 - Log Collection off (all settings removed), the toggles, Delete Collector (settings, lock and resource group
   removed), and Remove From Site24x7.
-- Log delivery through the upload path (HTTP 200).
+- Upload acknowledgement: the upload endpoint answered HTTP 200. This shows the upload was accepted,
+  not that the records were indexed; end-to-end delivery (records searchable in AppLogs) is not
+  recorded in this report.
 
 Not verified: rollback to an earlier version. The updater never installs an older version; going back
 means redeploying the earlier template.

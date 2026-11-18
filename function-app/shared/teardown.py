@@ -40,6 +40,13 @@ ACTION_GROUP_TYPE = "microsoft.insights/actiongroups"
 SMART_DETECTION_ACTION_GROUP = "application insights smart detection"
 
 
+# Resource types the deployment template creates in the collector's group without an owner tag.
+TEMPLATE_RESOURCE_TYPES = frozenset({
+    "microsoft.web/sites", "microsoft.web/serverfarms", "microsoft.storage/storageaccounts",
+    "microsoft.insights/components", "microsoft.operationalinsights/workspaces",
+})
+
+
 def _azure_created_for_collector(rtype: str, name: str, me: str) -> bool:
     name = (name or "").strip().lower()
     if rtype == SMART_DETECTOR_TYPE:
@@ -95,8 +102,10 @@ def foreign_resources(resources) -> List[str]:
             elif owner:
                 own = owner == me
             else:
-                # Deployed by the template for this collector: its names carry the deployment suffix.
-                own = bool(suffix) and suffix in name.lower() or (rtype == "microsoft.web/sites" and name.lower() == me)
+                # Deployed by the template for this collector: one of the types it creates,
+                # named with the deployment suffix (or the Function App itself).
+                own = rtype in TEMPLATE_RESOURCE_TYPES and (
+                    bool(suffix) and suffix in name.lower() or (rtype == "microsoft.web/sites" and name.lower() == me))
         if not own:
             foreign.append(f"{name} ({r.type})")
     return foreign

@@ -8,7 +8,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOG_FILE="/tmp/s247-setup-$(date +%Y%m%d-%H%M%S).log"
+LOG_FILE="$(mktemp "${TMPDIR:-/tmp}/s247-setup-$(date +%Y%m%d-%H%M%S)-XXXXXX")"
 
 # ── Colours ──────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -47,6 +47,35 @@ run_az() {
 
 # ============================================================
 # 1. PRE-FLIGHT CHECKS
+# Read config.env as KEY=VALUE lines only (never run it as shell code).
+# Known keys only; quotes around a value are removed; nothing is expanded.
+CONFIG_KEYS=" SUBSCRIPTION_IDS SITE24X7_API_KEY SITE24X7_API_TOKEN SITE24X7_DOMAIN SITE24X7_BASE_URL RESOURCE_GROUP_NAME DEPLOYMENT_SUFFIX DEPLOYMENT_SUBSCRIPTION_ID FUNCTION_APP_NAME STORAGE_ACCOUNT_NAME FUNCTION_APP_REGION TIMER_SCHEDULE GENERAL_LOGTYPE_ENABLED UPDATE_CHECK_URL AUTO_UPDATE_ENABLED DIAG_SEED_REGION DIAG_STORAGE_SUFFIX "
+read_config_file() {
+    local file="$1" line key value n=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        n=$((n + 1))
+        line="${line%$'\r'}"
+        [[ "$line" =~ ^[[:space:]]*(#.*)?$ ]] && continue
+        if [[ ! "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Z][A-Z0-9_]*)=(.*)$ ]]; then
+            log_error "config.env line ${n} is not KEY=VALUE"
+            exit 1
+        fi
+        key="${BASH_REMATCH[2]}"
+        value="${BASH_REMATCH[3]}"
+        value="${value%"${value##*[![:space:]]}"}"
+        if [[ "$value" =~ ^\"(.*)\"$ || "$value" =~ ^\'(.*)\'$ ]]; then
+            value="${BASH_REMATCH[1]}"
+        elif [[ "$value" =~ ^([^#]*[^#[:space:]])?[[:space:]]+#.*$ ]]; then
+            value="${BASH_REMATCH[1]}"
+        fi
+        if [[ "$CONFIG_KEYS" != *" ${key} "* ]]; then
+            log_skip "config.env line ${n}: unknown setting ${key} ignored"
+            continue
+        fi
+        printf -v "$key" '%s' "$value"
+    done < "$file"
+}
+
 # ============================================================
 preflight_checks() {
     log_section "Pre-flight Checks"
@@ -60,8 +89,7 @@ preflight_checks() {
         log_error "  code ${SCRIPT_DIR}/config.env    # edit with Cloud Shell editor"
         exit 1
     fi
-    # shellcheck disable=SC1090
-    source "$config_file"
+    read_config_file "$config_file"
     log_ok "Loaded config.env"
 
     # Defaults

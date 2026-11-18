@@ -3,7 +3,7 @@
 from unittest.mock import patch
 
 from GetDebugInfo import _as_log_file
-from shared.redaction import MASK, redact
+from shared.redaction import MASK, redact, redact_text
 
 SECRETS = ["devkey-123456", "fnkey-abcdef", "c2lnbmF0dXJl", "YWNjb3VudGtleQ==", "eyJhbGciOi.payload"]
 
@@ -65,3 +65,19 @@ def test_old_serialized_json_messages_are_redacted_on_download():
     assert data["password"] == MASK
     assert data["error"] == "invalid config"
     assert "device-secret" not in clean and "function-secret" not in clean
+
+
+def test_stray_jwt_is_masked():
+    token = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJhdWQiOiJodHRwczovL21hbmFnZW1lbnQifQ.c2lnbmF0dXJlLXBhcnQ"
+    out = redact_text(f"token was {token} for the call")
+    assert "eyJ" not in out and out == "token was *** for the call"
+
+
+def test_sas_string_without_leading_separator_is_masked():
+    out = redact_text("sig=AbCdEf0123456789%2Bxyz%3D&sv=2022-11-02&se=2026-01-01")
+    assert out.startswith("sig=***") and "AbCdEf" not in out
+
+
+def test_ordinary_text_is_not_masked_by_the_new_patterns():
+    text = "signature=ok design=x eyJ short"
+    assert redact_text(text) == text

@@ -302,7 +302,7 @@ class TestDeployUpdate:
     def test_requires_sha256_when_absent(self, monkeypatch):
         self._ready_env(monkeypatch)
         monkeypatch.setenv("UPDATE_CHECK_URL", "site24x7/azure-log-collector")
-        # REQUIRE_PACKAGE_SHA256 defaults to true; no digest passed → refuse.
+        # No digest passed → always refused.
         result = deploy_update("https://github.com/site24x7/azure-log-collector/releases/download/v1/s247-function-app.zip")
         assert result["success"] is False
         assert result.get("integrity_failed") is True
@@ -782,7 +782,6 @@ def _deploy(monkeypatch, tmp_path, put_status=202, store=None, put_error=None, o
     monkeypatch.setenv("WEBSITE_SITE_NAME", "app")
     monkeypatch.setenv("SUBSCRIPTION_IDS", "sub")
     monkeypatch.setenv("RESOURCE_GROUP_NAME", "rg")
-    monkeypatch.setenv("REQUIRE_PACKAGE_SHA256", "false")
     store = store or FakeStateStore()
     read_p, write_p = _store_patches(store)
 
@@ -804,7 +803,7 @@ def _deploy(monkeypatch, tmp_path, put_status=202, store=None, put_error=None, o
          patch.object(up, "get_local_version", return_value="1.0.0"), read_p, write_p:
         get.return_value.iter_content.return_value = [b"verified-bytes"]
         result = up.deploy_update("https://github.com/site24x7/azure-log-collector/releases/download/v2.0.0/s247-function-app.zip",
-                                  expected_version="2.0.0")
+                                  expected_sha256="35b1135247e25b36525c4f5bb88038cf310f05ab54aa450e406e9ef5c5fde911", expected_version="2.0.0")
     return result, put, patch_call, stage, store
 
 
@@ -875,7 +874,6 @@ def test_simultaneous_updates_install_only_once(monkeypatch, tmp_path):
     with patch.object(up, "_stage_verified_package", side_effect=stage_and_race):
         monkeypatch.setenv("WEBSITE_SITE_NAME", "app")
         monkeypatch.setenv("SUBSCRIPTION_IDS", "sub")
-        monkeypatch.setenv("REQUIRE_PACKAGE_SHA256", "false")
         read_p, write_p = _store_patches(store)
         with patch.object(up, "_package_url_trusted", return_value=(True, "")), \
              patch.object(up.requests, "get") as get, \
@@ -884,7 +882,7 @@ def test_simultaneous_updates_install_only_once(monkeypatch, tmp_path):
              patch.object(up, "DefaultAzureCredential"), \
              patch.object(up.requests, "put") as put, read_p, write_p:
             get.return_value.iter_content.return_value = [b"zip"]
-            result = up.deploy_update("https://github.com/site24x7/azure-log-collector/releases/download/v2.0.0/s247-function-app.zip")
+            result = up.deploy_update("https://github.com/site24x7/azure-log-collector/releases/download/v2.0.0/s247-function-app.zip", expected_sha256="4a70fe9aa6436e02c2dea340fbd1e352e4ef2d8ce6ca52ad25d4b95471fc8bf2")
     assert result["success"] is False and result["in_progress"]
     put.assert_not_called()
     assert store.state["attempt_id"] == "other"
@@ -1015,7 +1013,6 @@ def test_deploy_refuses_a_package_that_does_not_import(monkeypatch, tmp_path):
     import shared.updater as up
     monkeypatch.setenv("WEBSITE_SITE_NAME", "app")
     monkeypatch.setenv("SUBSCRIPTION_IDS", "sub")
-    monkeypatch.setenv("REQUIRE_PACKAGE_SHA256", "false")
     with patch.object(up, "_package_url_trusted", return_value=(True, "")), \
          patch.object(up.requests, "get") as get, \
          patch.object(up, "validate_zip_package", return_value=(True, "")), \
@@ -1023,6 +1020,6 @@ def test_deploy_refuses_a_package_that_does_not_import(monkeypatch, tmp_path):
          patch.object(up, "_stage_verified_package") as stage, \
          patch.object(up.requests, "put") as put:
         get.return_value.iter_content.return_value = [b"zip"]
-        result = up.deploy_update("https://github.com/site24x7/azure-log-collector/releases/download/v2.0.0/s247-function-app.zip")
+        result = up.deploy_update("https://github.com/site24x7/azure-log-collector/releases/download/v2.0.0/s247-function-app.zip", expected_sha256="4a70fe9aa6436e02c2dea340fbd1e352e4ef2d8ce6ca52ad25d4b95471fc8bf2")
     assert result["success"] is False and result["validation_failed"] and "import check" in result["error"]
     stage.assert_not_called() and put.assert_not_called()

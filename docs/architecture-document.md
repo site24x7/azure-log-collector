@@ -1192,7 +1192,6 @@ When OPEN: post_logs() returns False immediately (records remain for retry withi
 | `SKIP_AUTO_UPDATE` | `false` | `true` blocks automatic and manual updates/checks; `AUTO_UPDATE_ENABLED=false` leaves checks and manual installs enabled |
 | `MIN_RELEASE_AGE_MINUTES` | `60` | Minimum age before a release is eligible |
 | `AUTO_UPDATE_ENABLED` | `false` | `true` lets AutoUpdater install new releases automatically |
-| `REQUIRE_PACKAGE_SHA256` | `true` | Refuse an update package whose release publishes no SHA-256 digest |
 | `GITHUB_TOKEN` | (none) | Optional token for GitHub API release checks |
 | `AUTO_SCAN_ENABLED` | `true` | `false` skips scheduled and startup scans (the collector still reports to Site24x7) |
 | `MONITOR_PIPELINE_RESOURCES` | `false` | `true` also collects logs from the collector's own resource group; other collectors' resources (tagged `managed-by: s247-diag-logs`) are never collected |

@@ -34,6 +34,10 @@ _PATTERNS = [
     # short query names are only secrets inside a URL query (keep "error code=500")
     (re.compile(r"(?i)([?&](?:code|sig|skoid|sktid|sks|skv)=)([^&;\s\"'<>]+)"), r"\1" + MASK),
     (re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}"), r"\1 " + MASK),
+    # a SAS signature at the start of a SAS string (no "?" or "&" before it)
+    (re.compile(r"(?i)(?<![\w?&])(sig=)([A-Za-z0-9%+/=]{16,})"), r"\1" + MASK),
+    # a token (JWT) on its own, without "Bearer" in front
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]*){0,2}"), MASK),
     (re.compile(r"(?i)(x-functions-key|authorization|ocp-apim-subscription-key)"
                 r"([\"']?\s*[:=]\s*[\"']?)[^\"',\s}]+"), r"\1\2" + MASK),
 ]

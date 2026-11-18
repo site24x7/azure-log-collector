@@ -255,6 +255,9 @@ class Site24x7Client:
         # reports it so a rejected Device Key is not shown as "no log types".
         self.last_error: Optional[Dict] = None
 
+    # Set once a Site24x7 server answers only the old GET form (no POST endpoints yet).
+    _legacy_get = False
+
     def _make_s247_request(
         self, path: str, params: Optional[Dict] = None, method: str = "GET"
     ) -> Optional[Dict]:
@@ -265,17 +268,36 @@ class Site24x7Client:
                                "message": "Site24x7 Device Key is not configured."}
             return None
 
-        url_params = {"deviceKey": self.device_key}
-        if params:
-            url_params.update(params)
+        fields = {"deviceKey": self.device_key, **(params or {})}
+        post_path = _POST_FORMS.get(path) if method == "GET" else None
 
-        url = f"{self._get_api_base_url()}{path}?{urllib.parse.urlencode(url_params)}"
-
-        try:
-            req = urllib.request.Request(_require_https(url), method=method)
+        def _send(req_path: str, use_post: bool):
+            base = f"{self._get_api_base_url()}{req_path}"
+            if use_post:
+                # The Device Key goes in the form body, never in the URL.
+                req = urllib.request.Request(_require_https(base), method="POST",
+                                             data=urllib.parse.urlencode(fields).encode())
+                req.add_header("Content-Type", "application/x-www-form-urlencoded")
+            else:
+                req = urllib.request.Request(_require_https(f"{base}?{urllib.parse.urlencode(fields)}"),
+                                             method=method)
             req.add_header("Accept", "application/json")
             resp = _KEYED_OPENER.open(req, timeout=120)
-            result = json.loads(resp.read().decode("utf-8"))
+            return resp, json.loads(resp.read().decode("utf-8"))
+
+        try:
+            if post_path and not Site24x7Client._legacy_get:
+                try:
+                    resp, result = _send(post_path, True)
+                except urllib.error.HTTPError as e:
+                    if e.code not in (400, 404, 405):
+                        raise
+                    # A Site24x7 server without the POST endpoints yet: the old GET form.
+                    resp, result = _send(path, False)
+                    Site24x7Client._legacy_get = True
+                    logger.info("Site24x7 has no POST form of %s yet; using GET", path)
+            else:
+                resp, result = _send(path, False)
             if isinstance(result, dict) and str(result.get("status", "")).upper() in ("ERROR", "FAILURE", "FAILED"):
                 self.last_error = {"path": path, "http_status": getattr(resp, "status", 200),
                                    "message": "Site24x7 rejected the API request."}
@@ -677,22 +699,22 @@ class Site24x7Client:
                     derived_fields[key] = []
                     for values in derived_eval[key]:
                         derived_fields[key].append(
-                            re.compile(values.replace("\\\\", "\\").replace("?<", "?P<"))
+                            _compile_config_pattern(values.replace("\\\\", "\\").replace("?<", "?P<"))
                         )
 
             if masking_config:
                 for key in masking_config:
-                    masking_config[key]["regex"] = re.compile(masking_config[key]["regex"])
+                    masking_config[key]["regex"] = _compile_config_pattern(masking_config[key]["regex"])
 
             if hashing_config:
                 for key in hashing_config:
-                    hashing_config[key]["regex"] = re.compile(hashing_config[key]["regex"])
+                    hashing_config[key]["regex"] = _compile_config_pattern(hashing_config[key]["regex"])
 
             if "filterConfig" in config:
                 for field in config["filterConfig"]:
                     temp = []
                     for value in config["filterConfig"][field]["values"]:
-                        temp.append(re.compile(value))
+                        temp.append(_compile_config_pattern(value))
                     config["filterConfig"][field]["values"] = "|".join(
                         x.pattern for x in temp
                     )
@@ -801,6 +823,13 @@ _ISO_TIMESTAMP = re.compile(
 )
 
 
+# The GET calls that carry the Device Key, and the POST form of each (key in the body).
+_POST_FORMS = {
+    "/applog/azure/logtype_supported": "/applog/azure/logtype_supported",
+    "/applog/logtype": "/applog/azure/logtype",
+}
+
+
 def _describe_api_error(path: str, error: Exception, base_url: str, secrets=()) -> Dict:
     """Actionable, secret-free description of a failed Site24x7 API call."""
     from shared.redaction import redact_text
@@ -903,6 +932,17 @@ def _get_json_value(obj, key, datatype=None):
                 )
         return _get_json_value(child_obj, child_key, datatype)
     return None
+
+
+# Longest filter / masking / hashing / derived-field pattern accepted from a log type's config.
+# A longer one fails only that log type's batch, like an invalid pattern.
+MAX_CONFIG_PATTERN_LEN = 2000
+
+
+def _compile_config_pattern(pattern):
+    if not isinstance(pattern, str) or len(pattern) > MAX_CONFIG_PATTERN_LEN:
+        raise ValueError("log type pattern missing or longer than %d characters" % MAX_CONFIG_PATTERN_LEN)
+    return re.compile(pattern)
 
 
 def _is_filters_matched(formatted_line: Dict, config: Dict) -> bool:

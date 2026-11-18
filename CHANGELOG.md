@@ -7,6 +7,33 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.1.3-beta1] — 2026-11-18
+
+Fixes from the security review of 1.1.2:
+
+- Updates always need the release's published SHA-256; the REQUIRE_PACKAGE_SHA256 setting that
+  could turn this off is removed.
+- The Device Key is no longer sent in a URL: the log type calls use POST with the key in the form
+  body (/applog/azure/logtype_supported, /applog/azure/logtype). A Site24x7 server without these
+  POST forms yet is still served by the earlier GET form.
+- The dashboard's Content Security Policy allows only its own script (a new nonce per request);
+  inline event handlers are gone.
+- /api/health no longer has the azure_test option that listed subscription resources.
+- setup.sh and teardown.sh read config.env as KEY=VALUE lines instead of running it as shell code;
+  values are taken as written (no $VAR expansion), and unknown keys are ignored with a note.
+- setup.sh writes its log to a new private file (mktemp).
+- Logs and debug output also mask stray access tokens (JWT) and SAS signatures without a leading
+  "?" or "&".
+- Switching Log Collection off empties only the diagnostic-log containers (insights-*) of the
+  collector's storage accounts; checkpoint updates are always conditional.
+- Filter, masking, hashing and derived-field patterns longer than 2,000 characters are refused
+  (that log type's batch only).
+- Delete Collector and teardown treat an untagged-owner resource as the collector's only when it is
+  a type the template creates.
+- Security overview: accepted risks documented (check-update and delete reachable with the
+  site24x7 key, diagnostic-setting check-then-write, storage networking, endpoint overrides, the
+  dashboard's first URL, template package integrity).
+
 ## [1.1.2] — 2026-11-17
 
 Same code as 1.1.2-beta1 (the 1.1.1 re-review fixes), validated on a collector updated from 1.1.1.

@@ -628,7 +628,7 @@ def deploy_update(package_url: str, expected_sha256: Optional[str] = None,
 
     Before anything is deployed the package passes four gates: (1) the URL must
     be HTTPS and from a trusted host, (2) its SHA-256 must match the digest
-    published in ``version.json`` (unless ``REQUIRE_PACKAGE_SHA256=false``), (3)
+    published in ``version.json`` (a release without one is refused), (3)
     the zip must be structurally valid, and (4) every function and shared module
     must import with the package's own dependencies. Any failure refuses the deploy.
     """
@@ -650,14 +650,11 @@ def deploy_update(package_url: str, expected_sha256: Optional[str] = None,
         return {"success": False, "error": f"untrusted package_url: {reason}",
                 "integrity_failed": True}
 
-    # ── Gate 2 (pre-flight): refuse if no digest is published and we require one.
-    require_sha = os.environ.get("REQUIRE_PACKAGE_SHA256", "true").lower() in ("1", "true", "yes")
-    if require_sha and not expected_sha256:
-        logger.error("Refusing to deploy — release has no sha256 digest and "
-                     "REQUIRE_PACKAGE_SHA256 is enabled")
+    # ── Gate 2 (pre-flight): a release must publish its package digest.
+    if not expected_sha256:
+        logger.error("Refusing to deploy — release has no sha256 digest")
         return {"success": False,
-                "error": "release published no sha256 digest "
-                         "(set REQUIRE_PACKAGE_SHA256=false to override)",
+                "error": "release published no sha256 digest",
                 "integrity_failed": True}
 
     tmp_path = None

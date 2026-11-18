@@ -31,9 +31,9 @@ The Function App makes outbound HTTPS calls only:
 
 `<dc>` is the Site24x7 data center chosen at deployment: `com` (US), `in`, `eu`, `net.au`, `cn` or `jp`.
 
-**Requests that carry the Device Key** (Site24x7 API calls, registration and uploads) go over HTTPS only and refuse HTTP redirects. A redirect is reported as an error and never followed, so the key is never sent to another host.
+**Requests that carry the Device Key** (Site24x7 API calls, registration and uploads) go over HTTPS only and refuse HTTP redirects. A redirect is reported as an error and never followed, so the key is never sent to another host. The key is never put in a URL: API calls and registration send it in a POST form body, and uploads in the `X-DeviceKey` header. Only while a Site24x7 server does not yet offer the POST form of the two log type calls (`/applog/azure/logtype_supported`, `/applog/azure/logtype`) does the collector fall back to the earlier GET form, which carries the key in the query string.
 
-The Site24x7 addresses come from the `SITE24X7_BASE_URL` app setting. The upload host can be overridden with `SITE24X7_UPLOAD_DOMAIN`, for testing. Whoever can change app settings can therefore redirect where logs and the key are sent; that requires Contributor on the Function App.
+The Site24x7 addresses come from the `SITE24X7_BASE_URL` app setting. The upload host can be overridden with `SITE24X7_UPLOAD_DOMAIN`, for testing. Whoever can change app settings can therefore redirect where logs and the key are sent; that requires Contributor or Website Contributor on the Function App, which already allows deploying other code to it, so the overrides are not limited to Site24x7 hosts (section 12).
 
 ---
 
@@ -145,9 +145,11 @@ All 19 HTTP functions use `authLevel: function`. Each needs a valid function or 
 
 **Dashboard**
 - The page is opened with the key in the address (`?code=`). It immediately removes the key from the address bar and history, keeps it in session storage for that tab, and sends it to the API in the `x-functions-key` header, never in a URL.
-- It sets `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, a Content Security Policy and no-cache headers.
-- It HTML-escapes every value it displays, and handler arguments are passed as escaped JavaScript string literals.
+- It sets `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, no-cache headers and a Content Security Policy whose `script-src` allows only the page's own script, by a new random nonce on every request (no `'unsafe-inline'` scripts, no inline event handlers).
+- It HTML-escapes every value it displays.
 - Site24x7 admins open it from Site24x7 with the `site24x7` key (section 6). Anyone else opens it with a host key from the Azure portal.
+
+**Health:** `/api/health` reports only that the app runs and that its modules import; it makes no Azure calls and lists no resources.
 
 **Rate limits:** there is no application-level rate limit on the collector's endpoints. Site24x7 limits its own calls (20 actions per user per 5 minutes).
 
@@ -180,7 +182,7 @@ Updates come from the GitHub releases of `UPDATE_CHECK_URL`, which the template 
 - the channel: pre-releases are refused unless `UPDATE_CHANNEL=prerelease`;
 - the age: releases younger than `MIN_RELEASE_AGE_MINUTES` (60) are skipped;
 - the package host must belong to the configured repository, over HTTPS;
-- the package's SHA-256 must match the release's `version.json` (`REQUIRE_PACKAGE_SHA256`, on by default);
+- the package's SHA-256 must match the release's `version.json`; a release without a digest is refused, with no setting to turn this off;
 - the zip: archive integrity, application `.py` files parse (vendored `.python_packages` is excluded), every `.json` file is valid, and the required files are present;
 - the package's `VERSION` must equal the version the release advertises, so an older package can't pass the downgrade check.
 
@@ -239,8 +241,15 @@ AutoUpdater records each run as an event; the new version confirms the update on
 |---|---|---|
 | Site24x7 holds a key to the collector's management endpoints (section 6) | By design (Site24x7 runs the admin actions) | Dedicated `site24x7` function key on 19 functions only; admin-only, server-built and audited actions in Site24x7; `SITE24X7_KEY_EXCLUDE` narrows or removes its reach. |
 | A failed update is not rolled back automatically | Mitigated | A package whose functions cannot load (missing dependency, broken import, wrong Python build) is refused before install, by the release workflow and again by the collector. Packages are also checked (digest, structure, version) before install, releases install only after `MIN_RELEASE_AGE_MINUTES`, and the update is reported as confirmed only when the new version runs. The import check lowers the risk; it cannot prove the new version works at run time. Every release keeps its package as a release asset, and going back means installing the previous package again (README, Rollback). `SKIP_AUTO_UPDATE` stops updates; `PINNED_VERSION` freezes the collector at the pin and never downgrades (`pinned_older` for an older pin); a newer pin installs only if it matches the fetched release, and older releases are not fetched. |
-| Masking and filter patterns come from Site24x7 and run with Python's backtracking regular expressions | Accepted | Patterns are defined by Site24x7, not by log content. A rule that fails is applied fail-closed (the field is withheld). |
+| Masking and filter patterns come from Site24x7 and run with Python's backtracking regular expressions | Accepted | Patterns are defined by Site24x7, not by log content. Patterns longer than 2,000 characters are refused; a refused or invalid pattern fails only that log type's batch, which is retried next run. A rule that fails while applied is fail-closed (the field is withheld). |
 | Release packages the template and updater install | Open (repository setting) | The template and the updater install release assets. The release workflow publishes each release once with all its files (draft, then publish) and has no path to replace a published one. Immutable releases are not yet on for the repository; until a repository admin turns them on, anyone with write access could still change a published release's files or move its tag by hand. |
+| Check for Updates (`/api/check-update?apply=1`) is reachable with the `site24x7` key | Accepted (Site24x7's Check for Updates and Update buttons) | The request cannot name a package or version: the collector installs only a newer release of its configured update source, after the URL, SHA-256, structure and import checks. A leaked key can at most start an upgrade to a genuine release. `SITE24X7_KEY_EXCLUDE=CheckUpdate` removes it from Site24x7's key. |
+| Delete Collector is reachable with the `site24x7` key | Accepted (Site24x7's Delete Collector action) | POST only, with the exact Function App name; it refuses a group holding resources that are not the collector's, and removes only settings that send to the collector's own storage. `SITE24X7_KEY_EXCLUDE=DeleteCollector` removes it from Site24x7's key. |
+| Check-then-write on diagnostic settings | Accepted (Azure limit) | Azure diagnostic settings have no conditional (ETag) writes. The collector reads each setting and changes or deletes it only if it sends to the collector's own storage; a change made by someone else between that read and the write is not detected. |
+| Collector storage accepts connections from any network | Accepted (default) | Storage requires TLS 1.2 and blocks public blob access; access needs the account key or Azure RBAC. Restricting it to a virtual network (Function App virtual network integration, storage firewall with trusted Azure services allowed for diagnostic settings) is a hardening option the template does not configure. |
+| `SITE24X7_BASE_URL` and `SITE24X7_UPLOAD_DOMAIN` accept any HTTPS host | Accepted | Needed for testing against non-production Site24x7 setups. Changing them needs the same Azure role as deploying code to the Function App (section 1). HTTPS is required and redirects are refused. |
+| The dashboard address carries the function key once (`?code=`) | Accepted (Azure Functions keys) | The page removes it from the address bar and history at once, sends no referrer, and uses the `x-functions-key` header afterwards. The address can still be in browser history from before that, and in any proxy that logs full URLs. |
+| The deployment template installs its package without a SHA-256 check | Accepted (Azure limit) | Azure's deployment from a package URL takes no digest. The template installs a release asset of a published, never-replaced release (see "Release packages" above); `install.sh` refuses a downloaded package unless `PACKAGE_SHA256` matches or you confirm the digest shown. Self-updates always check the published SHA-256. |
 | No Key Vault, Private Endpoint or customer-managed key by default | By design (single template) | Key Vault references in app settings work for `SITE24X7_API_KEY`. The Flex Consumption plan supports virtual network integration; the template doesn't configure it. |
 
 ## 13. Common questions

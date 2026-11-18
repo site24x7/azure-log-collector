@@ -55,8 +55,8 @@ def request_change(enabled: bool) -> Optional[Dict]:
 
 
 def _clear_storage(region_mgr, resource_group: str) -> Dict[str, int]:
-    """Empty this collector's storage accounts: every container goes, and the
-    processing checkpoints that pointed into them. The accounts stay, idle."""
+    """Empty this collector's storage accounts: the diagnostic-log containers go, and
+    the processing checkpoints that pointed into them. The accounts stay, idle."""
     from azure.mgmt.storage import StorageManagementClient
     from azure.storage.blob import BlobServiceClient
     from shared.region_manager import IDLE_RETENTION_DAYS, REGIONAL_PURPOSE, TENANT_STORAGE_PURPOSE, is_own_account
@@ -78,7 +78,8 @@ def _clear_storage(region_mgr, resource_group: str) -> Dict[str, int]:
             key = client.storage_accounts.list_keys(resource_group, acct.name).keys[0].value
             service = BlobServiceClient(account_url=f"https://{acct.name}.blob.core.windows.net",
                                         credential={"account_name": acct.name, "account_key": key})
-            for container in service.list_containers():
+            # Only the containers Azure diagnostic settings write to (insights-logs*, insights-metrics-*).
+            for container in service.list_containers(name_starts_with="insights-"):
                 service.delete_container(container["name"])
                 counts["containers_cleared"] += 1
             cleared.append(acct.name)
@@ -109,11 +110,14 @@ def _drop_checkpoints(accounts) -> bool:
             kept = {k: v for k, v in checkpoints.items() if not str(k).startswith(prefixes)}
             if len(kept) == len(checkpoints):
                 return True
+            # Conditional either way, so a concurrent writer's checkpoints are never overwritten
+            # (no etag only happens for a missing blob, which has nothing to drop).
             if etag:
                 blob.upload_blob(json.dumps(kept), overwrite=True, etag=etag,
                                  match_condition=MatchConditions.IfNotModified)
             else:
-                blob.upload_blob(json.dumps(kept), overwrite=True)
+                blob.upload_blob(json.dumps(kept), overwrite=True,
+                                 match_condition=MatchConditions.IfMissing)
             return True
         except Exception as e:
             if is_conflict(e):

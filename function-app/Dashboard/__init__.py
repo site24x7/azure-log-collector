@@ -1,3 +1,5 @@
+import secrets
+
 import azure.functions as func
 
 DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
@@ -113,10 +115,10 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
   <h1><span>Site24x7</span> Diagnostic Logs</h1>
   <div class="header-actions">
     <span id="lastRefresh"></span>
-    <button class="icon-btn" onclick="loadAll()" title="Refresh">
+    <button class="icon-btn" data-action="loadAll" title="Refresh">
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 1.5v4h4"/><path d="M1.8 5.5A6.5 6.5 0 1 1 1.5 8"/></svg>
     </button>
-    <button class="icon-btn" id="themeBtn" onclick="toggleTheme()" title="Toggle theme">
+    <button class="icon-btn" id="themeBtn" data-action="toggleTheme" title="Toggle theme">
       <svg id="themeIcon" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 12.5V2.5a5.5 5.5 0 0 1 0 11z"/></svg>
     </button>
   </div>
@@ -154,11 +156,11 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
 
 <!-- Tab Navigation -->
 <div class="tab-bar">
-  <button class="tab-btn active" onclick="switchTab('overview')">Overview</button>
-  <button class="tab-btn" onclick="switchTab('filters')">Filters</button>
-  <button class="tab-btn" onclick="switchTab('resources')">Resources</button>
-  <button class="tab-btn" onclick="switchTab('entra')" id="entraTabBtn">Platform Logs</button>
-  <button class="tab-btn" onclick="switchTab('debug')">🔍 Debug</button>
+  <button class="tab-btn active" data-action="switchTab" data-tab="overview">Overview</button>
+  <button class="tab-btn" data-action="switchTab" data-tab="filters">Filters</button>
+  <button class="tab-btn" data-action="switchTab" data-tab="resources">Resources</button>
+  <button class="tab-btn" data-action="switchTab" data-tab="entra" id="entraTabBtn">Platform Logs</button>
+  <button class="tab-btn" data-action="switchTab" data-tab="debug">🔍 Debug</button>
 </div>
 
 <!-- Tab: Overview -->
@@ -248,13 +250,13 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
     <h2>Log Type Filters <i class="info-tip">i<span class="tip-text">Which Azure log categories are collected; change them in Site24x7. Categories that are off are left out of the diagnostic settings on the next scan.</span></i> <span id="logtypeLoading" style="display:none"><span class="spinner"></span></span></h2>
     <p style="font-size:12px;color:var(--muted);margin-bottom:8px">Which Azure log categories are collected. Change them in Site24x7, on the collector's Log Types tab.</p>
     <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;flex-wrap:wrap">
-      <input type="text" id="logtypeSearch" placeholder="Search by category, S247 type, resource…" oninput="renderLogTypes()" style="flex:1;min-width:180px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);font-size:13px">
-      <select id="logtypeStatusFilter" onchange="renderLogTypes()" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);font-size:13px">
+      <input type="text" id="logtypeSearch" placeholder="Search by category, S247 type, resource…" style="flex:1;min-width:180px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);font-size:13px">
+      <select id="logtypeStatusFilter" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);font-size:13px">
         <option value="all">All</option>
         <option value="enabled">Enabled</option>
         <option value="disabled">Disabled</option>
       </select>
-      <select id="resourceTypeFilter" onchange="renderLogTypes()" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);font-size:13px;max-width:280px">
+      <select id="resourceTypeFilter" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);font-size:13px;max-width:280px">
         <option value="">All Resource Types</option>
       </select>
       <span id="logtypeMatchCount" style="font-size:12px;color:var(--muted)"></span>
@@ -273,7 +275,7 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
       <span id="configResLoading" style="display:none"><span class="spinner"></span></span>
     </h2>
     <p style="font-size:12px;color:var(--muted);margin-bottom:10px">Resources that have Azure diagnostic settings configured by this pipeline.</p>
-    <input type="text" id="configResSearch" placeholder="Search by name, type, or category…" oninput="filterConfiguredResources()"
+    <input type="text" id="configResSearch" placeholder="Search by name, type, or category…"
       style="width:100%;padding:8px 12px;margin-bottom:10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px">
     <div id="configResList" style="max-height:500px;overflow-y:auto">
       <span class="stat-label">Loading…</span>
@@ -327,7 +329,7 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
         <div style="display:inline-flex;flex-direction:column;align-items:flex-start;gap:2px;min-width:0">
           <span class="copybox">
             <code id="entraTargetSub"></code>
-            <button class="copybtn" aria-label="Copy" onclick="copyField('entraTargetSub','Subscription')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button>
+            <button class="copybtn" aria-label="Copy" data-action="copyField" data-field="entraTargetSub" data-label="Subscription"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button>
           </span>
           <div id="entraTargetSubId" style="font-size:11px;color:var(--muted);padding-left:2px;word-break:break-all"></div>
         </div>
@@ -336,7 +338,7 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
         <span style="min-width:110px;font-size:12px;color:var(--muted)">Storage account</span>
         <span class="copybox">
           <code id="entraTargetName"></code>
-          <button class="copybtn" aria-label="Copy" onclick="copyField('entraTargetName','Storage account')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button>
+          <button class="copybtn" aria-label="Copy" data-action="copyField" data-field="entraTargetName" data-label="Storage account"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button>
         </span>
       </div>
       <div style="display:flex;gap:8px;align-items:center">
@@ -366,10 +368,10 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
     <div class="card">
       <h2>Debug Actions</h2>
       <div class="btn-group" style="margin-top:0">
-        <button class="btn btn-primary btn-sm" id="btnLoadDebug" onclick="loadDebugInfo(false)">🔄 Refresh Debug Info</button>
-        <button class="btn btn-primary btn-sm" id="btnTestS247" onclick="loadDebugInfo(true)">🔌 Test S247 Connectivity</button>
-        <button class="btn btn-primary btn-sm" id="btnExportDebug" onclick="exportDebugBundle()">📥 Export Debug Bundle</button>
-        <button class="btn btn-primary btn-sm" id="btnExportLog" onclick="exportDebugBundle('log')" title="Readable log with keys and tokens removed — safe to send to Site24x7 support">📄 Download Log File</button>
+        <button class="btn btn-primary btn-sm" id="btnLoadDebug" data-action="loadDebugInfo">🔄 Refresh Debug Info</button>
+        <button class="btn btn-primary btn-sm" id="btnTestS247" data-action="testS247">🔌 Test S247 Connectivity</button>
+        <button class="btn btn-primary btn-sm" id="btnExportDebug" data-action="exportDebugBundle">📥 Export Debug Bundle</button>
+        <button class="btn btn-primary btn-sm" id="btnExportLog" data-action="exportDebugLog" title="Readable log with keys and tokens removed — safe to send to Site24x7 support">📄 Download Log File</button>
       </div>
       <div id="debugS247Status" style="margin-top:10px"><span class="stat-label" style="font-size:11px">Run "Test S247 Connectivity" to check</span></div>
       <span id="debugS247Badge" style="display:none"></span>
@@ -389,14 +391,14 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
       <h2>Recent Events <span id="debugEventCount" class="badge" style="background:rgba(56,189,248,.15);color:var(--accent);font-size:11px;vertical-align:middle">-</span></h2>
       <div style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <label style="font-size:12px;color:var(--muted)">Level:</label>
-        <select id="debugEventFilter" onchange="renderDebugEvents()" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px">
+        <select id="debugEventFilter" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px">
           <option value="all">All</option>
           <option value="error">Errors</option>
           <option value="warning">Warnings</option>
           <option value="info">Info</option>
         </select>
         <label style="font-size:12px;color:var(--muted)">Source:</label>
-        <select id="debugSourceFilter" onchange="renderDebugEvents()" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px">
+        <select id="debugSourceFilter" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px">
           <option value="all">All</option>
         </select>
       </div>
@@ -413,7 +415,7 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
 <div id="authBanner" class="badge-red" role="alert" style="display:none;position:fixed;top:0;left:0;right:0;z-index:101;padding:12px 20px;font-size:13px;line-height:1.5"></div>
 
 
-<script>
+<script nonce="__CSP_NONCE__">
 const BASE = window.location.origin;
 // The key arrives in the address (?code=) because the page is opened with it.
 // Keep it only for this tab, take it out of the address bar and history, and
@@ -476,7 +478,7 @@ function setLoading(btnId, loading) {
 function switchTab(name) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-  document.querySelector(`.tab-btn[onclick="switchTab('${name}')"]`).classList.add('active');
+  document.querySelector(`.tab-btn[data-tab="${name}"]`).classList.add('active');
   document.getElementById('tab-' + name).classList.add('active');
   // Lazy-load resources tab
   if (name === 'resources' && !_configuredResources) loadConfiguredResources();
@@ -490,10 +492,6 @@ function esc(s) {
     .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 function escAttr(s) { return esc(s); }
-// A value passed to an inline handler: a JS string literal first, then HTML-escaped.
-// (The browser decodes the attribute before running it, so HTML-escaping alone
-// lets a quote end the string.)
-function jsArg(s) { return esc(JSON.stringify(String(s ?? ''))); }
 
 function copyField(elId, label) {
   const val = (document.getElementById(elId).textContent || '').trim();
@@ -1211,6 +1209,31 @@ function loadAll() {
   loadVersion();
 }
 
+// Event wiring: the CSP allows no inline handlers.
+const ACTIONS = {
+  loadAll: () => loadAll(),
+  toggleTheme: () => toggleTheme(),
+  switchTab: el => switchTab(el.dataset.tab),
+  copyField: el => copyField(el.dataset.field, el.dataset.label),
+  loadDebugInfo: () => loadDebugInfo(false),
+  testS247: () => loadDebugInfo(true),
+  exportDebugBundle: () => exportDebugBundle(),
+  exportDebugLog: () => exportDebugBundle('log'),
+};
+document.addEventListener('click', ev => {
+  const el = ev.target.closest('[data-action]');
+  if (!el || el.disabled) return;
+  const fn = ACTIONS[el.dataset.action];
+  if (fn) fn(el);
+});
+[['logtypeSearch', 'input', renderLogTypes],
+ ['logtypeStatusFilter', 'change', renderLogTypes],
+ ['resourceTypeFilter', 'change', renderLogTypes],
+ ['configResSearch', 'input', filterConfiguredResources],
+ ['debugEventFilter', 'change', renderDebugEvents],
+ ['debugSourceFilter', 'change', renderDebugEvents],
+].forEach(([id, type, fn]) => document.getElementById(id).addEventListener(type, () => fn()));
+
 loadAll();
 setInterval(loadAll, 60000);
 // Catch up at once when the tab becomes visible again (status checks pause while hidden).
@@ -1221,14 +1244,17 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) load
 
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
-    resp = func.HttpResponse(DASHBOARD_HTML_TEMPLATE, mimetype="text/html", status_code=200)
+    # Fresh nonce per response; only the page's own <script> carries it.
+    nonce = secrets.token_urlsafe(16)
+    html = DASHBOARD_HTML_TEMPLATE.replace("__CSP_NONCE__", nonce)
+    resp = func.HttpResponse(html, mimetype="text/html", status_code=200)
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     resp.headers["Pragma"] = "no-cache"
     resp.headers["Expires"] = "0"
     # Security headers
     resp.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "script-src 'unsafe-inline'; "
+        f"script-src 'nonce-{nonce}'; "
         "style-src 'unsafe-inline'; "
         "img-src 'self' data:; "
         "connect-src 'self'"

@@ -274,7 +274,6 @@ updates on its own, set `AUTO_UPDATE_ENABLED=true`.
 | `PINNED_VERSION` | *(unset)* | A pin freezes the collector at that version and never downgrades (`pinned_older` if the pin is older than installed). A newer pin installs only if it matches the fetched release; older releases are not fetched. |
 | `SKIP_AUTO_UPDATE` | `false` | `true` applies no update at all, automatic or manual — emergency switch, no redeploy needed. |
 | `MIN_RELEASE_AGE_MINUTES` | `60` | Refuses releases younger than N minutes, a grace window to stop a bad release before it is installed. |
-| `REQUIRE_PACKAGE_SHA256` | `true` | Refuses a release whose package has no published SHA-256 digest. A package that does not match a published digest is always refused. |
 
 ### Separating alpha/beta from customer builds
 
