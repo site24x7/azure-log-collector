@@ -931,6 +931,33 @@ def test_old_version_does_not_confirm(monkeypatch):
     assert store.writes == []
 
 
+def test_rollback_after_a_confirmed_update_clears_the_record(monkeypatch):
+    store = FakeStateStore({"pending_version": "2.0.0", "previous_version": "1.0.0",
+                            "confirmed_at": "t"})
+    _confirm(monkeypatch, store, local="1.0.0")
+    assert store.state == {} and len(store.writes) == 1
+
+
+def test_manual_install_of_another_version_clears_a_pending_update(monkeypatch):
+    store = FakeStateStore({"pending_version": "2.0.0", "previous_version": "1.0.0",
+                            "submitted_at": "t"})
+    _confirm(monkeypatch, store, local="1.5.0")
+    assert store.state == {}
+
+
+def test_old_version_still_running_during_rollout_keeps_the_pending_update(monkeypatch):
+    state = {"pending_version": "2.0.0", "previous_version": "1.0.0", "submitted_at": "t"}
+    store = FakeStateStore(dict(state))
+    _confirm(monkeypatch, store, local="1.0.0")
+    assert store.writes == [] and store.state == state
+
+
+def test_confirmed_update_still_running_is_kept(monkeypatch):
+    store = FakeStateStore({"pending_version": "2.0.0", "confirmed_at": "t"})
+    _confirm(monkeypatch, store, local="2.0.0")
+    assert store.writes == []
+
+
 @pytest.mark.parametrize("failure", ["unreadable", "unwritable"])
 def test_confirmation_is_retried_after_a_storage_failure(monkeypatch, failure):
     store = FakeStateStore({"pending_version": "2.0.0"},

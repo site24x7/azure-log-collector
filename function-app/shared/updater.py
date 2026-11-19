@@ -612,8 +612,18 @@ def confirm_running_version() -> None:
     state, etag, readable = _read_update_state_with_etag()
     if not readable:
         return
-    if state.get("pending_version") and not state.get("confirmed_at") and \
-            (get_local_version() or "").lstrip("v") == str(state["pending_version"]).lstrip("v"):
+    local = (get_local_version() or "").lstrip("v")
+    pending = str(state.get("pending_version") or "").lstrip("v")
+    previous = str(state.get("previous_version") or "").lstrip("v")
+    if pending and local and local != pending and (state.get("confirmed_at") or (previous and local != previous)):
+        # Another version was installed by hand (a rollback or a manual deploy):
+        # the recorded update no longer describes this install, so clear it rather
+        # than show it or let it block a new update.
+        written, _conflict = _write_update_state_if_unchanged({}, etag)
+        if not written:
+            return
+        logger.info("Cleared the record of the update to %s: version %s is running", pending, local)
+    elif pending and not state.get("confirmed_at") and local == pending:
         state["confirmed_at"] = datetime.now(timezone.utc).isoformat()
         state.pop("failed_at", None)
         state.pop("error", None)

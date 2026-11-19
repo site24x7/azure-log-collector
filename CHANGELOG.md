@@ -14,6 +14,9 @@ storage), validated live (docs/release-validation.md), plus:
 
 - When Site24x7 returns no supported log types (for example a rejected Device Key), a scan no longer
   creates or removes regional storage accounts.
+- After another version is installed by hand (a rollback or a manual deploy), the recorded update is
+  cleared instead of still being shown or blocking a new update.
+- docs/security-overview.md: the deferred and accepted items, with reasons.
 
 ## [1.2.0-beta3] — 2026-11-18
 
