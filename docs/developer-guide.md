@@ -1370,6 +1370,8 @@ s247-function-app.zip
 
 The app runs on the Flex Consumption plan with Python 3.13 (`functionAppConfig.runtime` in the template). Release packages are prebuilt: the release workflow installs `requirements.lock` (hash-checked, manylinux2014, CPython 3.13) into `.python_packages`, and the template and the AutoUpdater install them with OneDeploy and `remoteBuild=false`. `setup/setup.sh` deploys local source with a remote build instead (`config-zip --build-remote true`). Flex Consumption rejects the old Consumption build settings (`FUNCTIONS_WORKER_RUNTIME`, `SCM_DO_BUILD_DURING_DEPLOYMENT`, `ENABLE_ORYX_BUILD`, `WEBSITE_RUN_FROM_PACKAGE`), so none is set; a test keeps them out of the template.
 
+The test workflow (`validate-function-app.yml`, which the release workflow runs first) installs `requirements.txt` and `requirements-dev.txt` without hash checking. This is deliberate: `requirements.lock` pins hashes for the manylinux2014 wheels that go into the release package, while the test job runs on the runner's own Python and platform, where those hashes would resolve to different files. Test-only dependencies are never shipped, and the release package is always built from the lock.
+
 `host.json` configuration:
 - **Function timeout:** 10 minutes (`"functionTimeout": "00:10:00"`)
 - **Application Insights:** Enabled with sampling (excludes Request telemetry)
