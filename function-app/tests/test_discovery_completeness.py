@@ -69,7 +69,7 @@ def test_subscription_list_error_marks_scan_incomplete_before_region_cleanup():
             ("shared.ignore_list.load_ignore_list", {}),
             ("shared.config_store.get_configured_resources", {}),
             ("shared.config_store.get_resource_inventory", {"subscriptions": ["s1"]}),
-            ("DiagSettingsManager._refresh_supported_types", {}),
+            ("DiagSettingsManager._refresh_supported_types", {"applogs": {"logtype": "applogs"}}),
         ]:
             stack.enter_context(patch(target, return_value=value))
         for target in ("shared.site24x7_client.Site24x7Client", "shared.debug_logger.log_event",
@@ -114,3 +114,41 @@ def test_other_http_errors_still_mark_discovery_incomplete():
     assert mgr.supports_diagnostic_logs(rid, "Microsoft.Web/sites") is False
     assert "microsoft.web/sites" not in mgr._diag_support_cache
     assert mgr.discovery_complete is False
+
+
+def test_no_log_type_catalog_creates_no_regional_storage():
+    """A rejected Device Key (no catalog) must not create or remove storage accounts."""
+    from contextlib import ExitStack
+
+    import pytest
+    import DiagSettingsManager
+
+    mgr = _manager()
+    mgr.get_all_resources = MagicMock(return_value=[])
+    regions = MagicMock()
+    regions.get_active_regions.return_value = {"eastus", "westus2"}
+    regions.get_provisioned_regions.return_value = {}
+
+    class PastRegions(Exception):
+        pass
+
+    with ExitStack() as stack:
+        for target, value in [
+            ("shared.subscriptions.monitored_subscriptions", (["s1"], {}, None)),
+            ("shared.azure_manager.AzureManager", mgr),
+            ("shared.region_manager.RegionManager", regions),
+            ("shared.ignore_list.load_ignore_list", {}),
+            ("shared.config_store.get_configured_resources", {}),
+            ("shared.config_store.get_resource_inventory", {"subscriptions": ["s1"]}),
+            ("DiagSettingsManager._refresh_supported_types", {}),
+        ]:
+            stack.enter_context(patch(target, return_value=value))
+        for target in ("shared.site24x7_client.Site24x7Client", "shared.debug_logger.log_event",
+                       "shared.config_store.clear_cache", "DiagSettingsManager._update_phase",
+                       "DiagSettingsManager._save_early_scan_state",
+                       "shared.config_store.save_resource_inventory"):
+            stack.enter_context(patch(target))
+        stack.enter_context(patch("shared.config_store.get_scan_state", side_effect=PastRegions))
+        with pytest.raises(PastRegions):
+            DiagSettingsManager.run_scan()
+    regions.reconcile_regions.assert_not_called()

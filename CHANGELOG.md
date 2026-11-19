@@ -7,6 +7,14 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.2.0] — 2026-11-19
+
+The 1.2.0-beta changes (narrower roles, REST for diagnostic settings, optional managed identity
+storage), validated live (docs/release-validation.md), plus:
+
+- When Site24x7 returns no supported log types (for example a rejected Device Key), a scan no longer
+  creates or removes regional storage accounts.
+
 ## [1.2.0-beta3] — 2026-11-18
 
 - setup/migrate-roles.sh: the collector's own delete lock on its resource group also blocks removing a

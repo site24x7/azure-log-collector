@@ -61,8 +61,21 @@ Verified in a test subscription:
   group also blocks deleting role assignments there; fixed in 1.2.0-beta3 (the lock is lifted for that
   one call and restored). A scan with only the new roles completed with 0 errors.
 
-Not verified: storage with managed identity (STORAGE_AUTH=identity, AzureWebJobsStorage__accountName),
-setup.sh with the new roles, and MONITOR_CLIENT=sdk.
+1.2.0-beta3 (2026-11-19):
+
+- The migrated 1.1.3 collector updated itself to 1.2.0-beta3 (Check for Updates); a scan finished with
+  0 errors and the same configured resources.
+- `setup.sh` install: the identity received exactly the roles above, no Contributor.
+- Managed identity storage on that install: with AzureWebJobsStorage removed,
+  AzureWebJobsStorage__accountName set, STORAGE_AUTH=identity, and Storage Blob Data Owner, Storage Queue
+  Data Contributor and Storage Table Data Contributor on its group, the host started, read its saved
+  settings, registered, scanned with 0 errors (diagnostic setting created) and read the Logic App's logs
+  from the regional account. Delete Collector removed the group in about two minutes.
+
+- MONITOR_CLIENT=sdk on the 1.2.0-beta3 collector: a scan with the SDK fallback finished with 0 errors
+  and the same configured resources; the setting was then removed (REST again).
+
+Not verified: uploads (the test upload endpoint was off).
 
 ## 1.1.3 validation (2026-11-18)
 

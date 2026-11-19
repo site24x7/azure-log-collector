@@ -363,10 +363,17 @@ def _run_scan(full_reconcile: bool = False):
     phase_start = _time.monotonic()
     active_regions = region_mgr.get_active_regions(active_resources)
     provisioned_regions = region_mgr.get_provisioned_regions(resource_group)
-    reconcile_result = region_mgr.reconcile_regions(
-        resource_group, active_regions, provisioned_regions, diag_storage_suffix,
-        allow_remove=discovery_complete,
-    )
+    if supported_types:
+        reconcile_result = region_mgr.reconcile_regions(
+            resource_group, active_regions, provisioned_regions, diag_storage_suffix,
+            allow_remove=discovery_complete,
+        )
+    else:
+        # No log type catalog (e.g. Site24x7 rejected the Device Key): nothing
+        # can be configured, so create no storage accounts and remove none.
+        reconcile_result = {"added": [], "idle": [], "errors": []}
+        _log_event("warning", "DiagSettingsManager",
+                   "No supported log types from Site24x7; regional storage was not changed")
     provisioned_regions = region_mgr.get_provisioned_regions(resource_group)
     logging.info(
         "DiagSettingsManager: Phase 3 (regions) — added=%d, idle=%d, failed=%d in %.1fs [total=%.1fs]",
