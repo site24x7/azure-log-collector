@@ -152,3 +152,21 @@ def test_no_log_type_catalog_creates_no_regional_storage():
         with pytest.raises(PastRegions):
             DiagSettingsManager.run_scan()
     regions.reconcile_regions.assert_not_called()
+
+
+def test_a_lock_refusing_the_delete_names_the_locked_group(monkeypatch):
+    from shared.collection import blocking_details
+    monkeypatch.setenv("DIAG_STORAGE_SUFFIX", "")
+    rid = "/subscriptions/s1/resourceGroups/src-rg/providers/Microsoft.Logic/workflows/wf"
+    mgr = _manager()
+    mgr.get_all_resources = MagicMock(return_value=[{"id": rid, "location": "eastus"}])
+    mgr.get_diagnostic_setting = MagicMock(return_value={"storage_account_id": "/x"})
+    mgr._foreign_setting = MagicMock(return_value=False)
+    client = MagicMock()
+    client.diagnostic_settings.delete.side_effect = RuntimeError(
+        "HTTP 409 ScopeLocked: cannot perform delete operation because following scope(s) "
+        "are locked: '/subscriptions/s1/resourceGroups/src-rg'. Please remove the lock and try again.")
+    mgr._get_monitor_client = lambda sub: client
+    summary = mgr.remove_all_diagnostic_settings(["s1"], {})
+    assert summary["errors"] == 1
+    assert blocking_details(summary["details"]) == (["wf"], ["src-rg"])

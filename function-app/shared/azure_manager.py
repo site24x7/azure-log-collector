@@ -321,11 +321,14 @@ class AzureManager:
         self,
         resource_id: str,
         setting_name: Optional[str] = None,
+        raise_errors: bool = False,
     ) -> bool:
         """Delete this collector's diagnostic setting (or ``setting_name``) from a resource.
 
         A setting of that name that sends elsewhere is not this collector's and
-        is left in place (returns True: nothing of ours is there)."""
+        is left in place (returns True: nothing of ours is there). With
+        ``raise_errors`` a refused delete raises, so the caller can report why
+        (for example the locked scope)."""
         setting_name = setting_name or collector_setting_name()
         sub_id = _extract_subscription_id(resource_id)
         if not sub_id:
@@ -348,6 +351,8 @@ class AzureManager:
             logger.error(
                 f"Failed to delete diagnostic setting on {resource_id}: {e}"
             )
+            if raise_errors:
+                raise
             return False
 
     def remove_legacy_setting_if_own(self, resource_id: str, own_storage_name: str,
@@ -508,7 +513,7 @@ class AzureManager:
             try:
                 removed = False
                 if self.get_diagnostic_setting(resource_id, raise_errors=True):
-                    removed = self.delete_diagnostic_setting(resource_id)
+                    removed = self.delete_diagnostic_setting(resource_id, raise_errors=True)
                     if not removed:
                         return "error", resource_id, None
                 record = (records or {}).get(resource_id) or {}

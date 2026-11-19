@@ -25,7 +25,8 @@ ARM_SCOPE = "https://management.azure.com/.default"
 API_VERSION = "2021-05-01-preview"
 CONNECT_TIMEOUT = 10
 READ_TIMEOUT = 60
-MAX_ATTEMPTS = 3
+MAX_ATTEMPTS = 5
+POOL_SIZE = 16  # at least the callers' thread count, so connections are reused
 MAX_WAIT = 30.0
 _RETRY_STATUSES = (429, 500, 502, 503, 504)
 
@@ -166,6 +167,11 @@ class MonitorRestClient:
         self._token: Optional[str] = None
         self._expires = 0.0
         self._lock = threading.Lock()
+        # One pooled session: a new TLS connection per call exhausts outbound
+        # connections under parallel scans (seen as connect timeouts on Flex Consumption).
+        self._session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=1, pool_maxsize=POOL_SIZE)
+        self._session.mount("https://", adapter)
         self.diagnostic_settings_category = _CategoryOps(self)
         self.diagnostic_settings = _SettingOps(self)
 
@@ -180,10 +186,20 @@ class MonitorRestClient:
                 body: Optional[Dict] = None, ok_missing: bool = False) -> "requests.Response":
         for attempt in range(1, MAX_ATTEMPTS + 1):
             headers = {"Authorization": f"Bearer {self._bearer()}"}
-            resp = requests.request(
-                method, url, headers=headers, json=body,
-                timeout=(CONNECT_TIMEOUT, READ_TIMEOUT), allow_redirects=False,
-            )
+            try:
+                resp = self._session.request(
+                    method, url, headers=headers, json=body,
+                    timeout=(CONNECT_TIMEOUT, READ_TIMEOUT), allow_redirects=False,
+                )
+            except (requests.ConnectionError, requests.Timeout) as e:
+                # Every call here is idempotent (GET, PUT of the same body, DELETE), so a
+                # connection that failed or timed out is tried again like a 503.
+                if attempt >= MAX_ATTEMPTS:
+                    raise
+                wait = min(float(2 ** attempt), MAX_WAIT)
+                logger.warning("%s: %s, retry %d in %.0fs", what, type(e).__name__, attempt, wait)
+                time.sleep(wait)
+                continue
             if resp.status_code in _RETRY_STATUSES and attempt < MAX_ATTEMPTS:
                 wait = _retry_wait(resp, attempt)
                 logger.warning("%s: HTTP %s, retry %d in %.0fs", what, resp.status_code, attempt, wait)

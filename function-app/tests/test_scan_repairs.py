@@ -19,7 +19,7 @@ def _resource(rid):
 
 
 def _scan(resources, configured, azure_setting, categories_by_resource=None, scan_state=None, full=False,
-          create_ok=None, lookup=None):
+          create_ok=None, lookup=None, logtype_config=None, on_event=None):
     """Run one scan against mocks; returns the AzureManager mock."""
     mgr = MagicMock()
     mgr.discovery_errors = []
@@ -45,7 +45,6 @@ def _scan(resources, configured, azure_setting, categories_by_resource=None, sca
             ("shared.config_store.get_configured_resources", configured),
             ("shared.config_store.get_resource_inventory", {"subscriptions": [SUB]}),
             ("shared.config_store.get_scan_state", scan_state or {}),
-            ("shared.config_store.get_logtype_config", {"logType": "x"}),
             ("shared.config_store.is_log_type_disabled", False),
             ("shared.config_store.get_all_logtype_configs", {}),
             ("shared.config_store.get_entra_logtype_states", {}),
@@ -58,6 +57,10 @@ def _scan(resources, configured, azure_setting, categories_by_resource=None, sca
                        "shared.config_store.save_category_resource_types", "shared.config_store.save_category_names",
                        "shared.config_store.save_logtype_config"):
             stack.enter_context(patch(target))
+        stack.enter_context(patch("shared.config_store.get_logtype_config",
+                                  side_effect=logtype_config or (lambda c: {"logType": "x"})))
+        if on_event:
+            stack.enter_context(patch("shared.debug_logger.log_event", side_effect=on_event))
         stack.enter_context(patch("shared.config_store.save_configured_resources",
                                   side_effect=lambda r: saved.update(r) or True))
         stack.enter_context(patch("shared.config_store.save_scan_state", side_effect=lambda s: saved.setdefault("_scan", s)))
@@ -138,3 +141,23 @@ def test_no_retry_when_the_own_categories_do_not_help(own):
     site_calls = [c for c in mgr.create_diagnostic_setting.call_args_list if c.kwargs["resource_id"] == SITE]
     assert len(site_calls) == 1
     assert mgr.saved["_scan"]["errors"] == 1
+
+
+def test_a_log_type_created_in_this_scan_is_not_reported_missing():
+    # First scan: the log type exists only after phase 5 creates it.
+    created = {"done": False}
+
+    def on_event(level, component, message, *a, **k):
+        if message.startswith("Re-evaluating"):
+            created["done"] = True
+
+    mgr = _scan([_resource(FUNC)], {}, azure_setting={},
+                logtype_config=lambda c: {"logType": "x"} if created["done"] else None, on_event=on_event)
+    assert mgr.create_diagnostic_setting.call_count == 1
+    assert mgr.saved["_scan"]["skip_reasons"] == {}
+
+
+def test_a_category_without_a_log_type_is_reported_missing():
+    mgr = _scan([_resource(FUNC)], {}, azure_setting={}, logtype_config=lambda c: None)
+    mgr.create_diagnostic_setting.assert_not_called()
+    assert mgr.saved["_scan"]["skip_reasons"] == {"no_log_type": {"count": 1, "types": ["Microsoft.Web/sites"]}}

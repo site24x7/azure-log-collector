@@ -24,7 +24,7 @@ def mgr(monkeypatch):
     m.get_diagnostic_setting = lambda rid, name=None, raise_errors=False: (
         {"storage_account_id": m.settings[name or collector_setting_name()]}
         if (name or collector_setting_name()) in m.settings else None)
-    def delete(rid, name=None):
+    def delete(rid, name=None, raise_errors=False):
         return m.settings.pop(name or collector_setting_name(), None) is not None
     m.delete_diagnostic_setting = MagicMock(side_effect=delete)
     return m

@@ -31,7 +31,7 @@ def client():
 
 @pytest.fixture
 def req():
-    with patch("shared.monitor_rest.requests.request") as m, \
+    with patch("shared.monitor_rest.requests.Session.request") as m, \
             patch("shared.monitor_rest.time.sleep") as sl:
         m.sleep = sl
         yield m
@@ -130,7 +130,31 @@ def test_retries_are_bounded(client, req):
     req.return_value = resp(500)
     with pytest.raises(HttpResponseError) as ei:
         client.diagnostic_settings_category.list(RID)
-    assert ei.value.status_code == 500 and req.call_count == 3
+    assert ei.value.status_code == 500 and req.call_count == monitor_rest.MAX_ATTEMPTS
+
+
+def test_connection_errors_are_retried(client, req):
+    import requests
+    req.side_effect = [requests.ConnectTimeout("connect timed out"), requests.ConnectionError("reset"),
+                       resp(200, {"value": []})]
+    assert client.diagnostic_settings_category.list(RID).value == []
+    assert req.call_count == 3
+
+
+def test_connection_errors_are_bounded(client, req):
+    import requests
+    req.side_effect = requests.ConnectTimeout("connect timed out")
+    with pytest.raises(requests.ConnectTimeout):
+        client.diagnostic_settings_category.list(RID)
+    assert req.call_count == monitor_rest.MAX_ATTEMPTS
+
+
+def test_one_pooled_session_is_reused(client, req):
+    req.return_value = resp(200, {"value": []})
+    client.diagnostic_settings_category.list(RID)
+    client.diagnostic_settings_category.list(RID)
+    adapter = client._session.get_adapter("https://management.azure.com")
+    assert adapter._pool_maxsize >= 10  # the removal and scan pools use 10 threads
 
 
 def test_token_not_logged(client, req, caplog):

@@ -7,6 +7,17 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.2.1-beta1] — 2026-11-19
+
+Fixes from the 1.2.0 end-to-end test:
+
+- Diagnostic-settings REST calls reuse pooled connections and retry a connection that failed or
+  timed out. Under parallel load each call opened a new connection; some timed out, and turning
+  log collection off or Delete Collector then reported resources it never configured as blocked.
+- Delete Collector names the locked resource group when a lock refuses removing a setting.
+- A resource whose Site24x7 log type is created during the same scan is no longer reported as
+  "no log type yet".
+
 ## [1.2.0] — 2026-11-19
 
 The 1.2.0-beta changes (narrower roles, REST for diagnostic settings, optional managed identity

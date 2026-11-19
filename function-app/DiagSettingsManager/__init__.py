@@ -616,15 +616,17 @@ def _run_scan(full_reconcile: bool = False):
                     effective_categories.append(category)
                     stats["general"] += 1
 
-            if not effective_categories:
-                # Every category turned off on Log Types, or none has a Site24x7 log type.
-                _skip("all_disabled" if not desired_categories else "no_log_type", resource_type)
+            if not desired_categories:
+                # Every category turned off on Log Types. A missing Site24x7 log type is
+                # counted only after phase 5, which may create it in this scan.
+                _skip("all_disabled", resource_type)
 
             resource_category_map[resource_id] = {
                 "categories": desired_categories,
                 "effective_categories": effective_categories,
                 "location": location,
                 "sa_name": sa_name,
+                "resource_type": resource_type,
             }
 
             for category in desired_categories:
@@ -865,6 +867,8 @@ def _run_scan(full_reconcile: bool = False):
                 if get_logtype_config(cat_normalized) or general_config_available:
                     effective.append(category)
             info["effective_categories"] = effective
+            if info["categories"] and not effective and info.get("resource_type"):
+                _skip("no_log_type", info["resource_type"])
         _log_event("info", "DiagSettingsManager",
                    f"Re-evaluation done [total={_elapsed():.0f}s]")
     except Exception as e:
