@@ -242,7 +242,7 @@ Azure Diagnostic Settings require the destination Storage Account to be **in the
 | **TLS** | Minimum TLS 1.2 |
 | **Public Access** | Disabled |
 | **Base Container** | `insights-logs` (validation container) |
-| **Retention** | Lifecycle rule `s247-diag-logs-retention`: `BLOB_RETENTION_DAYS` (7); 1 day while the region is not collected. Never deleted: a deleted name can be taken by anyone in Azure. |
+| **Retention** | Lifecycle rule `s247-diag-logs-retention`: `BLOB_RETENTION_DAYS` (1 by default); 1 day while the region is not collected. Never deleted: a deleted name can be taken by anyone in Azure. |
 | **Tags** | `managed-by: s247-diag-logs`, `purpose: diag-logs-regional`, `region: {region}`, `s247-collector: {Function App name}` (collectors sharing a group never use each other's accounts) |
 
 ### 4.4 Multi-Region Data Flow
@@ -1196,7 +1196,7 @@ When OPEN: post_logs() returns False immediately (records remain for retry withi
 | `AUTO_SCAN_ENABLED` | `true` | `false` skips scheduled and startup scans (the collector still reports to Site24x7) |
 | `MONITOR_PIPELINE_RESOURCES` | `false` | `true` also collects logs from the collector's own resource group; other collectors' resources (tagged `managed-by: s247-diag-logs`) are never collected |
 | `MIN_SCAN_INTERVAL_MINUTES` | `30` | A startup scan is skipped when the last scan finished more recently |
-| `BLOB_RETENTION_DAYS` | `7` | Lifecycle retention of regional log blobs (idle accounts: 1 day) |
+| `BLOB_RETENTION_DAYS` | `1` | Lifecycle retention of regional log blobs, in whole days (values below 1 use the default; idle accounts: 1 day). See [Log retention](../README.md#log-retention) |
 | `DIAG_SEED_REGION` | (none; template: deployment region) | Region whose account receives global resources' logs; used in storage naming |
 | `COLLECTOR_RESOURCE_ID` | (none; template: Function App resource ID) | The collector's own Azure resource ID; derived from the other settings when unset |
 | `INITIAL_RESOURCE_FILTERS` | (none; template: deployment-form filters) | Saved once as the resource filters when none exist yet |

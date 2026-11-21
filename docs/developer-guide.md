@@ -1523,7 +1523,7 @@ refactor: extract log parsing into shared/log_parser.py
 | Max records per upload batch | 5,000 (`MAX_RECORDS_PER_BATCH`) |
 | Time budget reserve | 60s before timeout, stops taking new blobs |
 | Backlog warning threshold | 500 pending blobs (`BACKLOG_WARN_THRESHOLD`) |
-| Blob retention (lifecycle rule, sent or not) | 7 days (`BLOB_RETENTION_DAYS`) |
+| Blob retention (lifecycle rule, sent or not) | 1 day (`BLOB_RETENTION_DAYS`) |
 | Circuit breaker | Opens after 8 failures, recovers after 5 min |
 | Rate limiter | 100 tokens/sec (token bucket) |
 | S247 API timeout | 120s; upload timeout at most 120s, bounded by the remaining run deadline |
@@ -1544,7 +1544,7 @@ When inflow exceeds processing capacity:
 2. **Checkpoint persistence** — Progress saved per blob (byte/block position and skip_records); next run resumes where it left off
 3. **Backlog alert** — When pending blobs > 500, a warning event is logged to the Debug API
 4. **Batch splitting** — Blobs with >5,000 records are split into multiple upload batches
-5. **Stale cleanup** — Storage lifecycle expires blobs after BLOB_RETENTION_DAYS (default 7), whether sent or not; the processor does not delete blobs
+5. **Stale cleanup** — Storage lifecycle expires blobs after BLOB_RETENTION_DAYS (default 1), whether sent or not; the processor does not delete blobs
 6. **Circuit breaker** — If S247 is down, stops retrying after 8 failures (prevents wasted time), recovers after 5 min. Refused payloads do not trip it (see Circuit Breaker)
 
 ### What Is NOT Handled (Future Work)
@@ -1602,7 +1602,7 @@ curl http://localhost:7071/api/debug
 | `SKIP_AUTO_UPDATE` | No | `true` disables AutoUpdater entirely — emergency switch |
 | `MIN_RELEASE_AGE_MINUTES` | No | Grace period before a new release is eligible (default: `60`) |
 | `SITE24X7_UPLOAD_DOMAIN` | No | Override upload endpoint (for testing with mock server) |
-| `BLOB_RETENTION_DAYS` | No | Days after which the storage lifecycle rule deletes log blobs, sent or not (default 7) |
+| `BLOB_RETENTION_DAYS` | No | Days after which the storage lifecycle rule deletes log blobs, sent or not (default 1; whole days, values below 1 use the default). See [Log retention](../README.md#log-retention) |
 | `AUTO_SCAN_ENABLED` | No | `false` skips the scheduled scans (the collector still reports to Site24x7 on schedule) (default `true`) |
 | `MONITOR_PIPELINE_RESOURCES` | No | `true` also collects logs from resources in the collector's own resource group (default `false`: excluded, to avoid a self-referential log loop). Other collectors' resources (tagged `managed-by: s247-diag-logs`) are never collected |
 | `MIN_SCAN_INTERVAL_MINUTES` | No | A start-up scan is skipped when the last scan finished less than this many minutes ago (default `30`) |

@@ -187,7 +187,7 @@ az monitor app-insights query -g s247-diag-logs-rg --app <app-insights-name> \
 **Common causes**:
 - **Processing paused or Log Collection off**: Check the collector's status in Site24x7; the stored processing flag overrides `PROCESSING_ENABLED`
 - **BlobLogProcessor timing out**: If >500 blobs pending, processor may not finish in 2 min cycle
-- **No S247 config for category**: Blobs accumulate until a scan creates the config; storage lifecycle expires blobs after BLOB_RETENTION_DAYS (default 7 days)
+- **No S247 config for category**: Blobs accumulate until a scan creates the config; storage lifecycle expires blobs after BLOB_RETENTION_DAYS (default 1 day; to keep them longer, see [Log retention](../README.md#log-retention))
 
 ---
 
@@ -222,7 +222,7 @@ Nothing is deleted while any of these applies.
 
 **Cause**: Site24x7 does not accept `SITE24X7_API_KEY`, for example after the key was rotated or the account was reset. The upload service answers HTTP 400 (not 401) to an unknown key; the collector then checks the key with Site24x7's API and treats the 400 as a refused key.
 
-**Fix**: Set `SITE24X7_API_KEY` to the current Device Key and check `SITE24X7_BASE_URL` is the right data center. The logs are retried, not dropped, while they are still kept in storage (`BLOB_RETENTION_DAYS`).
+**Fix**: Set `SITE24X7_API_KEY` to the current Device Key and check `SITE24X7_BASE_URL` is the right data center. The logs are retried, not dropped, while they are still kept in storage (`BLOB_RETENTION_DAYS`, 1 day by default). If the key may stay wrong for longer, raise the retention first ([Log retention](../README.md#log-retention)).
 
 ---
 

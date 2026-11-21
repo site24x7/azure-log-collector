@@ -102,7 +102,7 @@ The template passes these to the collector once (`INITIAL_RESOURCE_FILTERS`). On
 Once collecting, every scan (every 6 hours, and on demand) does the following:
 - **Diagnostic settings:** creates or updates this collector's diagnostic setting on each resource that is not excluded, sending the resource's log categories to the regional storage account.
 - **Storage accounts:** creates one storage account per region that has resources.
-  - It applies a lifecycle rule that deletes blobs after `BLOB_RETENTION_DAYS`, 7 by default.
+  - It applies a lifecycle rule that deletes blobs after `BLOB_RETENTION_DAYS`, 1 by default.
   - Public blob access is off and TLS 1.2 is the minimum.
 - **Clean-up:** removes this collector's setting from resources that became excluded or were deleted.
 - **Unused storage:** keeps a storage account whose region (or, for the Entra ID account, Entra ID) is no longer collected, and changes its lifecycle rule to delete blobs after 1 day. Logs that still reach it, through a diagnostic setting that could not be removed or a failed push, do not build up. When the region is collected again, the normal rule comes back. Accounts are never deleted, because a deleted account's name can be taken by anyone in Azure.
@@ -167,6 +167,7 @@ All 19 HTTP functions use `authLevel: function`. Each needs a valid function or 
   - The collector never deletes blobs.
   - The lifecycle rule deletes them after `BLOB_RETENTION_DAYS`, whether or not they were sent.
   - If Site24x7 can't be reached for longer than that, the oldest logs are lost.
+  - Sent logs are not needed, so the default of 1 day only leaves time to resend after an outage. To keep logs longer, set `BLOB_RETENTION_DAYS` on the Function App; see [Log retention](../README.md#log-retention).
 - **Retries:** an upload that fails for a reason a retry can fix (Site24x7 unreachable, timeout, HTTP 408 / 429 / 5xx, or the Device Key refused) is retried on the next run, every 2 minutes, while the logs are still kept. The Device Key counts as refused on 401 / 403, and on a 400 when Site24x7's API refuses the key too (the upload service answers 400 to an unknown key, for example after the key was rotated).
   - Records Site24x7 refuses for good (HTTP 400 with a valid Device Key, 404 / 415 / 422, or a single record still too large after splitting on 413) are dropped and counted, not retried.
   - Delivery is at least once: a run that stops between an upload and saving its checkpoint, or a block range whose records cannot be split at block boundaries, can send some records again.

@@ -7,6 +7,12 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.2.1-beta2] — 2026-11-21
+
+- Log blobs are now kept for 1 day by default, not 7: sent logs are not needed, so storage costs
+  less. Existing installs move to 1 day on the first scan after the update. To keep them longer, set
+  `BLOB_RETENTION_DAYS` (README: Log Retention); a value below 1 now uses the default.
+
 ## [1.2.1-beta1] — 2026-11-19
 
 Fixes from the 1.2.0 end-to-end test:

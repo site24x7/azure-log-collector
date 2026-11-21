@@ -151,7 +151,9 @@ class TestTenantStorageAccount:
             ]
             assert rm.get_tenant_storage_account("my-rg") == {}
 
-    def test_ensure_returns_existing_without_creating(self, rm):
+    def test_ensure_returns_existing_without_creating(self, rm, monkeypatch):
+        # A longer normal retention, so it differs from the idle one
+        monkeypatch.setenv("BLOB_RETENTION_DAYS", "7")
         with patch("shared.region_manager.StorageManagementClient") as mock_cls:
             mock_cls.return_value.storage_accounts.list_by_resource_group.return_value = [
                 self._tenant_acct()
@@ -249,9 +251,18 @@ class TestApplyLifecyclePolicy:
         rules = kwargs["properties"]["policy"]["rules"]
         assert rules[0]["enabled"] is True
         assert rules[0]["definition"]["filters"]["prefixMatch"] == ["insights-logs-"]
-        # Default retention is 7 days
+        # Default retention is 1 day
         assert (rules[0]["definition"]["actions"]["baseBlob"]["delete"]
-                ["daysAfterModificationGreaterThan"] == 7)
+                ["daysAfterModificationGreaterThan"] == 1)
+
+    @pytest.mark.parametrize("value, days", [("14", 14), ("0", 1), ("-3", 1), ("abc", 1)])
+    def test_retention_app_setting(self, rm, monkeypatch, value, days):
+        monkeypatch.setenv("BLOB_RETENTION_DAYS", value)
+        client = MagicMock()
+        rm.apply_lifecycle_policy(client, "rg", "sa1")
+        kwargs = client.management_policies.create_or_update.call_args.kwargs
+        assert (kwargs["properties"]["policy"]["rules"][0]["definition"]
+                ["actions"]["baseBlob"]["delete"]["daysAfterModificationGreaterThan"] == days)
 
     def test_respects_custom_retention(self, rm):
         client = MagicMock()
@@ -308,7 +319,9 @@ class TestSetRetention:
 
 
 class TestReconcileRegions:
-    def test_adds_new_and_idles_unused_without_deleting(self, rm):
+    def test_adds_new_and_idles_unused_without_deleting(self, rm, monkeypatch):
+        # A longer normal retention, so it differs from the idle one
+        monkeypatch.setenv("BLOB_RETENTION_DAYS", "7")
         active = {"eastus", "westus"}
         provisioned = {"eastus": "s247diageastusabc", "centralus": "s247diagcentralusabc"}
 

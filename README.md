@@ -218,6 +218,39 @@ Add `--clean-diag-settings` to also remove this
 collector's diagnostic setting from resources where it sends to this deployment's storage
 (or use **Turn Off Log Collection** in Site24x7 first, which removes them).
 
+## Log Retention
+
+Logs wait in the regional storage accounts only until they are sent. A lifecycle rule
+(`s247-diag-logs-retention`) deletes them **1 day** after they were last written, whether or
+not they were sent. Sent logs are not needed again, so the day is only there to resend after
+an outage. If Site24x7 can't be reached for longer than the retention, the oldest logs are lost.
+
+### Keeping logs longer
+
+Set the `BLOB_RETENTION_DAYS` app setting on the collector's Function App to a whole number of
+days (1 or more):
+
+- **Azure portal:** open the Function App in the collector's resource group, go to
+  **Settings → Environment variables → App settings**, add `BLOB_RETENTION_DAYS` (for example
+  `7`), then **Apply** and **Confirm**. The Function App restarts.
+- **Azure CLI:**
+  ```bash
+  az functionapp config appsettings set -g <collector-resource-group> -n <function-app-name> \
+    --settings BLOB_RETENTION_DAYS=7
+  ```
+
+The next scan (every 6 hours, or one started from Site24x7) updates the rule on every regional
+storage account. Azure runs lifecycle rules about once a day, so a change can take up to a day to
+apply, and logs already deleted can't be brought back. To go back to the default, delete the
+setting. Notes:
+
+- Storage cost grows with the retention (about $0.02 per GB per month).
+- A value that is not a whole number of 1 or more is ignored, and the default is used.
+- Accounts the collector no longer uses (their region, or Entra ID, is not collected) keep a
+  1-day rule whatever the setting.
+- The setting is kept across updates, which replace only the code. Redeploying the ARM template
+  replaces the app settings, so set it again after a redeploy.
+
 ## Cost Estimate
 
 | Resource | Cost |

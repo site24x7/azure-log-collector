@@ -32,10 +32,11 @@ LOGS_CONTAINER = "insights-logs"
 # a stable target the tenant admin can point an Entra diagnostic setting at.
 TENANT_STORAGE_PURPOSE = "diag-logs-tenant"
 # Lifecycle policy: blobs in insights-logs-* containers are deleted after this many
-# days. The processor reads incrementally via block-list checkpoints and never
-# deletes blobs itself, so retention is enforced here. Override via
-# BLOB_RETENTION_DAYS env var.
-BLOB_RETENTION_DAYS_DEFAULT = 7
+# days, sent or not. The processor reads incrementally via block-list checkpoints and
+# never deletes blobs itself, so retention is enforced here. Sent logs are not needed,
+# so the default only leaves time to resend after an outage. Override with the
+# BLOB_RETENTION_DAYS app setting (a whole number of days, at least 1).
+BLOB_RETENTION_DAYS_DEFAULT = 1
 # Retention of an idle account (its region, or Entra ID, is not collected).
 # The processor still reads idle accounts, so logs that are still configured
 # are sent within minutes; anything else is deleted after about a day.
@@ -44,12 +45,13 @@ RETENTION_RULE_NAME = "s247-diag-logs-retention"
 
 
 def _get_blob_retention_days() -> int:
-    """Return blob retention (lifecycle) days from env var or default."""
+    """Return blob retention (lifecycle) days from the app setting, or the default."""
     import os
     try:
-        return int(os.environ.get("BLOB_RETENTION_DAYS", BLOB_RETENTION_DAYS_DEFAULT))
+        days = int(os.environ.get("BLOB_RETENTION_DAYS", BLOB_RETENTION_DAYS_DEFAULT))
     except (ValueError, TypeError):
         return BLOB_RETENTION_DAYS_DEFAULT
+    return days if days >= 1 else BLOB_RETENTION_DAYS_DEFAULT
 
 
 def _sanitize_region(region: str) -> str:
