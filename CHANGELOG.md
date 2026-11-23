@@ -7,6 +7,11 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.2.1] — 2026-11-23
+
+The 1.2.1-beta changes (1-day log retention by default, steadier diagnostic-settings calls),
+validated live (docs/release-validation.md).
+
 ## [1.2.1-beta2] — 2026-11-21
 
 - Log blobs are now kept for 1 day by default, not 7: sent logs are not needed, so storage costs

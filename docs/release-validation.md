@@ -42,6 +42,20 @@ review evidence for the matching candidate. CI continues to enforce regression,
 setup syntax, JSON and package/template VERSION pin checks. No stable release
 should be approved solely because these automated checks are green.
 
+## 1.2.1 validation (2026-11-23)
+
+Verified in a test subscription:
+
+- 1.2.1-beta1 on a collector deployed from the v1.2.0 template: turning log collection off and Delete
+  Collector no longer report resources they never configured; with a ReadOnly lock on the source
+  group, Delete Collector names only the locked resource and its group; after the lock was removed it
+  deleted the resource group in about two minutes.
+- 1.2.1-beta2: a 1.2.0 collector updated itself (Check for Updates); the next scan finished with 0
+  errors and set the retention rule to 1 day on all four log storage accounts it manages (the Function
+  App's own storage account has no rule).
+
+Not verified: uploads (the test upload endpoint was off).
+
 ## 1.2.0-beta validation (2026-11-18)
 
 Verified in a test subscription:
