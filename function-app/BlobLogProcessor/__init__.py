@@ -57,6 +57,10 @@ BACKLOG_WARN_THRESHOLD = 500
 MAX_READ_BYTES = 50 * 1024 * 1024
 # A block blob not modified for this long is complete: its last block is read too.
 BLOCK_BLOB_QUIET_MINUTES = 90
+# Containers that hold several log categories: Azure Firewall writes every category
+# (AZFW* and the legacy AzureFirewall*) to insights-logs-azurefirewall, so each
+# record is sent with the log type of its own ``category``.
+MULTI_CATEGORY_CONTAINERS = frozenset({"azurefirewall"})
 # Upper bound on one upload's uncompressed records, whatever their count.
 MAX_BATCH_BYTES = 4 * 1024 * 1024
 # Entra ID categories: switched off in their own state, not the disabled list.
@@ -270,6 +274,8 @@ def _process_all_regions():
                 elif general_enabled and general_config_b64:
                     source_config_b64 = general_config_b64
                     using_general = True
+                elif category_normalized in MULTI_CATEGORY_CONTAINERS:
+                    pass  # each record is routed by its own category
                 else:
                     # No config — leave blobs in place; lifecycle rule will eventually expire them.
                     logger.warning(
@@ -280,6 +286,9 @@ def _process_all_regions():
                     )
                     continue
 
+                router = (_record_router(all_configs, general_enabled, general_config_b64,
+                                         is_log_type_disabled)
+                          if category_normalized in MULTI_CATEGORY_CONTAINERS else None)
                 container_client = blob_service.get_container_client(cname)
 
                 for blob in container_client.list_blobs():
@@ -369,9 +378,9 @@ def _process_all_regions():
                                 # (appended bytes never change, so they are the same records).
                                 skip = 0 if restarted else _resume_skip(cp_entry, "next_byte", offset, len(records))
                                 total_stats["processed"] += len(records) - skip
-                                sent = skip + _upload_in_order(client, source_config_b64, records[skip:],
-                                                               using_general, total_stats,
-                                                               acct_name, cname, blob.name)
+                                sent = skip + _upload_routed(router, client, source_config_b64, records[skip:],
+                                                             using_general, total_stats,
+                                                             acct_name, cname, blob.name)
                                 if sent < len(records):
                                     # Advance exactly past the envelopes that were fully handled and
                                     # count the records handled in the next one, so nothing already
@@ -429,9 +438,9 @@ def _process_all_regions():
                             records = records[already:]
                             if records:
                                 total_stats["processed"] += len(records)
-                                sent = _upload_in_order(client, source_config_b64, records,
-                                                        using_general, total_stats,
-                                                        acct_name, cname, blob.name)
+                                sent = _upload_routed(router, client, source_config_b64, records,
+                                                      using_general, total_stats,
+                                                      acct_name, cname, blob.name)
                                 if sent == len(records):
                                     checkpoints[cp_key] = {
                                         "next_block": -1,
@@ -515,9 +524,9 @@ def _process_all_regions():
                         # block parses on its own, so the first block's records are the same ones.
                         skip = _resume_skip(cp_entry, "next_block", next_block, len(records)) if boundaries else 0
                         total_stats["processed"] += len(records) - skip
-                        sent = skip + _upload_in_order(client, source_config_b64, records[skip:],
-                                                       using_general, total_stats,
-                                                       acct_name, cname, blob.name)
+                        sent = skip + _upload_routed(router, client, source_config_b64, records[skip:],
+                                                     using_general, total_stats,
+                                                     acct_name, cname, blob.name)
                         if sent == len(records):
                             checkpoints[cp_key] = {
                                 "next_block": upper,
@@ -839,6 +848,69 @@ def _upload_in_order(client, source_config_b64, records, using_general,
         sent += len(batch)
     # Not sent this run; the checkpoint keeps them for the next one.
     stats["retrying"] += len(records) - sent
+    return sent
+
+
+_NOT_CONFIGURED = object()
+
+
+def _record_router(all_configs, general_enabled, general_config_b64, is_disabled):
+    """Route for each record of a multi-category container: (config_b64, using_general)
+    from the record's own ``category``, or None when it is not forwarded (its log type
+    is switched off), or _NOT_CONFIGURED (no log type for it and the general type is
+    off: dropped)."""
+    import base64
+    from shared.config_store import normalize_category
+    routes = {}
+
+    def route(record):
+        category = normalize_category(record.get("category") if isinstance(record, dict) else "")
+        if category not in routes:
+            config = all_configs.get(f"S247_{category}") if category else None
+            if category and is_disabled(category):
+                routes[category] = None
+            elif config is not None:
+                routes[category] = (base64.b64encode(json.dumps(config).encode()).decode(), False)
+            elif general_enabled and general_config_b64:
+                routes[category] = (general_config_b64, True)
+            else:
+                routes[category] = _NOT_CONFIGURED
+                logger.warning("BlobLogProcessor: No S247 config for category '%s' — "
+                               "its records are not forwarded", category or "(none)")
+        return routes[category]
+
+    return route
+
+
+def _upload_routed(router, client, source_config_b64, records, using_general,
+                   stats, acct_name, container, blob_name) -> int:
+    """``_upload_in_order`` for one container's records; with a ``router`` the records
+    are sent in runs that share a log type, in order, so the count returned is still
+    the leading records handled (records not forwarded count as handled)."""
+    if router is None:
+        return _upload_in_order(client, source_config_b64, records, using_general,
+                                stats, acct_name, container, blob_name)
+    runs = []
+    for record in records:
+        target = router(record)
+        if runs and runs[-1][0] == target:
+            runs[-1][1].append(record)
+        else:
+            runs.append((target, [record]))
+    sent = 0
+    for target, run in runs:
+        if target is None or target is _NOT_CONFIGURED:
+            if target is _NOT_CONFIGURED:
+                stats["dropped"] += len(run)
+            sent += len(run)
+            continue
+        done = _upload_in_order(client, target[0], run, target[1],
+                                stats, acct_name, container, blob_name)
+        sent += done
+        if done < len(run):
+            # _upload_in_order counted the rest of this run; the later runs wait too.
+            stats["retrying"] += len(records) - sent - (len(run) - done)
+            break
     return sent
 
 

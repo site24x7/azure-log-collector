@@ -7,6 +7,15 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [1.2.2-beta1] — 2026-11-24
+
+- Azure Firewall logs are forwarded. The Firewall writes all its categories to one container
+  (`insights-logs-azurefirewall`), so each record is now sent with the log type of its own
+  category (AZFW* and the legacy AzureFirewall* types). A category with no Site24x7 log type goes
+  to the general log type when that is on, and is otherwise not forwarded.
+- Application Gateway firewall (WAF) records, which carry `timeStamp` and no `time`, get their log
+  time and Time field from `timeStamp`.
+
 ## [1.2.1] — 2026-11-23
 
 The 1.2.1-beta changes (1-day log retention by default, steadier diagnostic-settings calls),

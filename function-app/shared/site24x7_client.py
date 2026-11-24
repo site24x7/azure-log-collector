@@ -1059,6 +1059,9 @@ def _json_log_parser(
                 key = path_obj.get("key") or path_obj.get("name", "")
                 datatype = path_obj.get("type")
                 value = _get_json_value(event_obj, key, datatype)
+                if value is None and key.lower() == "time":
+                    # Application Gateway firewall records carry only "timeStamp".
+                    value = _get_json_value(event_obj, "timeStamp", datatype)
                 if value is not None:
                     formatted_line[path_obj["name"]] = value
                     json_log_size += len(str(value))
@@ -1072,6 +1075,8 @@ def _json_log_parser(
             event_time = _get_json_value(formatted_line, date_field)
             if event_time is None:
                 event_time = _get_json_value(event_obj, date_field)
+            if event_time is None and str(date_field).lower() == "time":
+                event_time = _get_json_value(event_obj, "timeStamp")
             if event_time is not None:
                 event_ms = _get_timestamp(event_time, date_format)
                 if event_ms > 0:  # epoch 0 would file the record under 1970
