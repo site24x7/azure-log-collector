@@ -269,7 +269,6 @@ No Event Hubs needed — storage-based polling eliminates the ~$11/region/month 
 ├── setup/
 │   ├── config.env.example    ← Configuration template
 │   ├── setup.sh              ← One-click provisioning
-│   ├── install.sh            ← Guided setup: picks subscriptions, writes config.env, runs setup.sh
 │   ├── teardown.sh           ← One-click cleanup
 │   ├── azuredeploy.json      ← ARM template
 │   ├── createUiDefinition.json    ← Portal deployment form

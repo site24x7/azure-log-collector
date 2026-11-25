@@ -7,6 +7,10 @@ Release numbers follow [SemVer](https://semver.org/) — pre-releases use
 `-alphaN`, `-betaN`, `-rcN` suffixes. The in-app updater correctly orders
 `dev < alpha < beta < rc < final` for the same core version.
 
+## [Unreleased]
+
+- Removed `setup/install.sh`. Install the collector from Site24x7 (Deploy to Azure); `setup/setup.sh` remains for deploying a local checkout.
+
 ## [1.2.2-beta1] — 2026-11-24
 
 - Azure Firewall logs are forwarded. The Firewall writes all its categories to one container
