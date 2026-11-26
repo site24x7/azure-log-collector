@@ -1246,7 +1246,7 @@ When OPEN: post_logs() returns False immediately (records remain for retry withi
 
 ### 14.1 Prerequisites
 
-- Azure subscription with Owner or User Access Administrator role
+- Owner, or Contributor plus User Access Administrator, on the subscription that hosts the collector and on each other subscription it collects from (the deployment creates resources, a custom role and role assignments there, and runs a deployment in each other subscription to grant Reader and Monitoring Contributor)
 - Azure CLI (`az`) or Azure Cloud Shell access
 - Site24x7 account with API key (device key)
 
